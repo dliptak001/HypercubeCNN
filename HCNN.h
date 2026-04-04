@@ -53,4 +53,9 @@ private:
     float shell_mean(int v, int d, const float* data) const;
     float activate(float x) const;
     float activate_derivative(float x) const;
+
+    // Bulk-compute shell means for all vertices at once.
+    // buf must have size channels * (radius+1) * N.
+    // buf[(c * (radius+1) + d) * N + v] = shell_mean(v, d, data + c*N)
+    void precompute_shell_means(const float* data, int channels, float* buf) const;
 };

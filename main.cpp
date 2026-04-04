@@ -1,5 +1,6 @@
 #include "HCNNNetwork.h"
 #include "dataloader/HCNNMNISTDataset.h"
+#include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <iostream>
@@ -49,9 +50,9 @@ int main() {
     // DIM=10 gives N=1024, fits 784 MNIST pixels with room to spare
     HCNNNetwork net(10);
 
-    net.add_conv(1, 8, true, true);
+    net.add_conv(2, 16, true, true);
     net.add_pool(2, PoolType::MAX);   // DIM 10->8, N 1024->256
-    net.add_conv(1, 16, true, true);
+    net.add_conv(2, 32, true, true);
 
     net.randomize_all_weights(0.1f);
 
@@ -61,23 +62,28 @@ int main() {
 
     std::cout << "Loading MNIST from " << data_dir << "...\n";
     auto train_data = load_mnist((data_dir / "train-images-idx3-ubyte").string(),
-                                 (data_dir / "train-labels-idx1-ubyte").string(), 500);
+                                 (data_dir / "train-labels-idx1-ubyte").string(), 5000);
     auto test_data = load_mnist((data_dir / "t10k-images-idx3-ubyte").string(),
-                                (data_dir / "t10k-labels-idx1-ubyte").string(), 100);
+                                (data_dir / "t10k-labels-idx1-ubyte").string(), 1000);
     std::cout << "Train: " << train_data.size() << " samples, "
               << "Test: " << test_data.size() << " samples\n\n";
 
     evaluate(net, test_data, "Initial test");
 
-    const int epochs = 20;
-    float lr = 0.01f;
+    const int epochs = 30;
+    float lr = 0.05f;
     for (int epoch = 0; epoch < epochs; ++epoch) {
+        auto t0 = std::chrono::steady_clock::now();
         train_data.train_epoch(net, lr);
+        auto t1 = std::chrono::steady_clock::now();
+        double secs = std::chrono::duration<double>(t1 - t0).count();
 
         std::string label = "Epoch " + std::to_string(epoch + 1);
         evaluate(net, test_data, label.c_str());
+        std::cout << "  (" << secs << "s, "
+                  << train_data.size() / secs << " samples/s)\n";
 
-        // Simple LR decay: halve every 10 epochs
+        // LR decay: halve every 10 epochs
         if ((epoch + 1) % 10 == 0) {
             lr *= 0.5f;
             std::cout << "  LR -> " << lr << "\n";
