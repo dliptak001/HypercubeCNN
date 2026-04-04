@@ -1,65 +1,88 @@
 #include "HCNNNetwork.h"
 #include "dataloader/HCNNMNISTDataset.h"
 #include <cmath>
+#include <filesystem>
 #include <iostream>
 #include <vector>
 
-static float cross_entropy_loss(const float* logits, int num_classes, int target_class) {
-    float max_logit = logits[0];
-    for (int i = 1; i < num_classes; ++i) {
-        if (logits[i] > max_logit) max_logit = logits[i];
+static float cross_entropy_loss(const float* logits, int K, int target) {
+    double max_l = logits[0];
+    for (int i = 1; i < K; ++i) if (logits[i] > max_l) max_l = logits[i];
+    double sum_exp = 0.0;
+    for (int i = 0; i < K; ++i) sum_exp += std::exp(logits[i] - max_l);
+    return static_cast<float>(-(logits[target] - max_l) + std::log(sum_exp));
+}
+
+static int argmax(const float* v, int n) {
+    int best = 0;
+    for (int i = 1; i < n; ++i) if (v[i] > v[best]) best = i;
+    return best;
+}
+
+static void evaluate(HCNNNetwork& net, const HCNNMNISTDataset& dataset,
+                     const char* label) {
+    int K = net.get_num_classes();
+    int N = net.get_start_N();
+    float total_loss = 0.0f;
+    int correct = 0;
+    int count = static_cast<int>(dataset.size());
+
+    std::vector<float> embedded(N);
+    std::vector<float> logits(K);
+
+    for (int i = 0; i < count; ++i) {
+        const auto& s = dataset.get(i);
+        net.embed_input(s.input.data(), static_cast<int>(s.input.size()), embedded.data());
+        net.forward(embedded.data(), logits.data());
+        total_loss += cross_entropy_loss(logits.data(), K, s.target_class);
+        if (argmax(logits.data(), K) == s.target_class) ++correct;
     }
-    float sum_exp = 0.0f;
-    for (int i = 0; i < num_classes; ++i) {
-        sum_exp += std::exp(logits[i] - max_logit);
-    }
-    float log_prob = (logits[target_class] - max_logit) - std::log(sum_exp);
-    return -log_prob;
+
+    float avg_loss = total_loss / count;
+    float accuracy = 100.0f * correct / count;
+    std::cout << label << ": loss=" << avg_loss
+              << " acc=" << correct << "/" << count
+              << " (" << accuracy << "%)\n";
 }
 
 int main() {
-    HCNNNetwork net(5);
+    // DIM=10 gives N=1024, fits 784 MNIST pixels with room to spare
+    HCNNNetwork net(10);
 
     net.add_conv(1, 8, true, true);
-    net.add_pool(1, PoolType::MAX);
-    net.add_conv(2, 16, true, true);
+    net.add_pool(2, PoolType::MAX);   // DIM 10->8, N 1024->256
+    net.add_conv(1, 16, true, true);
 
-    net.randomize_all_weights(0.2f);
+    net.randomize_all_weights(0.1f);
 
-    HCNNMNISTDataset dataset = create_toy_mnist_like_dataset();
+    // Resolve data path relative to source file location
+    auto src_dir = std::filesystem::path(__FILE__).parent_path();
+    auto data_dir = src_dir / "data";
 
-    const auto& first = dataset.get(0);
-    const int num_classes = 10;
-    std::vector<float> logits(num_classes, 0.0f);
-    int N = net.get_start_N();
-    std::vector<float> embedded(N, 0.0f);
+    std::cout << "Loading MNIST from " << data_dir << "...\n";
+    auto train_data = load_mnist((data_dir / "train-images-idx3-ubyte").string(),
+                                 (data_dir / "train-labels-idx1-ubyte").string(), 500);
+    auto test_data = load_mnist((data_dir / "t10k-images-idx3-ubyte").string(),
+                                (data_dir / "t10k-labels-idx1-ubyte").string(), 100);
+    std::cout << "Train: " << train_data.size() << " samples, "
+              << "Test: " << test_data.size() << " samples\n\n";
 
-    // Initial loss
-    net.embed_input(first.input.data(), static_cast<int>(first.input.size()), embedded.data());
-    net.forward(embedded.data(), logits.data());
-    float loss = cross_entropy_loss(logits.data(), num_classes, first.target_class);
-    std::cout << "Initial cross-entropy loss: " << loss << "\n";
+    evaluate(net, test_data, "Initial test");
 
-    // Training with progress
-    const int epochs = 500;
-    const float lr = 0.01f;
+    const int epochs = 20;
+    float lr = 0.01f;
     for (int epoch = 0; epoch < epochs; ++epoch) {
-        dataset.train_epoch(net, lr);
+        train_data.train_epoch(net, lr);
 
-        if ((epoch + 1) % 100 == 0) {
-            net.embed_input(first.input.data(), static_cast<int>(first.input.size()), embedded.data());
-            net.forward(embedded.data(), logits.data());
-            loss = cross_entropy_loss(logits.data(), num_classes, first.target_class);
-            std::cout << "Epoch " << (epoch + 1) << " cross-entropy loss: " << loss << "\n";
+        std::string label = "Epoch " + std::to_string(epoch + 1);
+        evaluate(net, test_data, label.c_str());
+
+        // Simple LR decay: halve every 10 epochs
+        if ((epoch + 1) % 10 == 0) {
+            lr *= 0.5f;
+            std::cout << "  LR -> " << lr << "\n";
         }
     }
-
-    // Final
-    net.embed_input(first.input.data(), static_cast<int>(first.input.size()), embedded.data());
-    net.forward(embedded.data(), logits.data());
-    std::cout << "Final logits for sample 0: ";
-    for (float v : logits) std::cout << v << " ";
-    std::cout << "\n";
 
     return 0;
 }

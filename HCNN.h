@@ -18,11 +18,22 @@ public:
     void backward(const float* grad_out, const float* in, const float* pre_act,
                   float* grad_in, float learning_rate);
 
+    // Compute gradients without applying SGD update.
+    // kernel_grad must have size c_out * c_in * (radius+1).
+    // bias_grad must have size c_out (or nullptr if no bias).
+    void compute_gradients(const float* grad_out, const float* in, const float* pre_act,
+                           float* grad_in, float* kernel_grad, float* bias_grad) const;
+
     int get_dim() const { return DIM; }
     int get_N() const { return N; }
     int get_c_in() const { return c_in; }
     int get_c_out() const { return c_out; }
     int get_radius() const { return radius; }
+
+    float* get_kernel_data() { return kernel.data(); }
+    int get_kernel_size() const { return static_cast<int>(kernel.size()); }
+    float* get_bias_data() { return bias.data(); }
+    int get_bias_size() const { return static_cast<int>(bias.size()); }
 
 private:
     int DIM, N, c_in, c_out, radius;

@@ -115,6 +115,56 @@ void HCNN::backward(const float* grad_out, const float* in, const float* pre_act
     }
 }
 
+void HCNN::compute_gradients(const float* grad_out, const float* in, const float* pre_act,
+                             float* grad_in, float* kernel_grad, float* bias_grad) const {
+    std::vector<float> grad_pre(c_out * N);
+    for (int i = 0; i < c_out * N; ++i) {
+        grad_pre[i] = grad_out[i] * activate_derivative(pre_act[i]);
+    }
+
+    if (grad_in) {
+        for (int i = 0; i < c_in * N; ++i) grad_in[i] = 0.0f;
+        for (int co = 0; co < c_out; ++co) {
+            for (int v = 0; v < N; ++v) {
+                float gp = grad_pre[co * N + v];
+                if (gp == 0.0f) continue;
+                for (int ci = 0; ci < c_in; ++ci) {
+                    for (int d = 0; d <= radius; ++d) {
+                        float w = kernel[kernel_idx(co, ci, d)]
+                                  / static_cast<float>(shell_count[d]);
+                        for (int m : shell_masks[d]) {
+                            grad_in[ci * N + (v ^ m)] += gp * w;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    for (int co = 0; co < c_out; ++co) {
+        for (int ci = 0; ci < c_in; ++ci) {
+            const float* chan = in + ci * N;
+            for (int d = 0; d <= radius; ++d) {
+                float grad_k = 0.0f;
+                for (int v = 0; v < N; ++v) {
+                    grad_k += grad_pre[co * N + v] * shell_mean(v, d, chan);
+                }
+                kernel_grad[kernel_idx(co, ci, d)] = grad_k;
+            }
+        }
+    }
+
+    if (bias_grad && use_bias) {
+        for (int co = 0; co < c_out; ++co) {
+            float grad_b = 0.0f;
+            for (int v = 0; v < N; ++v) {
+                grad_b += grad_pre[co * N + v];
+            }
+            bias_grad[co] = grad_b;
+        }
+    }
+}
+
 float HCNN::shell_mean(int v, int d, const float* data) const {
     if (d == 0) return data[v];
     float s = 0.0f;

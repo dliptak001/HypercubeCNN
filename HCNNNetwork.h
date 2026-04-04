@@ -25,6 +25,14 @@ public:
 
     int get_start_dim() const { return start_dim; }
     int get_start_N() const { return 1 << start_dim; }
+    int get_num_classes() const { return num_classes; }
+
+    HCNN& get_conv(size_t i) { return conv_layers[i]; }
+    HCNNReadout& get_readout() { return readout; }
+    size_t get_num_conv() const { return conv_layers.size(); }
+    size_t get_num_pool() const { return pool_layers.size(); }
+    const std::vector<bool>& get_layer_types() const { return is_conv_layer; }
+    const std::vector<int>& get_channel_counts() const { return channel_counts; }
 
 private:
     int start_dim;
