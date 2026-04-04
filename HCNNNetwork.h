@@ -10,24 +10,22 @@ class HCNNNetwork {
 public:
     HCNNNetwork(int start_dim);
 
-    // Add conv layer with custom output channels
     void add_conv(int radius, int c_out, bool use_relu = true, bool use_bias = true);
-
-    // Add pool layer
     void add_pool(int reduce_by, PoolType type = PoolType::MAX);
 
-    // Configuration
     void set_kernel(int layer_idx, const float* weights, int size);
     void set_bias(int layer_idx, const float* biases, int size);
     void randomize_all_weights(float scale = 0.1f);
 
-    // Core input embedding — Direct Linear Assignment
-    // Non-negotiable: every value must be in [-1.0, 1.0].
-    // Throws std::runtime_error if violated. No auto-normalization.
     void embed_input(const float* raw_input, int input_length, float* first_layer_activations) const;
 
-    // Forward pass
     void forward(const float* first_layer_activations, float* logits) const;
+
+    // Minimal training step: one SGD update on all kernels
+    // target = one-hot vector of size num_classes
+    // learning_rate is applied directly to kernel weights
+    void train_step(const float* raw_input, int input_length,
+                    const float* target, float learning_rate);
 
     int get_start_dim() const { return start_dim; }
     int get_start_N() const { return 1 << start_dim; }

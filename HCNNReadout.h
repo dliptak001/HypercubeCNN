@@ -11,6 +11,9 @@ public:
 
     void forward(const float* in, float* out, int N) const;
 
+    // Minimal SGD update for training stub
+    void apply_sgd_update(const std::vector<float>& grad_logits, float learning_rate);
+
 private:
     int num_classes;
     int input_channels;

@@ -19,7 +19,6 @@ void HCNNReadout::randomize_weights(float scale) {
 }
 
 void HCNNReadout::forward(const float* in, float* out, int N) const {
-    // First compute global average per final channel
     std::vector<float> channel_avg(input_channels, 0.0f);
     for (int c = 0; c < input_channels; ++c) {
         const float* chan = in + c * N;
@@ -28,12 +27,20 @@ void HCNNReadout::forward(const float* in, float* out, int N) const {
         channel_avg[c] = sum / static_cast<float>(N);
     }
 
-    // Now apply linear weights for each class
     for (int cls = 0; cls < num_classes; ++cls) {
         float sum = 0.0f;
         for (int c = 0; c < input_channels; ++c) {
             sum += weights[cls * input_channels + c] * channel_avg[c];
         }
         out[cls] = sum;
+    }
+}
+
+void HCNNReadout::apply_sgd_update(const std::vector<float>& grad_logits, float learning_rate) {
+    for (int cls = 0; cls < num_classes; ++cls) {
+        for (int c = 0; c < input_channels; ++c) {
+            // crude but functional gradient for the minimal stub
+            weights[cls * input_channels + c] -= learning_rate * grad_logits[cls] * 0.1f;
+        }
     }
 }

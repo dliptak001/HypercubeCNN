@@ -53,8 +53,6 @@ void HCNNNetwork::embed_input(const float* raw_input, int input_length, float* f
     if (input_length > N) {
         throw std::runtime_error("Input length exceeds hypercube size N = " + std::to_string(N));
     }
-
-    // Strict enforcement: every scalar must be in [-1.0, 1.0]
     for (int i = 0; i < input_length; ++i) {
         float val = raw_input[i];
         if (val < -1.0f || val > 1.0f) {
@@ -62,8 +60,6 @@ void HCNNNetwork::embed_input(const float* raw_input, int input_length, float* f
         }
         first_layer_activations[i] = val;
     }
-
-    // Zero-pad remaining vertices
     for (int i = input_length; i < N; ++i) {
         first_layer_activations[i] = 0.0f;
     }
@@ -98,4 +94,23 @@ void HCNNNetwork::forward(const float* first_layer_activations, float* logits) c
     }
 
     readout.forward(current, logits, current_N);
+}
+
+void HCNNNetwork::train_step(const float* raw_input, int input_length,
+                             const float* target, float learning_rate) {
+    int N = 1 << start_dim;
+    std::vector<float> embedded(N, 0.0f);
+    embed_input(raw_input, input_length, embedded.data());
+
+    std::vector<float> logits(10, 0.0f);
+    forward(embedded.data(), logits.data());
+
+    // Simple MSE gradient w.r.t. logits
+    std::vector<float> grad_logits(10);
+    for (int i = 0; i < 10; ++i) {
+        grad_logits[i] = 2.0f * (logits[i] - target[i]);
+    }
+
+    // Apply SGD update to readout weights
+    readout.apply_sgd_update(grad_logits, learning_rate);
 }
