@@ -36,7 +36,15 @@ endif()
 
 # ——— Executables: only when building standalone (not via FetchContent) ———
 if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
-    add_executable(HypercubeCNN main.cpp)
+    add_executable(HypercubeCNN main.cpp
+            HCNN.cpp
+            HCNNPool.cpp
+            HCNNPool.h
+            HCNNNetwork.cpp
+            HCNNNetwork.h
+            HCNNReadout.cpp
+            HCNNReadout.h
+    )
 
     set(DIAGNOSTIC_TARGETS HypercubeCNN)
     set(EXAMPLE_TARGETS)
