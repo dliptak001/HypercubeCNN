@@ -10,8 +10,10 @@ class HCNNNetwork {
 public:
     HCNNNetwork(int start_dim);
 
-    // Core layers
-    void add_conv(int radius, bool use_relu = true, bool use_bias = true);
+    // Add conv layer with custom output channels
+    void add_conv(int radius, int c_out, bool use_relu = true, bool use_bias = true);
+
+    // Add pool layer
     void add_pool(int reduce_by, PoolType type = PoolType::MAX);
 
     // Configuration
@@ -19,11 +21,12 @@ public:
     void set_bias(int layer_idx, const float* biases, int size);
     void randomize_all_weights(float scale = 0.1f);
 
-    // Core input embedding (Direct Linear Assignment)
-    // input_length must be <= N; throws std::runtime_error otherwise
+    // Core input embedding — Direct Linear Assignment
+    // Non-negotiable: every value must be in [-1.0, 1.0].
+    // Throws std::runtime_error if violated. No auto-normalization.
     void embed_input(const float* raw_input, int input_length, float* first_layer_activations) const;
 
-    // Forward pass (after embedding)
+    // Forward pass
     void forward(const float* first_layer_activations, float* logits) const;
 
     int get_start_dim() const { return start_dim; }

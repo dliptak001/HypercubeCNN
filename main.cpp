@@ -1,23 +1,23 @@
 #include "HCNNNetwork.h"
 #include <iostream>
 #include <vector>
-#include <algorithm>   // for std::max_element
+#include <algorithm>
 
 int main() {
-    // DIM=5 (N=32) gives room for one pooling step
+    // DIM=5 (N=32)
     HCNNNetwork net(5);
 
-    // Conv → Pool → Conv
-    net.add_conv(1, true, true);       // radius 1, ReLU + bias
-    net.add_pool(1, PoolType::MAX);    // reduce DIM by 1 → now DIM=4
-    net.add_conv(2, true, true);       // radius 2, ReLU + bias
+    // Conv (8 out) → Pool → Conv (16 out)
+    net.add_conv(1, 8, true, true);
+    net.add_pool(1, PoolType::MAX);
+    net.add_conv(2, 16, true, true);
 
-    net.randomize_all_weights(1.0f);   // larger scale for visible logit variation
+    net.randomize_all_weights(0.3f);
 
-    // Dummy raw input (length <= N=32)
+    // Dummy raw input — strictly in [-1.0, 1.0]
     std::vector<float> raw_input = {
-        1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 0.5f, 1.5f,
-        2.5f, 3.5f, 4.5f, 5.5f, 0.8f, 1.8f, 2.8f, 3.8f
+        0.17f, 0.33f, 0.50f, 0.67f, 0.83f, 1.00f, 0.08f, 0.25f,
+        0.42f, 0.58f, 0.75f, 0.92f, 0.13f, 0.30f, 0.47f, 0.63f
     };
 
     int N = net.get_start_N();
@@ -25,7 +25,6 @@ int main() {
 
     net.embed_input(raw_input.data(), static_cast<int>(raw_input.size()), embedded.data());
 
-    // Debug print: max activation after embedding (should be non-zero)
     float max_act = *std::max_element(embedded.begin(), embedded.end());
     std::cout << "Max activation after embedding: " << max_act << "\n";
 

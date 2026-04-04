@@ -1,13 +1,13 @@
 #include "HCNNNetwork.h"
 
 HCNNNetwork::HCNNNetwork(int dim)
-    : start_dim(dim), current_dim(dim), readout(10, 16) {  // 10 classes, example final channels
-    channel_counts.push_back(1);  // input channels for first layer
+    : start_dim(dim), current_dim(dim), readout(10, 16) {
+    channel_counts.push_back(1);
 }
 
-void HCNNNetwork::add_conv(int radius, bool use_relu, bool use_bias) {
+void HCNNNetwork::add_conv(int radius, int c_out, bool use_relu, bool use_bias) {
     conv_layers.emplace_back(current_dim, radius, use_relu, use_bias);
-    channel_counts.push_back(16);  // fixed example; configurable later
+    channel_counts.push_back(c_out);
     is_conv_layer.push_back(true);
 }
 
@@ -53,10 +53,17 @@ void HCNNNetwork::embed_input(const float* raw_input, int input_length, float* f
     if (input_length > N) {
         throw std::runtime_error("Input length exceeds hypercube size N = " + std::to_string(N));
     }
-    // Direct Linear Assignment
+
+    // Strict enforcement: every scalar must be in [-1.0, 1.0]
     for (int i = 0; i < input_length; ++i) {
-        first_layer_activations[i] = raw_input[i];
+        float val = raw_input[i];
+        if (val < -1.0f || val > 1.0f) {
+            throw std::runtime_error("Input value out of required range [-1.0, 1.0]. Value = " + std::to_string(val));
+        }
+        first_layer_activations[i] = val;
     }
+
+    // Zero-pad remaining vertices
     for (int i = input_length; i < N; ++i) {
         first_layer_activations[i] = 0.0f;
     }
@@ -66,12 +73,11 @@ void HCNNNetwork::forward(const float* first_layer_activations, float* logits) c
     if (conv_layers.empty()) return;
 
     int current_N = 1 << start_dim;
-    std::vector<float> buf1(current_N * 32);
-    std::vector<float> buf2(current_N * 32);
+    std::vector<float> buf1(current_N * 64);
+    std::vector<float> buf2(current_N * 64);
     float* current = buf1.data();
     float* next_buf = buf2.data();
 
-    // Start with embedded input (1 channel)
     for (int i = 0; i < current_N; ++i) current[i] = first_layer_activations[i];
 
     size_t conv_idx = 0, pool_idx = 0;
@@ -84,9 +90,8 @@ void HCNNNetwork::forward(const float* first_layer_activations, float* logits) c
             current_channels = c_out;
             ++conv_idx;
         } else {
-            // pool
             pool_layers[pool_idx].forward(current, next_buf, current_channels);
-            current_N = pool_layers[pool_idx].get_output_N();   // <-- this is the fix
+            current_N = pool_layers[pool_idx].get_output_N();
             ++pool_idx;
         }
         std::swap(current, next_buf);

@@ -44,14 +44,19 @@ void HCNN::forward(const float* in, float* out, int c_in, int c_out) const {
     }
 }
 
-float HCNN::sum_shell(int v, int d, const float* data) const {   // stride removed
+float HCNN::sum_shell(int v, int d, const float* data) const {
     if (d == 0) return data[v];
+
     float s = 0.0f;
+    int count = 0;
     for (int u = 0; u < N; ++u) {
         int dist = __builtin_popcountll(static_cast<uint64_t>(v) ^ static_cast<uint64_t>(u));
-        if (dist == d) s += data[u];
+        if (dist == d) {
+            s += data[u];
+            ++count;
+        }
     }
-    return s;
+    return (count > 0) ? s / static_cast<float>(count) : 0.0f;
 }
 
 float HCNN::activate(float x) const {
