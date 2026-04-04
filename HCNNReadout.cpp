@@ -19,13 +19,21 @@ void HCNNReadout::randomize_weights(float scale) {
 }
 
 void HCNNReadout::forward(const float* in, float* out, int N) const {
+    // First compute global average per final channel
+    std::vector<float> channel_avg(input_channels, 0.0f);
+    for (int c = 0; c < input_channels; ++c) {
+        const float* chan = in + c * N;
+        float sum = 0.0f;
+        for (int v = 0; v < N; ++v) sum += chan[v];
+        channel_avg[c] = sum / static_cast<float>(N);
+    }
+
+    // Now apply linear weights for each class
     for (int cls = 0; cls < num_classes; ++cls) {
         float sum = 0.0f;
         for (int c = 0; c < input_channels; ++c) {
-            const float* chan = in + c * N;
-            for (int v = 0; v < N; ++v) sum += chan[v];
+            sum += weights[cls * input_channels + c] * channel_avg[c];
         }
-        sum /= static_cast<float>(input_channels * N);
         out[cls] = sum;
     }
 }
