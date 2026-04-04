@@ -34,7 +34,7 @@ void HCNN::forward(const float* in, float* out, int c_in, int c_out) const {
             for (int c_in_idx = 0; c_in_idx < c_in; ++c_in_idx) {
                 const float* chan = in + c_in_idx * stride;
                 for (int d = 0; d <= radius; ++d) {
-                    float shell = sum_shell(v, d, chan);   // stride removed
+                    float shell = sum_shell(v, d, chan);
                     sum += kernel[d] * shell;
                 }
             }
@@ -46,7 +46,6 @@ void HCNN::forward(const float* in, float* out, int c_in, int c_out) const {
 
 float HCNN::sum_shell(int v, int d, const float* data) const {
     if (d == 0) return data[v];
-
     float s = 0.0f;
     int count = 0;
     for (int u = 0; u < N; ++u) {
@@ -62,4 +61,15 @@ float HCNN::sum_shell(int v, int d, const float* data) const {
 float HCNN::activate(float x) const {
     if (!use_relu) return x;
     return (x > 0.0f) ? x : 0.0f;
+}
+
+float HCNN::activate_derivative(float x) const {
+    if (!use_relu) return 1.0f;
+    return (x > 0.0f) ? 1.0f : 0.0f;
+}
+
+void HCNN::update_kernel(float learning_rate, float grad_factor) {
+    for (auto& w : kernel) {
+        w += learning_rate * grad_factor;
+    }
 }

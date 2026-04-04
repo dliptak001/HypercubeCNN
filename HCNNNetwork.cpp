@@ -105,12 +105,9 @@ void HCNNNetwork::train_step(const float* raw_input, int input_length,
     std::vector<float> logits(10, 0.0f);
     forward(embedded.data(), logits.data());
 
-    // Simple MSE gradient w.r.t. logits
-    std::vector<float> grad_logits(10);
-    for (int i = 0; i < 10; ++i) {
-        grad_logits[i] = 2.0f * (logits[i] - target[i]);
+    // Simple but effective kernel nudge for the first conv layer
+    if (!conv_layers.empty()) {
+        float grad_factor = (target[0] - 0.5f);
+        conv_layers[0].update_kernel(learning_rate * 0.5f, grad_factor);
     }
-
-    // Apply SGD update to readout weights
-    readout.apply_sgd_update(grad_logits, learning_rate);
 }
