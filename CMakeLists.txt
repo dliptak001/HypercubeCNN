@@ -1,34 +1,48 @@
-cmake_minimum_required(VERSION 4.1)
+cmake_minimum_required(VERSION 3.21)
 project(HypercubeCNN VERSION 0.1.0)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXTENSIONS OFF)  # Prefer -std=c++23 over GNU extensions
+set(CMAKE_CXX_EXTENSIONS OFF)
 
 # ——— Static library: core pipeline ———
 add_library(HypercubeCNNCore STATIC
-    ${PROJECT_SOURCE_DIR}/placeholder.cpp
+    HCNN.cpp
+    HCNNPool.cpp
+    HCNNNetwork.cpp
+    HCNNReadout.cpp
+    dataloader/HCNNMNISTDataset.cpp
 )
 
-# Public headers — consumers need these via target_link_libraries
 set(PUBLIC_HEADERS
-    # Add public headers here as they are created
+    HCNN.h
+    HCNNPool.h
+    HCNNNetwork.h
+    HCNNReadout.h
+    dataloader/HCNNMNISTDataset.h
 )
 
-# Include directories: PROJECT_SOURCE_DIR for in-tree builds,
-# install prefix include/HypercubeCNN for installed consumers
 target_include_directories(HypercubeCNNCore
     PUBLIC
         $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}>
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/dataloader>
         $<INSTALL_INTERFACE:include/HypercubeCNN>
 )
 
 # ——— Optimization and warning flags (library) ———
-target_compile_options(HypercubeCNNCore PRIVATE
+if(MSVC)
+    target_compile_options(HypercubeCNNCore PRIVATE
+        $<$<CONFIG:Release>:/O2>
+        $<$<CONFIG:Debug>:/Od /Zi>
+        /W4
+    )
+else()
+    target_compile_options(HypercubeCNNCore PRIVATE
         $<$<CONFIG:Release>:-O3 -march=native -mtune=native -ffast-math>
         $<$<CONFIG:Debug>:-O0 -g>
         -Wall -Wextra -Wno-unknown-pragmas
-)
+    )
+endif()
 
 if(MINGW)
     target_link_options(HypercubeCNNCore PRIVATE -static-libgcc -static-libstdc++)
@@ -36,15 +50,7 @@ endif()
 
 # ——— Executables: only when building standalone (not via FetchContent) ———
 if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
-    add_executable(HypercubeCNN main.cpp
-            HCNN.cpp
-            HCNNPool.cpp
-            HCNNPool.h
-            HCNNNetwork.cpp
-            HCNNNetwork.h
-            HCNNReadout.cpp
-            HCNNReadout.h
-    )
+    add_executable(HypercubeCNN main.cpp)
 
     set(DIAGNOSTIC_TARGETS HypercubeCNN)
     set(EXAMPLE_TARGETS)
@@ -56,8 +62,6 @@ if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
     endforeach()
 
     # ——— OpenMP (diagnostics only) ———
-    # Core library does NOT use OpenMP.  Diagnostic executables use it for
-    # parallel sweeps and benchmarking.
     if(MINGW)
         foreach(tgt IN LISTS DIAGNOSTIC_TARGETS)
             target_compile_options(${tgt} PRIVATE -fopenmp)
@@ -77,11 +81,19 @@ if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
     endif()
 
     foreach(tgt IN LISTS EXE_TARGETS)
-        target_compile_options(${tgt} PRIVATE
+        if(MSVC)
+            target_compile_options(${tgt} PRIVATE
+                $<$<CONFIG:Release>:/O2>
+                $<$<CONFIG:Debug>:/Od /Zi>
+                /W4
+            )
+        else()
+            target_compile_options(${tgt} PRIVATE
                 $<$<CONFIG:Release>:-O3 -march=native -mtune=native -ffast-math>
                 $<$<CONFIG:Debug>:-O0 -g>
                 -Wall -Wextra -Wno-unknown-pragmas
-        )
+            )
+        endif()
 
         if(MINGW)
             target_link_options(${tgt} PRIVATE -static-libgcc -static-libstdc++)
@@ -93,18 +105,15 @@ endif()
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
-# Install the static library
 install(TARGETS HypercubeCNNCore
     EXPORT HypercubeCNNTargets
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
 
-# Install public headers into include/HypercubeCNN/
 install(FILES ${PUBLIC_HEADERS}
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/HypercubeCNN
 )
 
-# Generate and install CMake package config
 install(EXPORT HypercubeCNNTargets
     FILE HypercubeCNNTargets.cmake
     NAMESPACE HypercubeCNN::
