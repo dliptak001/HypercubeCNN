@@ -21,7 +21,7 @@ public:
     void forward(const float* first_layer_activations, float* logits) const;
 
     void train_step(const float* raw_input, int input_length,
-                    int target_class, float learning_rate);
+                    int target_class, float learning_rate, float momentum = 0.0f);
 
     int get_start_dim() const { return start_dim; }
     int get_start_N() const { return 1 << start_dim; }

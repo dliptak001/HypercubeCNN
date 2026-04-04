@@ -98,7 +98,7 @@ void HCNNNetwork::forward(const float* first_layer_activations, float* logits) c
 }
 
 void HCNNNetwork::train_step(const float* raw_input, int input_length,
-                             int target_class, float learning_rate) {
+                             int target_class, float learning_rate, float momentum) {
     int N = 1 << start_dim;
     std::vector<float> embedded(N, 0.0f);
     embed_input(raw_input, input_length, embedded.data());
@@ -179,7 +179,7 @@ void HCNNNetwork::train_step(const float* raw_input, int input_length,
     // Backward through readout
     std::vector<float> grad_current(final_c.channels * final_c.N);
     readout.backward(grad_logits.data(), final_c.activation.data(),
-                     final_c.N, grad_current.data(), learning_rate);
+                     final_c.N, grad_current.data(), learning_rate, momentum);
 
     // Backward through layers in reverse
     ci = conv_layers.size();
@@ -194,7 +194,7 @@ void HCNNNetwork::train_step(const float* raw_input, int input_length,
                                      cache[i].activation.data(),
                                      cache[i + 1].pre_act.data(),
                                      (i > 0) ? grad_prev.data() : nullptr,
-                                     learning_rate);
+                                     learning_rate, momentum);
         } else {
             --pi;
             pool_layers[pi].backward(grad_current.data(), grad_prev.data(),

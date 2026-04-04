@@ -1,4 +1,5 @@
 #include "HCNN.h"
+#include <algorithm>
 
 // Generate all bitmasks with exactly 'bits' bits set out of 'dim' total bits.
 static void generate_masks(int dim, int bits, int current_mask, int start_bit,
@@ -17,7 +18,9 @@ HCNN::HCNN(int dim, int c_in, int c_out, int radius, bool use_relu, bool use_bia
     : DIM(dim), N(1 << dim), c_in(c_in), c_out(c_out), radius(radius),
       use_relu(use_relu), use_bias(use_bias),
       kernel(c_out * c_in * (radius + 1), 0.0f),
-      bias(use_bias ? c_out : 0, 0.0f) {
+      bias(use_bias ? c_out : 0, 0.0f),
+      kernel_vel(c_out * c_in * (radius + 1), 0.0f),
+      bias_vel(use_bias ? c_out : 0, 0.0f) {
     // Precompute shell counts: C(DIM, d)
     shell_count.resize(DIM + 1);
     shell_count[0] = 1;
@@ -41,6 +44,8 @@ void HCNN::randomize_weights(float scale, std::mt19937& rng) {
     if (use_bias) {
         for (auto& b : bias) b = 0.0f;
     }
+    std::fill(kernel_vel.begin(), kernel_vel.end(), 0.0f);
+    std::fill(bias_vel.begin(), bias_vel.end(), 0.0f);
 }
 
 void HCNN::forward(const float* in, float* out, float* pre_act) const {
@@ -82,7 +87,7 @@ void HCNN::forward(const float* in, float* out, float* pre_act) const {
 }
 
 void HCNN::backward(const float* grad_out, const float* in, const float* pre_act,
-                    float* grad_in, float learning_rate) {
+                    float* grad_in, float learning_rate, float momentum) {
     // Pre-activation gradients (through activation function)
     std::vector<float> grad_pre(c_out * N);
     for (int i = 0; i < c_out * N; ++i) {
@@ -113,7 +118,7 @@ void HCNN::backward(const float* grad_out, const float* in, const float* pre_act
         }
     }
 
-    // Kernel gradient: dot product of grad_pre and precomputed input shell means
+    // Kernel update with momentum: v = mu*v + grad; w -= lr*v
     for (int co = 0; co < c_out; ++co) {
         const float* gp = grad_pre.data() + co * N;
         for (int ci = 0; ci < c_in; ++ci) {
@@ -123,12 +128,14 @@ void HCNN::backward(const float* grad_out, const float* in, const float* pre_act
                 for (int v = 0; v < N; ++v) {
                     grad_k += gp[v] * sm[v];
                 }
-                kernel[kernel_idx(co, ci, d)] -= learning_rate * grad_k;
+                int ki = kernel_idx(co, ci, d);
+                kernel_vel[ki] = momentum * kernel_vel[ki] + grad_k;
+                kernel[ki] -= learning_rate * kernel_vel[ki];
             }
         }
     }
 
-    // Bias update
+    // Bias update with momentum
     if (use_bias) {
         for (int co = 0; co < c_out; ++co) {
             float grad_b = 0.0f;
@@ -136,7 +143,8 @@ void HCNN::backward(const float* grad_out, const float* in, const float* pre_act
             for (int v = 0; v < N; ++v) {
                 grad_b += gp[v];
             }
-            bias[co] -= learning_rate * grad_b;
+            bias_vel[co] = momentum * bias_vel[co] + grad_b;
+            bias[co] -= learning_rate * bias_vel[co];
         }
     }
 }

@@ -103,7 +103,7 @@ HCNNMNISTDataset load_mnist(const std::string& images_path,
     return ds;
 }
 
-void HCNNMNISTDataset::train_epoch(HCNNNetwork& net, float learning_rate) {
+void HCNNMNISTDataset::train_epoch(HCNNNetwork& net, float learning_rate, float momentum) {
     static std::mt19937 rng(42);
     std::vector<size_t> order(samples.size());
     std::iota(order.begin(), order.end(), 0);
@@ -112,6 +112,6 @@ void HCNNMNISTDataset::train_epoch(HCNNNetwork& net, float learning_rate) {
     for (size_t i : order) {
         const auto& s = samples[i];
         net.train_step(s.input.data(), static_cast<int>(s.input.size()),
-                       s.target_class, learning_rate);
+                       s.target_class, learning_rate, momentum);
     }
 }

@@ -15,7 +15,7 @@ struct HCNNMNISTDataset {
     size_t size() const { return samples.size(); }
     const Sample& get(size_t i) const { return samples[i]; }
 
-    void train_epoch(HCNNNetwork& net, float learning_rate);
+    void train_epoch(HCNNNetwork& net, float learning_rate, float momentum = 0.0f);
 };
 
 // Factory: toy dataset (10 random samples, 16 features each)

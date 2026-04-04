@@ -1,8 +1,10 @@
 #include "HCNNReadout.h"
+#include <algorithm>
 
 HCNNReadout::HCNNReadout(int nc, int ic)
     : num_classes(nc), input_channels(ic),
-      weights(nc * ic, 0.0f), bias(nc, 0.0f) {}
+      weights(nc * ic, 0.0f), bias(nc, 0.0f),
+      weight_vel(nc * ic, 0.0f), bias_vel(nc, 0.0f) {}
 
 void HCNNReadout::randomize_weights(float scale, std::mt19937& rng) {
     std::uniform_real_distribution<float> dist(-scale, scale);
@@ -10,6 +12,8 @@ void HCNNReadout::randomize_weights(float scale, std::mt19937& rng) {
         w = dist(rng);
     }
     for (auto& b : bias) b = 0.0f;
+    std::fill(weight_vel.begin(), weight_vel.end(), 0.0f);
+    std::fill(bias_vel.begin(), bias_vel.end(), 0.0f);
 }
 
 void HCNNReadout::forward(const float* in, float* out, int N) const {
@@ -31,7 +35,7 @@ void HCNNReadout::forward(const float* in, float* out, int N) const {
 }
 
 void HCNNReadout::backward(const float* grad_logits, const float* in, int N,
-                           float* grad_in, float learning_rate) {
+                           float* grad_in, float learning_rate, float momentum) {
     std::vector<float> channel_avg(input_channels);
     for (int c = 0; c < input_channels; ++c) {
         float sum = 0.0f;
@@ -52,12 +56,16 @@ void HCNNReadout::backward(const float* grad_logits, const float* in, int N,
         }
     }
 
-    // Weight update
+    // Weight update with momentum: v = mu*v + grad; w -= lr*v
     for (int cls = 0; cls < num_classes; ++cls) {
         for (int c = 0; c < input_channels; ++c) {
-            weights[cls * input_channels + c] -= learning_rate * grad_logits[cls] * channel_avg[c];
+            int wi = cls * input_channels + c;
+            float g = grad_logits[cls] * channel_avg[c];
+            weight_vel[wi] = momentum * weight_vel[wi] + g;
+            weights[wi] -= learning_rate * weight_vel[wi];
         }
-        bias[cls] -= learning_rate * grad_logits[cls];
+        bias_vel[cls] = momentum * bias_vel[cls] + grad_logits[cls];
+        bias[cls] -= learning_rate * bias_vel[cls];
     }
 }
 

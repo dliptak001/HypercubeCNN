@@ -13,10 +13,10 @@ public:
     // Forward pass. If pre_act is non-null, stores pre-activation values for backprop.
     void forward(const float* in, float* out, float* pre_act = nullptr) const;
 
-    // Backward pass: computes grad_in and updates weights via SGD.
+    // Backward pass: computes grad_in and updates weights via SGD with optional momentum.
     // grad_in may be null if input gradients are not needed (first layer).
     void backward(const float* grad_out, const float* in, const float* pre_act,
-                  float* grad_in, float learning_rate);
+                  float* grad_in, float learning_rate, float momentum = 0.0f);
 
     // Compute gradients without applying SGD update.
     // kernel_grad must have size c_out * c_in * (radius+1).
@@ -40,6 +40,8 @@ private:
     bool use_relu, use_bias;
     std::vector<float> kernel;      // [c_out * c_in * (radius+1)]
     std::vector<float> bias;        // [c_out]
+    std::vector<float> kernel_vel;  // momentum velocity for kernel
+    std::vector<float> bias_vel;    // momentum velocity for bias
     std::vector<int> shell_count;   // [DIM+1] precomputed C(DIM, d)
 
     // Precomputed shell masks: shell_masks[d] contains all C(DIM,d) bitmasks

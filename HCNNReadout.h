@@ -12,9 +12,9 @@ public:
 
     void forward(const float* in, float* out, int N) const;
 
-    // Backward: computes grad_in (if non-null) and updates weights via SGD.
+    // Backward: computes grad_in (if non-null) and updates weights via SGD with optional momentum.
     void backward(const float* grad_logits, const float* in, int N,
-                  float* grad_in, float learning_rate);
+                  float* grad_in, float learning_rate, float momentum = 0.0f);
 
     // Compute gradients without applying SGD update.
     void compute_gradients(const float* grad_logits, const float* in, int N,
@@ -33,4 +33,6 @@ private:
     int input_channels;
     std::vector<float> weights;
     std::vector<float> bias;
+    std::vector<float> weight_vel;  // momentum velocity for weights
+    std::vector<float> bias_vel;    // momentum velocity for bias
 };
