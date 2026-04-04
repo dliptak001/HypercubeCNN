@@ -1,6 +1,7 @@
 #include "HCNNMNISTDataset.h"
 
 #include <algorithm>
+#include <numeric>
 #include <random>
 
 HCNNMNISTDataset create_toy_mnist_like_dataset() {
@@ -10,8 +11,7 @@ HCNNMNISTDataset create_toy_mnist_like_dataset() {
     for (int cls = 0; cls < 10; ++cls) {
         auto& s = ds.samples[cls];
         s.input.resize(16, -1.0f);
-        s.target.resize(10, 0.0f);
-        s.target[cls] = 1.0f;
+        s.target_class = cls;
 
         // Simple distinct pattern: class k lights up one unique position
         int hot = cls % 16;
@@ -29,6 +29,6 @@ void HCNNMNISTDataset::train_epoch(HCNNNetwork& net, float learning_rate) {
     for (size_t i : order) {
         const auto& s = samples[i];
         net.train_step(s.input.data(), static_cast<int>(s.input.size()),
-                       s.target.data(), learning_rate);
+                       s.target_class, learning_rate);
     }
 }

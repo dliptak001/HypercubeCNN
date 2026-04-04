@@ -1,18 +1,23 @@
 #pragma once
 
 #include <vector>
+#include <cstdint>
+#include <random>
 
 class HCNNReadout {
 public:
     HCNNReadout(int num_classes, int input_channels);
 
-    void set_weights(const float* w, int size);
-    void randomize_weights(float scale = 0.1f);
+    void randomize_weights(float scale, std::mt19937& rng);
 
     void forward(const float* in, float* out, int N) const;
 
-    // Minimal SGD update for training stub
-    void apply_sgd_update(const std::vector<float>& grad_logits, float learning_rate);
+    // Backward: computes grad_in (if non-null) and updates weights via SGD.
+    void backward(const float* grad_logits, const float* in, int N,
+                  float* grad_in, float learning_rate);
+
+    int get_num_classes() const { return num_classes; }
+    int get_input_channels() const { return input_channels; }
 
 private:
     int num_classes;

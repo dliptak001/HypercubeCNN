@@ -1,20 +1,12 @@
 #include "HCNNReadout.h"
 
-#include <cstdint>
-
 HCNNReadout::HCNNReadout(int nc, int ic)
     : num_classes(nc), input_channels(ic), weights(nc * ic, 0.0f) {}
 
-void HCNNReadout::set_weights(const float* w, int size) {
-    if (size != num_classes * input_channels) return;
-    for (int i = 0; i < size; ++i) weights[i] = w[i];
-}
-
-void HCNNReadout::randomize_weights(float scale) {
-    uint64_t seed = 54321;
+void HCNNReadout::randomize_weights(float scale, std::mt19937& rng) {
+    std::uniform_real_distribution<float> dist(-scale, scale);
     for (auto& w : weights) {
-        seed = seed * 6364136223846793005ULL + 1;
-        w = scale * (static_cast<float>(seed & 0xFFFF) / 32768.0f - 1.0f);
+        w = dist(rng);
     }
 }
 
@@ -36,11 +28,36 @@ void HCNNReadout::forward(const float* in, float* out, int N) const {
     }
 }
 
-void HCNNReadout::apply_sgd_update(const std::vector<float>& grad_logits, float learning_rate) {
+void HCNNReadout::backward(const float* grad_logits, const float* in, int N,
+                           float* grad_in, float learning_rate) {
+    // Recompute channel averages
+    std::vector<float> channel_avg(input_channels);
+    for (int c = 0; c < input_channels; ++c) {
+        float sum = 0.0f;
+        for (int v = 0; v < N; ++v) sum += in[c * N + v];
+        channel_avg[c] = sum / static_cast<float>(N);
+    }
+
+    // Input gradient BEFORE weight update (uses current weights)
+    // logits[cls] = sum_c(w[cls,c] * avg_c), avg_c = (1/N)*sum_v(in[c*N+v])
+    // d(logits[cls])/d(in[c*N+v]) = w[cls,c] / N
+    if (grad_in) {
+        for (int c = 0; c < input_channels; ++c) {
+            float g = 0.0f;
+            for (int cls = 0; cls < num_classes; ++cls) {
+                g += grad_logits[cls] * weights[cls * input_channels + c];
+            }
+            g /= static_cast<float>(N);
+            for (int v = 0; v < N; ++v) {
+                grad_in[c * N + v] = g;
+            }
+        }
+    }
+
+    // Weight update
     for (int cls = 0; cls < num_classes; ++cls) {
         for (int c = 0; c < input_channels; ++c) {
-            // crude but functional gradient for the minimal stub
-            weights[cls * input_channels + c] -= learning_rate * grad_logits[cls] * 0.1f;
+            weights[cls * input_channels + c] -= learning_rate * grad_logits[cls] * channel_avg[c];
         }
     }
 }

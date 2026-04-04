@@ -10,7 +10,11 @@ class HCNNPool {
 public:
     HCNNPool(int input_dim, int reduce_by, PoolType type = PoolType::MAX);
 
-    void forward(const float* in, float* out, int num_channels) const;
+    void forward(const float* in, float* out, int num_channels,
+                 std::vector<int>* max_indices = nullptr) const;
+
+    void backward(const float* grad_out, float* grad_in, int num_channels,
+                  const std::vector<int>* max_indices) const;
 
     int get_input_dim() const { return input_dim; }
     int get_output_dim() const { return output_dim; }

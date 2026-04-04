@@ -6,7 +6,7 @@
 struct HCNNMNISTDataset {
     struct Sample {
         std::vector<float> input;   // 16 scalars in [-1.0, 1.0]
-        std::vector<float> target;  // one-hot (10 classes)
+        int target_class;           // class index [0, num_classes)
     };
 
     std::vector<Sample> samples;
