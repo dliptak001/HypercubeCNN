@@ -32,13 +32,15 @@ public:
     void forward(const float* first_layer_activations, float* logits) const;
 
     void train_step(const float* raw_input, int input_length,
-                    int target_class, float learning_rate, float momentum = 0.0f);
+                    int target_class, float learning_rate, float momentum = 0.0f,
+                    float weight_decay = 0.0f);
 
     /// Mini-batch training: process batch_size samples in parallel, average
     /// gradients, then apply a single weight update. Requires ThreadPool.
     void train_batch(const float* const* inputs, const int* input_lengths,
                      const int* targets, int batch_size,
-                     float learning_rate, float momentum = 0.0f);
+                     float learning_rate, float momentum = 0.0f,
+                     float weight_decay = 0.0f);
 
     int get_start_dim() const { return start_dim; }
     int get_start_N() const { return 1 << start_dim; }

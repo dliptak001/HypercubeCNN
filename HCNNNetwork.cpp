@@ -106,7 +106,8 @@ void HCNNNetwork::forward(const float* first_layer_activations, float* logits) c
 }
 
 void HCNNNetwork::train_step(const float* raw_input, int input_length,
-                             int target_class, float learning_rate, float momentum) {
+                             int target_class, float learning_rate, float momentum,
+                             float weight_decay) {
     int N = 1 << start_dim;
     std::vector<float> embedded(N, 0.0f);
     embed_input(raw_input, input_length, embedded.data());
@@ -187,7 +188,8 @@ void HCNNNetwork::train_step(const float* raw_input, int input_length,
     // Backward through readout
     std::vector<float> grad_current(final_c.channels * final_c.N);
     readout.backward(grad_logits.data(), final_c.activation.data(),
-                     final_c.N, grad_current.data(), learning_rate, momentum);
+                     final_c.N, grad_current.data(), learning_rate, momentum,
+                     weight_decay);
 
     // Backward through layers in reverse
     ci = conv_layers.size();
@@ -202,7 +204,7 @@ void HCNNNetwork::train_step(const float* raw_input, int input_length,
                                      cache[i].activation.data(),
                                      cache[i + 1].pre_act.data(),
                                      (i > 0) ? grad_prev.data() : nullptr,
-                                     learning_rate, momentum);
+                                     learning_rate, momentum, weight_decay);
         } else {
             --pi;
             pool_layers[pi].backward(grad_current.data(), grad_prev.data(),
@@ -219,7 +221,8 @@ void HCNNNetwork::train_step(const float* raw_input, int input_length,
 // ---------------------------------------------------------------------------
 void HCNNNetwork::train_batch(const float* const* inputs, const int* input_lengths,
                               const int* targets, int batch_size,
-                              float learning_rate, float momentum) {
+                              float learning_rate, float momentum,
+                              float weight_decay) {
     if (batch_size <= 0) return;
 
     int N = 1 << start_dim;
@@ -407,7 +410,7 @@ void HCNNNetwork::train_batch(const float* const* inputs, const int* input_lengt
 
         conv_layers[ci].apply_gradients(base_kg.data(),
                                         base_bg.empty() ? nullptr : base_bg.data(),
-                                        learning_rate, momentum);
+                                        learning_rate, momentum, weight_decay);
     }
 
     // Readout
@@ -419,5 +422,6 @@ void HCNNNetwork::train_batch(const float* const* inputs, const int* input_lengt
     }
     for (auto& g : base_rw) g *= scale;
     for (auto& g : base_rb) g *= scale;
-    readout.apply_gradients(base_rw.data(), base_rb.data(), learning_rate, momentum);
+    readout.apply_gradients(base_rw.data(), base_rb.data(), learning_rate, momentum,
+                            weight_decay);
 }

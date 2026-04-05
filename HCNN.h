@@ -102,9 +102,11 @@ public:
      *                           or nullptr if not needed (e.g. first layer).
      * @param      learning_rate SGD learning rate (eta).
      * @param      momentum      SGD momentum coefficient (mu); default 0 (no momentum).
+     * @param      weight_decay  L2 regularization coefficient; default 0 (no decay).
      */
     void backward(const float* grad_out, const float* in, const float* pre_act,
-                  float* grad_in, float learning_rate, float momentum = 0.0f);
+                  float* grad_in, float learning_rate, float momentum = 0.0f,
+                  float weight_decay = 0.0f);
 
     /**
      * @brief Compute gradients without applying an SGD update.
@@ -135,9 +137,10 @@ public:
      * @param bias_grad    Averaged bias gradients [c_out], or nullptr if no bias.
      * @param learning_rate SGD learning rate.
      * @param momentum      SGD momentum coefficient.
+     * @param weight_decay  L2 regularization coefficient; default 0.
      */
     void apply_gradients(const float* kernel_grad, const float* bias_grad,
-                         float learning_rate, float momentum);
+                         float learning_rate, float momentum, float weight_decay = 0.0f);
 
     /** @name Accessors */
     ///@{

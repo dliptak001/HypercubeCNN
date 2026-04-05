@@ -40,7 +40,8 @@ void HCNNReadout::forward(const float* in, float* out, int N) const {
 }
 
 void HCNNReadout::backward(const float* grad_logits, const float* in, int N,
-                           float* grad_in, float learning_rate, float momentum) {
+                           float* grad_in, float learning_rate, float momentum,
+                           float weight_decay) {
     std::vector<float> channel_avg(input_channels);
     for (int c = 0; c < input_channels; ++c) {
         float sum = 0.0f;
@@ -61,11 +62,11 @@ void HCNNReadout::backward(const float* grad_logits, const float* in, int N,
         }
     }
 
-    // Weight update with momentum: v = mu*v + grad; w -= lr*v
+    // Weight update with momentum + L2 decay: v = mu*v + (grad + wd*w); w -= lr*v
     for (int cls = 0; cls < num_classes; ++cls) {
         for (int c = 0; c < input_channels; ++c) {
             int wi = cls * input_channels + c;
-            float g = grad_logits[cls] * channel_avg[c];
+            float g = grad_logits[cls] * channel_avg[c] + weight_decay * weights[wi];
             weight_vel[wi] = momentum * weight_vel[wi] + g;
             weights[wi] -= learning_rate * weight_vel[wi];
         }
@@ -105,10 +106,11 @@ void HCNNReadout::compute_gradients(const float* grad_logits, const float* in, i
 }
 
 void HCNNReadout::apply_gradients(const float* weight_grad, const float* bias_grad,
-                                  float learning_rate, float momentum) {
+                                  float learning_rate, float momentum, float weight_decay) {
     int total_w = num_classes * input_channels;
     for (int i = 0; i < total_w; ++i) {
-        weight_vel[i] = momentum * weight_vel[i] + weight_grad[i];
+        float g = weight_grad[i] + weight_decay * weights[i];
+        weight_vel[i] = momentum * weight_vel[i] + g;
         weights[i] -= learning_rate * weight_vel[i];
     }
     if (bias_grad) {

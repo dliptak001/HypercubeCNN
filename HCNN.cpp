@@ -100,7 +100,8 @@ void HCNN::forward(const float* in, float* out, float* pre_act) const {
 // Channel-level threading for weight gradients (tiled reduction).
 // ---------------------------------------------------------------------------
 void HCNN::backward(const float* grad_out, const float* in, const float* pre_act,
-                    float* grad_in, float learning_rate, float momentum) {
+                    float* grad_in, float learning_rate, float momentum,
+                    float weight_decay) {
     const bool use_threads = thread_pool && DIM >= THREAD_DIM_THRESHOLD;
 
     // Pre-activation gradients
@@ -155,7 +156,8 @@ void HCNN::backward(const float* grad_out, const float* in, const float* pre_act
             }
             for (int k = 0; k < K; ++k) {
                 int ki = kernel_idx(co, ci, k);
-                kernel_vel[ki] = momentum * kernel_vel[ki] + grad_k[k];
+                float g = grad_k[k] + weight_decay * kernel[ki];
+                kernel_vel[ki] = momentum * kernel_vel[ki] + g;
                 kernel[ki] -= learning_rate * kernel_vel[ki];
             }
         }
@@ -258,10 +260,11 @@ void HCNN::compute_gradients(const float* grad_out, const float* in, const float
 // apply_gradients: apply pre-computed (averaged) gradients with momentum SGD.
 // ---------------------------------------------------------------------------
 void HCNN::apply_gradients(const float* kernel_grad, const float* bias_grad,
-                           float learning_rate, float momentum) {
+                           float learning_rate, float momentum, float weight_decay) {
     int total_k = c_out * c_in * K;
     for (int i = 0; i < total_k; ++i) {
-        kernel_vel[i] = momentum * kernel_vel[i] + kernel_grad[i];
+        float g = kernel_grad[i] + weight_decay * kernel[i];
+        kernel_vel[i] = momentum * kernel_vel[i] + g;
         kernel[i] -= learning_rate * kernel_vel[i];
     }
     if (use_bias && bias_grad) {

@@ -20,7 +20,7 @@ struct HCNNMNISTDataset {
     /// Train one epoch. batch_size=1 is pure SGD, batch_size>1 uses mini-batch
     /// parallelism via the network's ThreadPool.
     void train_epoch(HCNNNetwork& net, float learning_rate, float momentum = 0.0f,
-                     int batch_size = 1);
+                     int batch_size = 1, float weight_decay = 0.0f);
 };
 
 // Factory: toy dataset (10 random samples, 16 features each)

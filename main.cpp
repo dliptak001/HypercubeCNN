@@ -4,6 +4,7 @@
 #include <cmath>
 #include <filesystem>
 #include <iostream>
+#include <numbers>
 #include <thread>
 #include <vector>
 
@@ -50,17 +51,24 @@ static void evaluate(const HCNNNetwork& net, const HCNNMNISTDataset& dataset,
 static void train_and_evaluate(const char* name, HCNNNetwork& net,
                                HCNNMNISTDataset& train_data,
                                const HCNNMNISTDataset& test_data,
-                               float lr = 0.01f, int batch_size = 32) {
+                               float lr = 0.01f, int batch_size = 32,
+                               float weight_decay = 0.0f) {
     std::cout << "\n=== " << name << " (lr=" << lr
-              << ", batch=" << batch_size << ") ===\n";
+              << ", batch=" << batch_size
+              << ", wd=" << weight_decay << ") ===\n";
     evaluate(net, test_data, "Initial test");
 
     const int epochs = 40;
     const float momentum = 0.9f;
-    float current_lr = lr;
+    const float lr_min = 1e-5f;
     for (int epoch = 0; epoch < epochs; ++epoch) {
+        // Cosine annealing: lr decays smoothly from lr to lr_min
+        float progress = static_cast<float>(epoch) / static_cast<float>(epochs);
+        float current_lr = lr_min + 0.5f * (lr - lr_min)
+                           * (1.0f + std::cos(static_cast<float>(std::numbers::pi) * progress));
+
         auto t0 = std::chrono::steady_clock::now();
-        train_data.train_epoch(net, current_lr, momentum, batch_size);
+        train_data.train_epoch(net, current_lr, momentum, batch_size, weight_decay);
         auto t1 = std::chrono::steady_clock::now();
         double secs = std::chrono::duration<double>(t1 - t0).count();
 
@@ -68,11 +76,6 @@ static void train_and_evaluate(const char* name, HCNNNetwork& net,
         evaluate(net, test_data, label.c_str());
         std::cout << "  (lr=" << current_lr << ", " << secs << "s, "
                   << train_data.size() / secs << " samples/s)\n";
-
-        // Halve LR every 5 epochs
-        if ((epoch + 1) % 5 == 0) {
-            current_lr *= 0.5f;
-        }
     }
 }
 
@@ -90,15 +93,17 @@ int main() {
               << "Test: " << test_data.size() << " samples\n";
 
     HCNNNetwork net(10);               // auto-detect thread count
-    net.add_conv(16, true, true);         // 1->16 ch,  K=10 (DIM=10)
-    net.add_pool(PoolType::MAX);          // DIM 10->9, N 1024->512
-    net.add_conv(32, true, true);         // 16->32 ch, K=9  (DIM=9)
-    net.add_pool(PoolType::MAX);          // DIM 9->8,  N 512->256
-    net.add_conv(64, true, true);         // 32->64 ch, K=8  (DIM=8)
-    net.add_pool(PoolType::MAX);          // DIM 8->7,  N 256->128
+    net.add_conv(32, true, true);         // 1->32 ch,   K=10 (DIM=10)
+    net.add_pool(PoolType::MAX);          // DIM 10->9,  N 1024->512
+    net.add_conv(64, true, true);         // 32->64 ch,  K=9  (DIM=9)
+    net.add_pool(PoolType::MAX);          // DIM 9->8,   N 512->256
+    net.add_conv(128, true, true);        // 64->128 ch, K=8  (DIM=8)
+    net.add_pool(PoolType::MAX);          // DIM 8->7,   N 256->128
+    net.add_conv(128, true, true);        // 128->128 ch, K=7  (DIM=7)
+    net.add_pool(PoolType::MAX);          // DIM 7->6,   N 128->64
     net.randomize_all_weights();          // Xavier/Glorot init
     std::cout << "Threads: " << std::thread::hardware_concurrency() << "\n";
-    train_and_evaluate("HCNN", net, train_data, test_data, 0.04f, 32);
+    train_and_evaluate("HCNN", net, train_data, test_data, 0.06f, 32, 1e-4f);
 
     return 0;
 }

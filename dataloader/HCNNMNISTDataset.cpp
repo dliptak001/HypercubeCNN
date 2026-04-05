@@ -104,7 +104,8 @@ HCNNMNISTDataset load_mnist(const std::string& images_path,
 }
 
 void HCNNMNISTDataset::train_epoch(HCNNNetwork& net, float learning_rate,
-                                   float momentum, int batch_size) {
+                                   float momentum, int batch_size,
+                                   float weight_decay) {
     std::vector<size_t> order(samples.size());
     std::iota(order.begin(), order.end(), 0);
     std::shuffle(order.begin(), order.end(), rng);
@@ -114,7 +115,7 @@ void HCNNMNISTDataset::train_epoch(HCNNNetwork& net, float learning_rate,
         for (size_t i : order) {
             const auto& s = samples[i];
             net.train_step(s.input.data(), static_cast<int>(s.input.size()),
-                           s.target_class, learning_rate, momentum);
+                           s.target_class, learning_rate, momentum, weight_decay);
         }
     } else {
         // Mini-batch SGD — process batch_size samples in parallel
@@ -133,7 +134,7 @@ void HCNNMNISTDataset::train_epoch(HCNNNetwork& net, float learning_rate,
             }
             net.train_batch(batch_inputs.data(), batch_lengths.data(),
                             batch_targets.data(), actual,
-                            learning_rate, momentum);
+                            learning_rate, momentum, weight_decay);
         }
     }
 }
