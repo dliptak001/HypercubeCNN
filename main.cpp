@@ -90,15 +90,15 @@ int main() {
               << "Test: " << test_data.size() << " samples\n";
 
     HCNNNetwork net(10);               // auto-detect thread count
-    net.add_conv(16, true, true);     // 1->16 ch,  K=18 (DIM=10, shell+nn)
-    net.add_pool(PoolType::MAX);      // DIM 10->9, N 1024->512
-    net.add_conv(32, true, true);     // 16->32 ch, K=16 (DIM=9, shell+nn)
-    net.add_pool(PoolType::MAX);      // DIM 9->8,  N 512->256
-    net.add_conv(64, true, true);     // 32->64 ch, K=14 (DIM=8, shell+nn)
-    net.add_pool(PoolType::MAX);      // DIM 8->7,  N 256->128
-    net.randomize_all_weights();  // He init
+    net.add_conv(16, true, true, false);  // 1->16 ch,  K=10 (DIM=10, nn-only)
+    net.add_pool(PoolType::MAX);          // DIM 10->9, N 1024->512
+    net.add_conv(32, true, true, false);  // 16->32 ch, K=9  (DIM=9, nn-only)
+    net.add_pool(PoolType::MAX);          // DIM 9->8,  N 512->256
+    net.add_conv(64, true, true, false);  // 32->64 ch, K=8  (DIM=8, nn-only)
+    net.add_pool(PoolType::MAX);          // DIM 8->7,  N 256->128
+    net.randomize_all_weights();          // Xavier/Glorot init
     std::cout << "Threads: " << std::thread::hardware_concurrency() << "\n";
-    train_and_evaluate("HCNN", net, train_data, test_data, 0.16f, 32);
+    train_and_evaluate("HCNN", net, train_data, test_data, 0.04f, 32);
 
     return 0;
 }

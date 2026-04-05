@@ -1,6 +1,6 @@
 /// Comparison test: shell+nn masks (K=2*DIM-2) vs nn-only (K=DIM).
-/// Trains two identical architectures on MNIST for a few epochs,
-/// prints per-epoch timing and test accuracy side by side.
+/// Tests multiple LR schedules to find nn-only configuration that matches
+/// full-mask convergence speed while retaining the wall-clock speedup.
 
 #include "HCNNNetwork.h"
 #include "dataloader/HCNNMNISTDataset.h"
@@ -51,19 +51,42 @@ static EvalResult evaluate(const HCNNNetwork& net, const HCNNMNISTDataset& datas
 }
 
 struct RunResult {
+    std::string label;
     std::vector<double> epoch_secs;
     std::vector<float> epoch_acc;
     std::vector<float> epoch_loss;
+    std::vector<float> epoch_lr;
 };
 
-static RunResult train_and_eval(const char* label, HCNNNetwork& net,
-                                HCNNMNISTDataset& train_data,
+/// LR schedule types
+enum class LRSchedule { STEP_DECAY, WARMUP_STEP_DECAY };
+
+struct RunConfig {
+    const char* label;
+    bool use_shell_masks;
+    float start_lr;
+    LRSchedule schedule;
+    int warmup_epochs;     // only used for WARMUP_STEP_DECAY
+    float peak_lr;         // only used for WARMUP_STEP_DECAY
+};
+
+static RunResult train_and_eval(RunConfig cfg, HCNNMNISTDataset& train_data,
                                 const HCNNMNISTDataset& test_data,
-                                float lr, int batch_size, int epochs) {
+                                int batch_size, int epochs) {
+    HCNNNetwork net(10);
+    net.add_conv(16, true, true, cfg.use_shell_masks);
+    net.add_pool(PoolType::MAX);
+    net.add_conv(32, true, true, cfg.use_shell_masks);
+    net.add_pool(PoolType::MAX);
+    net.add_conv(64, true, true, cfg.use_shell_masks);
+    net.add_pool(PoolType::MAX);
+    net.randomize_all_weights();
+
     RunResult result;
+    result.label = cfg.label;
 
     // Print K per conv layer
-    std::cout << label << ": ";
+    std::cout << cfg.label << ": ";
     for (size_t i = 0; i < net.get_num_conv(); ++i) {
         if (i > 0) std::cout << ", ";
         std::cout << "conv" << i << ".K=" << net.get_conv(i).get_K();
@@ -73,10 +96,29 @@ static RunResult train_and_eval(const char* label, HCNNNetwork& net,
     auto r0 = evaluate(net, test_data);
     std::cout << "  init  loss=" << r0.loss << "  acc=" << r0.accuracy << "%\n";
 
-    float current_lr = lr;
     for (int epoch = 0; epoch < epochs; ++epoch) {
+        // Compute LR for this epoch
+        float lr;
+        if (cfg.schedule == LRSchedule::WARMUP_STEP_DECAY) {
+            if (epoch < cfg.warmup_epochs) {
+                // Linear warmup from start_lr to peak_lr
+                float t = static_cast<float>(epoch + 1) / static_cast<float>(cfg.warmup_epochs);
+                lr = cfg.start_lr + t * (cfg.peak_lr - cfg.start_lr);
+            } else {
+                // Step decay from peak_lr, halving every 5 epochs after warmup
+                lr = cfg.peak_lr;
+                int decay_steps = (epoch - cfg.warmup_epochs) / 5;
+                for (int d = 0; d < decay_steps; ++d) lr *= 0.5f;
+            }
+        } else {
+            // Simple step decay: halve every 5 epochs
+            lr = cfg.start_lr;
+            int decay_steps = epoch / 5;
+            for (int d = 0; d < decay_steps; ++d) lr *= 0.5f;
+        }
+
         auto t0 = std::chrono::steady_clock::now();
-        train_data.train_epoch(net, current_lr, 0.9f, batch_size);
+        train_data.train_epoch(net, lr, 0.9f, batch_size);
         auto t1 = std::chrono::steady_clock::now();
         double secs = std::chrono::duration<double>(t1 - t0).count();
 
@@ -84,11 +126,10 @@ static RunResult train_and_eval(const char* label, HCNNNetwork& net,
         result.epoch_secs.push_back(secs);
         result.epoch_acc.push_back(r.accuracy);
         result.epoch_loss.push_back(r.loss);
+        result.epoch_lr.push_back(lr);
 
-        std::cout << "  ep " << (epoch + 1) << "  loss=" << r.loss
-                  << "  acc=" << r.accuracy << "%  " << secs << "s\n";
-
-        if ((epoch + 1) % 5 == 0) current_lr *= 0.5f;
+        printf("  ep %2d  loss=%.4f  acc=%5.1f%%  lr=%.4f  %.2fs\n",
+               epoch + 1, r.loss, r.accuracy, lr, secs);
     }
     return result;
 }
@@ -104,56 +145,92 @@ int main() {
                                  (data_dir / "t10k-labels-idx1-ubyte").string(), 2000);
     std::cout << "Train: " << train_data.size() << "  Test: " << test_data.size() << "\n\n";
 
-    const float lr = 0.16f;
     const int batch_size = 32;
     const int epochs = 20;
 
-    // --- Run A: full masks (shell + nn) ---
-    HCNNNetwork net_full(10);
-    net_full.add_conv(16, true, true, true);   // K=18
-    net_full.add_pool(PoolType::MAX);
-    net_full.add_conv(32, true, true, true);   // K=16
-    net_full.add_pool(PoolType::MAX);
-    net_full.add_conv(64, true, true, true);   // K=14
-    net_full.add_pool(PoolType::MAX);
-    net_full.randomize_all_weights();          // He init
+    // --- Configurations to compare ---
+    std::vector<RunConfig> configs = {
+        // Baseline: full masks with original LR
+        { "A: Full  lr=0.16 step",    true,  0.16f, LRSchedule::STEP_DECAY, 0, 0.0f },
+        // NN-only with same LR (shows plateau)
+        { "B: NN    lr=0.16 step",    false, 0.16f, LRSchedule::STEP_DECAY, 0, 0.0f },
+        // NN-only with lower starting LR
+        { "C: NN    lr=0.04 step",    false, 0.04f, LRSchedule::STEP_DECAY, 0, 0.0f },
+        // NN-only with warmup: start low, ramp to 0.16 over 3 epochs, then decay
+        { "D: NN    warmup->0.16",    false, 0.01f, LRSchedule::WARMUP_STEP_DECAY, 3, 0.16f },
+        // NN-only with warmup: start low, ramp to 0.08 over 3 epochs, then decay
+        { "E: NN    warmup->0.08",    false, 0.01f, LRSchedule::WARMUP_STEP_DECAY, 3, 0.08f },
+    };
 
-    auto result_full = train_and_eval("FULL (shell+nn)", net_full,
-                                      train_data, test_data, lr, batch_size, epochs);
-
-    std::cout << "\n";
-
-    // --- Run B: nn-only masks ---
-    HCNNNetwork net_nn(10);
-    net_nn.add_conv(16, true, true, false);    // K=10
-    net_nn.add_pool(PoolType::MAX);
-    net_nn.add_conv(32, true, true, false);    // K=9
-    net_nn.add_pool(PoolType::MAX);
-    net_nn.add_conv(64, true, true, false);    // K=8
-    net_nn.add_pool(PoolType::MAX);
-    net_nn.randomize_all_weights();            // He init
-
-    auto result_nn = train_and_eval("NN-ONLY", net_nn,
-                                    train_data, test_data, lr, batch_size, epochs);
-
-    // --- Summary ---
-    std::cout << "\n=== COMPARISON SUMMARY ===\n";
-    std::cout << "Epoch  Full_acc  NN_acc   Full_s  NN_s   Speedup\n";
-    double total_full = 0, total_nn = 0;
-    for (int i = 0; i < epochs; ++i) {
-        double spd = result_full.epoch_secs[i] / result_nn.epoch_secs[i];
-        total_full += result_full.epoch_secs[i];
-        total_nn += result_nn.epoch_secs[i];
-        printf("  %2d   %5.1f%%   %5.1f%%   %5.2fs  %5.2fs  %.2fx\n",
-               i + 1,
-               result_full.epoch_acc[i], result_nn.epoch_acc[i],
-               result_full.epoch_secs[i], result_nn.epoch_secs[i], spd);
+    std::vector<RunResult> results;
+    for (auto& cfg : configs) {
+        results.push_back(train_and_eval(cfg, train_data, test_data, batch_size, epochs));
+        std::cout << "\n";
     }
-    printf("\nTotal: full=%.1fs  nn=%.1fs  speedup=%.2fx\n",
-           total_full, total_nn, total_full / total_nn);
-    printf("Final: full=%.1f%%  nn=%.1f%%  delta=%+.1f%%\n",
-           result_full.epoch_acc.back(), result_nn.epoch_acc.back(),
-           result_full.epoch_acc.back() - result_nn.epoch_acc.back());
+
+    // --- Summary table ---
+    std::cout << "=== COMPARISON SUMMARY ===\n";
+    printf("%-24s", "Epoch");
+    for (auto& r : results) printf("  %s", r.label.c_str());
+    printf("\n");
+
+    for (int i = 0; i < epochs; ++i) {
+        printf("  %2d  ", i + 1);
+        for (auto& r : results) {
+            printf("  %5.1f%% %5.1fs", r.epoch_acc[i], r.epoch_secs[i]);
+        }
+        printf("\n");
+    }
+
+    // Totals
+    printf("\n%-24s", "Total time");
+    for (auto& r : results) {
+        double total = 0;
+        for (auto s : r.epoch_secs) total += s;
+        printf("  %8.1fs     ", total);
+    }
+
+    printf("\n%-24s", "Final accuracy");
+    for (auto& r : results) {
+        printf("  %8.1f%%     ", r.epoch_acc.back());
+    }
+
+    printf("\n%-24s", "Best accuracy");
+    for (auto& r : results) {
+        float best = 0;
+        for (auto a : r.epoch_acc) if (a > best) best = a;
+        printf("  %8.1f%%     ", best);
+    }
+
+    printf("\n%-24s", "Epochs to 80%%");
+    for (auto& r : results) {
+        int ep = -1;
+        for (int i = 0; i < epochs; ++i) {
+            if (r.epoch_acc[i] >= 80.0f) { ep = i + 1; break; }
+        }
+        if (ep > 0) printf("  %8d      ", ep);
+        else printf("       n/a      ");
+    }
+
+    printf("\n%-24s", "Epochs to 90%%");
+    for (auto& r : results) {
+        int ep = -1;
+        for (int i = 0; i < epochs; ++i) {
+            if (r.epoch_acc[i] >= 90.0f) { ep = i + 1; break; }
+        }
+        if (ep > 0) printf("  %8d      ", ep);
+        else printf("       n/a      ");
+    }
+
+    printf("\n%-24s", "Speedup vs A");
+    double total_a = 0;
+    for (auto s : results[0].epoch_secs) total_a += s;
+    for (auto& r : results) {
+        double total = 0;
+        for (auto s : r.epoch_secs) total += s;
+        printf("  %8.2fx     ", total_a / total);
+    }
+    printf("\n");
 
     return 0;
 }
