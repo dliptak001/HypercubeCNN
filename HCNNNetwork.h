@@ -14,10 +14,13 @@ public:
     HCNNNetwork(int start_dim, int num_classes = 10, size_t num_threads = 0);
     ~HCNNNetwork();
 
-    void add_conv(int c_out, bool use_relu = true, bool use_bias = true);
+    void add_conv(int c_out, bool use_relu = true, bool use_bias = true,
+                  bool use_shell_masks = true);
     void add_pool(PoolType type = PoolType::MAX);
 
-    void randomize_all_weights(float scale = 0.1f);
+    /// Initialize all weights.  scale > 0: uniform [-scale, +scale].
+    /// scale <= 0 (default): Xavier/Glorot uniform per layer.
+    void randomize_all_weights(float scale = 0.0f);
 
     void embed_input(const float* raw_input, int input_length,
                      float* first_layer_activations) const;

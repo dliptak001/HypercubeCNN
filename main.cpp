@@ -55,7 +55,7 @@ static void train_and_evaluate(const char* name, HCNNNetwork& net,
               << ", batch=" << batch_size << ") ===\n";
     evaluate(net, test_data, "Initial test");
 
-    const int epochs = 15;
+    const int epochs = 40;
     const float momentum = 0.9f;
     float current_lr = lr;
     for (int epoch = 0; epoch < epochs; ++epoch) {
@@ -83,18 +83,20 @@ int main() {
 
     std::cout << "Loading MNIST from " << data_dir << "...\n";
     auto train_data = load_mnist((data_dir / "train-images-idx3-ubyte").string(),
-                                 (data_dir / "train-labels-idx1-ubyte").string(), 10000);
+                                 (data_dir / "train-labels-idx1-ubyte").string(), 60000);
     auto test_data = load_mnist((data_dir / "t10k-images-idx3-ubyte").string(),
-                                (data_dir / "t10k-labels-idx1-ubyte").string(), 1000);
+                                (data_dir / "t10k-labels-idx1-ubyte").string(), 10000);
     std::cout << "Train: " << train_data.size() << " samples, "
               << "Test: " << test_data.size() << " samples\n";
 
     HCNNNetwork net(10);               // auto-detect thread count
-    net.add_conv(16, true, true);     // K=18 (DIM=10)
+    net.add_conv(16, true, true);     // 1->16 ch,  K=18 (DIM=10, shell+nn)
     net.add_pool(PoolType::MAX);      // DIM 10->9, N 1024->512
-    net.add_pool(PoolType::MAX);      // DIM 9->8, N 512->256
-    net.add_conv(32, true, true);     // K=14 (DIM=8)
-    net.randomize_all_weights(0.1f);
+    net.add_conv(32, true, true);     // 16->32 ch, K=16 (DIM=9, shell+nn)
+    net.add_pool(PoolType::MAX);      // DIM 9->8,  N 512->256
+    net.add_conv(64, true, true);     // 32->64 ch, K=14 (DIM=8, shell+nn)
+    net.add_pool(PoolType::MAX);      // DIM 8->7,  N 256->128
+    net.randomize_all_weights();  // He init
     std::cout << "Threads: " << std::thread::hardware_concurrency() << "\n";
     train_and_evaluate("HCNN", net, train_data, test_data, 0.16f, 32);
 

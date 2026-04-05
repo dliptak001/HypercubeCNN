@@ -38,7 +38,7 @@ HypercubeCNN performs convolutions on binary hypercubes using Hamming distance i
 `HCNNNetwork` orchestrates the full forward pass:
 
 1. **Input embedding** — maps flat scalar arrays onto `N = 2^DIM` hypercube vertices (Direct Linear Assignment). Values must be in [-1.0, 1.0].
-2. **Conv layers (`HCNN`)** — sparse-vertex convolution using K = 2*DIM - 2 fixed XOR masks per vertex. Each output vertex = weighted sum of K specific neighbors (DIM nearest-neighbor single-bit flips + DIM-2 cumulative shell masks from HypercubeRC Reservoir). Kernel shape: `[c_out * c_in * K]`.
+2. **Conv layers (`HCNN`)** — sparse-vertex convolution using K fixed XOR masks per vertex. With shell masks enabled (default), K = 2*DIM - 2 (DIM nearest-neighbor single-bit flips + DIM-2 cumulative shell masks from HypercubeRC Reservoir). With shell masks disabled (`use_shell_masks=false`), K = DIM (nearest-neighbor only, ~44% FLOP reduction at DIM=10). Kernel shape: `[c_out * c_in * K]`.
 3. **Pool layers (`HCNNPool`)** — antipodal pooling: pairs each vertex `v` with its bitwise complement `v ^ (2^DIM - 1)`, the maximally distant vertex. Reduces DIM by 1 per layer. Lower-half vertex survives. MAX or AVG reduction.
 4. **Readout (`HCNNReadout`)** — global average per channel → linear layer → class logits.
 

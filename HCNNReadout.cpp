@@ -1,5 +1,6 @@
 #include "HCNNReadout.h"
 #include <algorithm>
+#include <cmath>
 
 HCNNReadout::HCNNReadout(int nc, int ic)
     : num_classes(nc), input_channels(ic),
@@ -7,6 +8,10 @@ HCNNReadout::HCNNReadout(int nc, int ic)
       weight_vel(nc * ic, 0.0f), bias_vel(nc, 0.0f) {}
 
 void HCNNReadout::randomize_weights(float scale, std::mt19937& rng) {
+    // Xavier/Glorot uniform for the linear layer.
+    if (scale <= 0.0f) {
+        scale = std::sqrt(6.0f / static_cast<float>(input_channels + num_classes));
+    }
     std::uniform_real_distribution<float> dist(-scale, scale);
     for (auto& w : weights) {
         w = dist(rng);

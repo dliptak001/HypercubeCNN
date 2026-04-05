@@ -10,13 +10,16 @@
  *
  *   out_co(v) = b_co + sum over (ci, k) of w[co,ci,k] * in[ci, v ^ masks[k]]
  *
- * where masks[k] is one of K = 2*DIM - 2 fixed XOR masks selecting specific
- * neighbor vertices.  The mask set comprises:
+ * where masks[k] is one of K fixed XOR masks selecting specific neighbor
+ * vertices.  With shell masks enabled (default), K = 2*DIM - 2:
  *   - DIM - 2 shell masks: (1 << (i+1)) - 1 for i in [0, DIM-3],
  *     giving cumulative-bit patterns 3, 7, 15, ... that span distances 2
  *     through DIM-1.
  *   - DIM nearest-neighbor masks: 1 << i for i in [0, DIM-1],
  *     giving single-bit flips at Hamming distance 1.
+ *
+ * With shell masks disabled, K = DIM (nearest-neighbor only), giving a
+ * ~44% FLOP reduction at DIM=10.
  *
  * This connectivity pattern is imported from the HypercubeRC Reservoir class.
  * Each mask selects exactly one neighbor per vertex; each gets its own learned
@@ -50,26 +53,36 @@ public:
     /**
      * @brief Construct a hypercube convolutional layer.
      *
-     * Builds the K = 2*DIM - 2 XOR mask table (shell masks + nearest-neighbor
-     * masks).  Kernel and bias weights are initialized to zero; call
-     * randomize_weights() before training.
+     * Builds the XOR mask table.  When use_shell_masks is true,
+     * K = 2*DIM - 2 (shell + nearest-neighbor masks); when false,
+     * K = DIM (nearest-neighbor only).  Kernel and bias weights are
+     * initialized to zero; call randomize_weights() before training.
      *
-     * Requires dim >= 3 so that K >= 4 (at least one shell mask exists).
+     * Requires dim >= 3 so that K >= 3.
      *
-     * @param dim      Hypercube dimension.  The layer operates on N = 2^dim vertices.
-     * @param c_in     Number of input channels.
-     * @param c_out    Number of output channels (filters).
-     * @param use_relu If true, apply ReLU activation after convolution (default: true).
-     * @param use_bias If true, add a learnable per-output-channel bias (default: true).
+     * @param dim              Hypercube dimension.  The layer operates on N = 2^dim vertices.
+     * @param c_in             Number of input channels.
+     * @param c_out            Number of output channels (filters).
+     * @param use_relu         If true, apply ReLU activation after convolution (default: true).
+     * @param use_bias         If true, add a learnable per-output-channel bias (default: true).
+     * @param use_shell_masks  If true (default), include DIM-2 shell masks giving
+     *                         K = 2*DIM - 2.  If false, use only DIM nearest-neighbor
+     *                         masks giving K = DIM (~44% FLOP reduction at DIM=10).
      */
-    HCNN(int dim, int c_in, int c_out, bool use_relu = true, bool use_bias = true);
+    HCNN(int dim, int c_in, int c_out, bool use_relu = true, bool use_bias = true,
+         bool use_shell_masks = true);
 
     /**
-     * @brief Initialize kernel weights to uniform random values in [-scale, +scale].
+     * @brief Initialize kernel weights.
+     *
+     * When scale > 0, uses uniform random values in [-scale, +scale].
+     * When scale <= 0, uses Xavier/Glorot uniform initialization:
+     * [-s, +s] where s = sqrt(6 / (fan_in + fan_out)),
+     * fan_in = c_in * K, fan_out = c_out * K.
      *
      * Biases are reset to zero.  Momentum velocity buffers are cleared.
      *
-     * @param scale  Half-width of the uniform initialization range.
+     * @param scale  Half-width of the uniform range, or <= 0 for Xavier init.
      * @param rng    Mersenne Twister PRNG instance (caller-owned).
      */
     void randomize_weights(float scale, std::mt19937& rng);
@@ -148,7 +161,7 @@ public:
     int get_N() const { return N; }           ///< Vertex count (2^DIM).
     int get_c_in() const { return c_in; }     ///< Number of input channels.
     int get_c_out() const { return c_out; }   ///< Number of output channels.
-    int get_K() const { return K; }           ///< Number of connection masks (2*DIM - 2).
+    int get_K() const { return K; }           ///< Number of connection masks (DIM or 2*DIM - 2).
     ///@}
 
     /// Set the thread pool for parallel execution (nullptr = single-threaded).
@@ -167,9 +180,10 @@ private:
     int N;            ///< Number of vertices, always 2^DIM.
     int c_in;         ///< Input channel count.
     int c_out;        ///< Output channel count (number of filters).
-    int K;            ///< Number of connection masks, always 2*DIM - 2.
+    int K;            ///< Number of connection masks (DIM or 2*DIM - 2).
     bool use_relu;    ///< Whether ReLU activation is applied after convolution.
     bool use_bias;    ///< Whether a learnable bias term is added per output channel.
+    bool use_shell_masks; ///< Whether shell masks are included (K = 2*DIM-2 vs K = DIM).
 
     std::vector<float> kernel;          ///< Kernel weights, layout [c_out * c_in * K].
     std::vector<float> bias;            ///< Per-output-channel bias, size c_out (empty if bias disabled).
@@ -181,7 +195,7 @@ private:
     /**
      * @brief Fixed XOR masks for sparse-vertex neighbor selection.
      *
-     * K = 2*DIM - 2 masks total.  The first DIM-2 entries are shell masks
+     * K masks total (DIM or 2*DIM-2).  When shell masks are enabled, the first DIM-2 entries are shell masks
      * (cumulative-bit patterns 3, 7, 15, ...) spanning Hamming distances
      * 2 through DIM-1.  The remaining DIM entries are nearest-neighbor masks
      * (single-bit flips 1, 2, 4, ...) at Hamming distance 1.

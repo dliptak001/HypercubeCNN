@@ -13,9 +13,10 @@ HCNNNetwork::HCNNNetwork(int dim, int num_classes, size_t num_threads)
 
 HCNNNetwork::~HCNNNetwork() = default;
 
-void HCNNNetwork::add_conv(int c_out, bool use_relu, bool use_bias) {
+void HCNNNetwork::add_conv(int c_out, bool use_relu, bool use_bias,
+                           bool use_shell_masks) {
     int c_in = channel_counts.back();
-    conv_layers.emplace_back(current_dim, c_in, c_out, use_relu, use_bias);
+    conv_layers.emplace_back(current_dim, c_in, c_out, use_relu, use_bias, use_shell_masks);
     conv_layers.back().set_thread_pool(thread_pool.get());
     channel_counts.push_back(c_out);
     is_conv_layer.push_back(true);

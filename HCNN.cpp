@@ -1,34 +1,46 @@
 #include "HCNN.h"
 #include "ThreadPool.h"
 #include <algorithm>
+#include <cmath>
 #include <stdexcept>
 
 // Minimum DIM at which per-layer threading kicks in.
 // Below this, fork-join overhead exceeds the per-vertex work.
 static constexpr int THREAD_DIM_THRESHOLD = 12;
 
-HCNN::HCNN(int dim, int c_in, int c_out, bool use_relu, bool use_bias)
+HCNN::HCNN(int dim, int c_in, int c_out, bool use_relu, bool use_bias,
+           bool use_shell_masks)
     : DIM(dim), N(1 << dim), c_in(c_in), c_out(c_out),
-      K(2 * dim - 2),
-      use_relu(use_relu), use_bias(use_bias),
+      K(use_shell_masks ? 2 * dim - 2 : dim),
+      use_relu(use_relu), use_bias(use_bias), use_shell_masks(use_shell_masks),
       kernel(c_out * c_in * K, 0.0f),
       bias(use_bias ? c_out : 0, 0.0f),
       kernel_vel(c_out * c_in * K, 0.0f),
       bias_vel(use_bias ? c_out : 0, 0.0f) {
     if (DIM < 3) {
-        throw std::runtime_error("HCNN requires DIM >= 3 (K = 2*DIM-2 must be >= 4)");
+        throw std::runtime_error("HCNN requires DIM >= 3");
     }
 
     masks.resize(K);
-    for (int i = 0; i < DIM - 2; ++i) {
-        masks[i] = (1u << (i + 1)) - 1;
+    int idx = 0;
+    if (use_shell_masks) {
+        for (int i = 0; i < DIM - 2; ++i) {
+            masks[idx++] = (1u << (i + 1)) - 1;
+        }
     }
     for (int i = 0; i < DIM; ++i) {
-        masks[DIM - 2 + i] = 1u << i;
+        masks[idx++] = 1u << i;
     }
 }
 
 void HCNN::randomize_weights(float scale, std::mt19937& rng) {
+    // Xavier/Glorot uniform: scale = sqrt(6 / (fan_in + fan_out)).
+    // fan_in = c_in * K, fan_out = c_out * K.
+    if (scale <= 0.0f) {
+        float fan_in  = static_cast<float>(c_in * K);
+        float fan_out = static_cast<float>(c_out * K);
+        scale = std::sqrt(6.0f / (fan_in + fan_out));
+    }
     std::uniform_real_distribution<float> dist(-scale, scale);
     for (auto& w : kernel) w = dist(rng);
     if (use_bias) {
