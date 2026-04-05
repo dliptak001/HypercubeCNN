@@ -14,8 +14,7 @@ public:
     HCNNNetwork(int start_dim, int num_classes = 10, size_t num_threads = 0);
     ~HCNNNetwork();
 
-    void add_conv(int c_out, bool use_relu = true, bool use_bias = true,
-                  bool use_shell_masks = true);
+    void add_conv(int c_out, bool use_relu = true, bool use_bias = true);
     void add_pool(PoolType type = PoolType::MAX);
 
     /// Initialize all weights.  scale > 0: uniform [-scale, +scale].

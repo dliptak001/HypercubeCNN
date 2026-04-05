@@ -8,11 +8,10 @@
 // Below this, fork-join overhead exceeds the per-vertex work.
 static constexpr int THREAD_DIM_THRESHOLD = 12;
 
-HCNN::HCNN(int dim, int c_in, int c_out, bool use_relu, bool use_bias,
-           bool use_shell_masks)
+HCNN::HCNN(int dim, int c_in, int c_out, bool use_relu, bool use_bias)
     : DIM(dim), N(1 << dim), c_in(c_in), c_out(c_out),
-      K(use_shell_masks ? 2 * dim - 2 : dim),
-      use_relu(use_relu), use_bias(use_bias), use_shell_masks(use_shell_masks),
+      K(dim),
+      use_relu(use_relu), use_bias(use_bias),
       kernel(c_out * c_in * K, 0.0f),
       bias(use_bias ? c_out : 0, 0.0f),
       kernel_vel(c_out * c_in * K, 0.0f),
@@ -21,15 +20,10 @@ HCNN::HCNN(int dim, int c_in, int c_out, bool use_relu, bool use_bias,
         throw std::runtime_error("HCNN requires DIM >= 3");
     }
 
+    // Nearest-neighbor masks: single-bit flips at Hamming distance 1.
     masks.resize(K);
-    int idx = 0;
-    if (use_shell_masks) {
-        for (int i = 0; i < DIM - 2; ++i) {
-            masks[idx++] = (1u << (i + 1)) - 1;
-        }
-    }
     for (int i = 0; i < DIM; ++i) {
-        masks[idx++] = 1u << i;
+        masks[i] = 1u << i;
     }
 }
 
