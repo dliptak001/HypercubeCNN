@@ -20,6 +20,10 @@ public:
     void compute_gradients(const float* grad_logits, const float* in, int N,
                            float* grad_in, float* weight_grad, float* bias_grad) const;
 
+    // Apply externally computed (averaged) gradients via momentum SGD.
+    void apply_gradients(const float* weight_grad, const float* bias_grad,
+                         float learning_rate, float momentum);
+
     int get_num_classes() const { return num_classes; }
     int get_input_channels() const { return input_channels; }
 

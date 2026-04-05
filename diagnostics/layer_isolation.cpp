@@ -23,7 +23,7 @@ static int argmax(const float* v, int n) {
 
 // Test 1: Minimal network — single conv + readout, no pool.
 static void test_single_conv() {
-    std::cout << "\n=== Test 2: Single conv layer + readout (no pool) ===\n";
+    std::cout << "\n=== Test 1: Single conv layer + readout (no pool) ===\n";
 
     HCNNNetwork net(4);  // DIM=4, N=16 — matches toy data exactly
     net.add_conv(8, true, true);

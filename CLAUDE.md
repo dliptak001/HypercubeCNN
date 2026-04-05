@@ -55,8 +55,17 @@ All executables link against `HypercubeCNNCore` (static library). Sources live i
 
 Diagnostic, example, and test targets (empty placeholders in `diagnostics/`, `examples/`, `tests/`) will follow the same pattern: link `HypercubeCNNCore`, never compile core sources directly.
 
+### Threading
+
+`ThreadPool.h` is a header-only fork-join thread pool (from HypercubeHopfield). `HCNNNetwork` owns a `ThreadPool` instance; thread count is auto-detected or caller-specified.
+
+Two threading strategies coexist:
+
+- **Mini-batch parallelism** (`train_batch`): samples in a batch run forward+backward in parallel, gradients accumulate per-thread, then reduce and apply. This is the primary training speedup. Per-layer vertex threading is disabled during batch ForEach to prevent nested reentrancy deadlock.
+- **Per-layer vertex threading** (`HCNN::forward`/`backward`): parallelizes the inner vertex loop within each output channel. Only activates at DIM >= 12 (`THREAD_DIM_THRESHOLD` in HCNN.cpp). Used for inference and single-sample training.
+
 ### Key constraints
 
-- **OpenMP stays out of the core library.** Only diagnostic/sweep targets may use it.
+- **No OpenMP.** Threading uses `ThreadPool` (pure C++ `std::thread`).
 - **No external dependencies** in core. Everything is flat arrays and standard C++23.
 - The `dataloader/` directory holds dataset implementations (currently a toy MNIST stub). Its include path is exported by the library.

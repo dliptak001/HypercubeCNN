@@ -35,6 +35,8 @@
 #include <cstdint>
 #include <random>
 
+class ThreadPool;
+
 /**
  * @class HCNN
  * @brief A single hypercube convolutional layer with optional ReLU and bias.
@@ -126,6 +128,20 @@ public:
     void compute_gradients(const float* grad_out, const float* in, const float* pre_act,
                            float* grad_in, float* kernel_grad, float* bias_grad) const;
 
+    /**
+     * @brief Apply externally computed gradients via momentum SGD.
+     *
+     * Used by mini-batch training: gradients are computed per-sample via
+     * compute_gradients(), averaged across the batch, then applied here.
+     *
+     * @param kernel_grad  Averaged kernel gradients [c_out * c_in * K].
+     * @param bias_grad    Averaged bias gradients [c_out], or nullptr if no bias.
+     * @param learning_rate SGD learning rate.
+     * @param momentum      SGD momentum coefficient.
+     */
+    void apply_gradients(const float* kernel_grad, const float* bias_grad,
+                         float learning_rate, float momentum);
+
     /** @name Accessors */
     ///@{
     int get_dim() const { return DIM; }       ///< Hypercube dimension.
@@ -134,6 +150,9 @@ public:
     int get_c_out() const { return c_out; }   ///< Number of output channels.
     int get_K() const { return K; }           ///< Number of connection masks (2*DIM - 2).
     ///@}
+
+    /// Set the thread pool for parallel execution (nullptr = single-threaded).
+    void set_thread_pool(ThreadPool* pool) { thread_pool = pool; }
 
     /** @name Raw weight access (for serialization and gradient checking) */
     ///@{
@@ -156,6 +175,8 @@ private:
     std::vector<float> bias;            ///< Per-output-channel bias, size c_out (empty if bias disabled).
     std::vector<float> kernel_vel;      ///< Momentum velocity for kernel weights (same layout as kernel).
     std::vector<float> bias_vel;        ///< Momentum velocity for bias (same layout as bias).
+
+    ThreadPool* thread_pool = nullptr;  ///< Optional thread pool for parallel execution.
 
     /**
      * @brief Fixed XOR masks for sparse-vertex neighbor selection.

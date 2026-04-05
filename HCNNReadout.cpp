@@ -98,3 +98,18 @@ void HCNNReadout::compute_gradients(const float* grad_logits, const float* in, i
         if (bias_grad) bias_grad[cls] = grad_logits[cls];
     }
 }
+
+void HCNNReadout::apply_gradients(const float* weight_grad, const float* bias_grad,
+                                  float learning_rate, float momentum) {
+    int total_w = num_classes * input_channels;
+    for (int i = 0; i < total_w; ++i) {
+        weight_vel[i] = momentum * weight_vel[i] + weight_grad[i];
+        weights[i] -= learning_rate * weight_vel[i];
+    }
+    if (bias_grad) {
+        for (int cls = 0; cls < num_classes; ++cls) {
+            bias_vel[cls] = momentum * bias_vel[cls] + bias_grad[cls];
+            bias[cls] -= learning_rate * bias_vel[cls];
+        }
+    }
+}

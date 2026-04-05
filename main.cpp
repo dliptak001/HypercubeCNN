@@ -4,6 +4,7 @@
 #include <cmath>
 #include <filesystem>
 #include <iostream>
+#include <thread>
 #include <vector>
 
 static float cross_entropy_loss(const float* logits, int K, int target) {
@@ -20,7 +21,7 @@ static int argmax(const float* v, int n) {
     return best;
 }
 
-static void evaluate(HCNNNetwork& net, const HCNNMNISTDataset& dataset,
+static void evaluate(const HCNNNetwork& net, const HCNNMNISTDataset& dataset,
                      const char* label) {
     int K = net.get_num_classes();
     int N = net.get_start_N();
@@ -49,8 +50,9 @@ static void evaluate(HCNNNetwork& net, const HCNNMNISTDataset& dataset,
 static void train_and_evaluate(const char* name, HCNNNetwork& net,
                                HCNNMNISTDataset& train_data,
                                const HCNNMNISTDataset& test_data,
-                               float lr = 0.01f) {
-    std::cout << "\n=== " << name << " (lr=" << lr << ") ===\n";
+                               float lr = 0.01f, int batch_size = 32) {
+    std::cout << "\n=== " << name << " (lr=" << lr
+              << ", batch=" << batch_size << ") ===\n";
     evaluate(net, test_data, "Initial test");
 
     const int epochs = 15;
@@ -58,7 +60,7 @@ static void train_and_evaluate(const char* name, HCNNNetwork& net,
     float current_lr = lr;
     for (int epoch = 0; epoch < epochs; ++epoch) {
         auto t0 = std::chrono::steady_clock::now();
-        train_data.train_epoch(net, current_lr, momentum);
+        train_data.train_epoch(net, current_lr, momentum, batch_size);
         auto t1 = std::chrono::steady_clock::now();
         double secs = std::chrono::duration<double>(t1 - t0).count();
 
@@ -87,13 +89,14 @@ int main() {
     std::cout << "Train: " << train_data.size() << " samples, "
               << "Test: " << test_data.size() << " samples\n";
 
-    HCNNNetwork net(10);
+    HCNNNetwork net(10);               // auto-detect thread count
     net.add_conv(16, true, true);     // K=18 (DIM=10)
     net.add_pool(PoolType::MAX);      // DIM 10->9, N 1024->512
     net.add_pool(PoolType::MAX);      // DIM 9->8, N 512->256
     net.add_conv(32, true, true);     // K=14 (DIM=8)
     net.randomize_all_weights(0.1f);
-    train_and_evaluate("HCNN", net, train_data, test_data, 0.005f);
+    std::cout << "Threads: " << std::thread::hardware_concurrency() << "\n";
+    train_and_evaluate("HCNN", net, train_data, test_data, 0.16f, 32);
 
     return 0;
 }

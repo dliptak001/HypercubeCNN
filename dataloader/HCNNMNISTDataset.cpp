@@ -103,15 +103,38 @@ HCNNMNISTDataset load_mnist(const std::string& images_path,
     return ds;
 }
 
-void HCNNMNISTDataset::train_epoch(HCNNNetwork& net, float learning_rate, float momentum) {
+void HCNNMNISTDataset::train_epoch(HCNNNetwork& net, float learning_rate,
+                                   float momentum, int batch_size) {
     static std::mt19937 rng(42);
     std::vector<size_t> order(samples.size());
     std::iota(order.begin(), order.end(), 0);
     std::shuffle(order.begin(), order.end(), rng);
 
-    for (size_t i : order) {
-        const auto& s = samples[i];
-        net.train_step(s.input.data(), static_cast<int>(s.input.size()),
-                       s.target_class, learning_rate, momentum);
+    if (batch_size <= 1) {
+        // Pure SGD — one sample at a time
+        for (size_t i : order) {
+            const auto& s = samples[i];
+            net.train_step(s.input.data(), static_cast<int>(s.input.size()),
+                           s.target_class, learning_rate, momentum);
+        }
+    } else {
+        // Mini-batch SGD — process batch_size samples in parallel
+        int n = static_cast<int>(order.size());
+        std::vector<const float*> batch_inputs(batch_size);
+        std::vector<int> batch_lengths(batch_size);
+        std::vector<int> batch_targets(batch_size);
+
+        for (int start = 0; start < n; start += batch_size) {
+            int actual = std::min(batch_size, n - start);
+            for (int j = 0; j < actual; ++j) {
+                const auto& s = samples[order[start + j]];
+                batch_inputs[j] = s.input.data();
+                batch_lengths[j] = static_cast<int>(s.input.size());
+                batch_targets[j] = s.target_class;
+            }
+            net.train_batch(batch_inputs.data(), batch_lengths.data(),
+                            batch_targets.data(), actual,
+                            learning_rate, momentum);
+        }
     }
 }

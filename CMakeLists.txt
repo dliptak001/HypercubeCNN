@@ -5,6 +5,10 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# ——— Threading ———
+set(THREADS_PREFER_PTHREAD_FLAG ON)
+find_package(Threads REQUIRED)
+
 # ——— Static library: core pipeline ———
 add_library(HypercubeCNNCore STATIC
     HCNN.cpp
@@ -19,6 +23,7 @@ set(PUBLIC_HEADERS
     HCNNPool.h
     HCNNNetwork.h
     HCNNReadout.h
+    ThreadPool.h
     dataloader/HCNNMNISTDataset.h
 )
 
@@ -28,6 +33,8 @@ target_include_directories(HypercubeCNNCore
         $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/dataloader>
         $<INSTALL_INTERFACE:include/HypercubeCNN>
 )
+
+target_link_libraries(HypercubeCNNCore PUBLIC Threads::Threads)
 
 # ——— Optimization and warning flags (library) ———
 if(MSVC)
