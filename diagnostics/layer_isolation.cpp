@@ -26,7 +26,7 @@ static void test_single_conv() {
     std::cout << "\n=== Test 2: Single conv layer + readout (no pool) ===\n";
 
     HCNNNetwork net(4);  // DIM=4, N=16 — matches toy data exactly
-    net.add_conv(2, 8, true, true);
+    net.add_conv(8, true, true);
     net.randomize_all_weights(0.3f);
 
     HCNNMNISTDataset dataset = create_toy_mnist_like_dataset();
@@ -66,7 +66,7 @@ static void test_readout_only_simple() {
     std::cout << "\n=== Test 2: Readout-only on trivial data ===\n";
 
     HCNNNetwork net(4);  // DIM=4, N=16
-    net.add_conv(2, 32, true, true);
+    net.add_conv(32, true, true);
     net.randomize_all_weights(0.5f);
 
     HCNNMNISTDataset dataset = create_toy_mnist_like_dataset();

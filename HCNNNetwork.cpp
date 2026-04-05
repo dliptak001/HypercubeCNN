@@ -9,9 +9,9 @@ HCNNNetwork::HCNNNetwork(int dim, int num_classes)
     channel_counts.push_back(1);
 }
 
-void HCNNNetwork::add_conv(int radius, int c_out, bool use_relu, bool use_bias) {
+void HCNNNetwork::add_conv(int c_out, bool use_relu, bool use_bias) {
     int c_in = channel_counts.back();
-    conv_layers.emplace_back(current_dim, c_in, c_out, radius, use_relu, use_bias);
+    conv_layers.emplace_back(current_dim, c_in, c_out, use_relu, use_bias);
     channel_counts.push_back(c_out);
     is_conv_layer.push_back(true);
 }

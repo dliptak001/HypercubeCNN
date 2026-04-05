@@ -1,38 +1,32 @@
 #include "HCNN.h"
 #include <algorithm>
+#include <stdexcept>
 
-// Generate all bitmasks with exactly 'bits' bits set out of 'dim' total bits.
-static void generate_masks(int dim, int bits, int current_mask, int start_bit,
-                           int bits_set, std::vector<int>& out) {
-    if (bits_set == bits) {
-        out.push_back(current_mask);
-        return;
-    }
-    int remaining = bits - bits_set;
-    for (int b = start_bit; b <= dim - remaining; ++b) {
-        generate_masks(dim, bits, current_mask | (1 << b), b + 1, bits_set + 1, out);
-    }
-}
-
-HCNN::HCNN(int dim, int c_in, int c_out, int radius, bool use_relu, bool use_bias)
-    : DIM(dim), N(1 << dim), c_in(c_in), c_out(c_out), radius(radius),
+HCNN::HCNN(int dim, int c_in, int c_out, bool use_relu, bool use_bias)
+    : DIM(dim), N(1 << dim), c_in(c_in), c_out(c_out),
+      K(2 * dim - 2),
       use_relu(use_relu), use_bias(use_bias),
-      kernel(c_out * c_in * (radius + 1), 0.0f),
+      kernel(c_out * c_in * K, 0.0f),
       bias(use_bias ? c_out : 0, 0.0f),
-      kernel_vel(c_out * c_in * (radius + 1), 0.0f),
+      kernel_vel(c_out * c_in * K, 0.0f),
       bias_vel(use_bias ? c_out : 0, 0.0f) {
-    // Precompute shell counts: C(DIM, d)
-    shell_count.resize(DIM + 1);
-    shell_count[0] = 1;
-    for (int d = 1; d <= DIM; ++d) {
-        shell_count[d] = shell_count[d - 1] * (DIM - d + 1) / d;
+    if (DIM < 3) {
+        throw std::runtime_error("HCNN requires DIM >= 3 (K = 2*DIM-2 must be >= 4)");
     }
 
-    // Precompute shell masks for each distance 0..radius
-    shell_masks.resize(radius + 1);
-    for (int d = 0; d <= radius; ++d) {
-        shell_masks[d].reserve(shell_count[d]);
-        generate_masks(DIM, d, 0, 0, 0, shell_masks[d]);
+    // Build mask table: shell masks first, then nearest-neighbor masks
+    masks.resize(K);
+
+    // Shell masks: (1 << (i+1)) - 1 for i in [0, DIM-3]
+    // Produces cumulative-bit patterns 3, 7, 15, 31, ...
+    for (int i = 0; i < DIM - 2; ++i) {
+        masks[i] = (1u << (i + 1)) - 1;
+    }
+
+    // Nearest-neighbor masks: 1 << i for i in [0, DIM-1]
+    // Produces single-bit flips 1, 2, 4, 8, ...
+    for (int i = 0; i < DIM; ++i) {
+        masks[DIM - 2 + i] = 1u << i;
     }
 }
 
@@ -49,10 +43,6 @@ void HCNN::randomize_weights(float scale, std::mt19937& rng) {
 }
 
 void HCNN::forward(const float* in, float* out, float* pre_act) const {
-    // Precompute shell means for all input channels in bulk
-    std::vector<float> sm_buf(c_in * (radius + 1) * N);
-    precompute_shell_means(in, c_in, sm_buf.data());
-
     for (int co = 0; co < c_out; ++co) {
         float* out_co = out + co * N;
 
@@ -60,13 +50,14 @@ void HCNN::forward(const float* in, float* out, float* pre_act) const {
         float b = use_bias ? bias[co] : 0.0f;
         for (int v = 0; v < N; ++v) out_co[v] = b;
 
-        // Accumulate kernel * shell_mean — inner loop is vectorizable
+        // Accumulate: w * in[v ^ mask] for each input channel and mask
         for (int ci = 0; ci < c_in; ++ci) {
-            for (int d = 0; d <= radius; ++d) {
-                float w = kernel[kernel_idx(co, ci, d)];
-                const float* sm = sm_buf.data() + (ci * (radius + 1) + d) * N;
+            const float* in_ci = in + ci * N;
+            for (int k = 0; k < K; ++k) {
+                float w = kernel[kernel_idx(co, ci, k)];
+                uint32_t m = masks[k];
                 for (int v = 0; v < N; ++v) {
-                    out_co[v] += w * sm[v];
+                    out_co[v] += w * in_ci[v ^ m];
                 }
             }
         }
@@ -94,41 +85,36 @@ void HCNN::backward(const float* grad_out, const float* in, const float* pre_act
         grad_pre[i] = grad_out[i] * activate_derivative(pre_act[i]);
     }
 
-    // Precompute shell means of input (for kernel gradient)
-    std::vector<float> in_sm(c_in * (radius + 1) * N);
-    precompute_shell_means(in, c_in, in_sm.data());
-
-    // Input gradient: grad_in[ci*N+u] = sum_co sum_d kernel[co,ci,d] * shell_mean(u, d, grad_pre+co*N)
+    // Input gradient: gi[v] += w * gp[v ^ m]  (XOR is self-inverse)
     if (grad_in) {
-        std::vector<float> gp_sm(c_out * (radius + 1) * N);
-        precompute_shell_means(grad_pre.data(), c_out, gp_sm.data());
-
         for (int ci = 0; ci < c_in; ++ci) {
             float* gi = grad_in + ci * N;
             for (int v = 0; v < N; ++v) gi[v] = 0.0f;
             for (int co = 0; co < c_out; ++co) {
-                for (int d = 0; d <= radius; ++d) {
-                    float w = kernel[kernel_idx(co, ci, d)];
-                    const float* gsm = gp_sm.data() + (co * (radius + 1) + d) * N;
+                const float* gp = grad_pre.data() + co * N;
+                for (int k = 0; k < K; ++k) {
+                    float w = kernel[kernel_idx(co, ci, k)];
+                    uint32_t m = masks[k];
                     for (int v = 0; v < N; ++v) {
-                        gi[v] += w * gsm[v];
+                        gi[v] += w * gp[v ^ m];
                     }
                 }
             }
         }
     }
 
-    // Kernel update with momentum: v = mu*v + grad; w -= lr*v
+    // Kernel update with momentum: vel = mu*vel + grad; w -= lr*vel
     for (int co = 0; co < c_out; ++co) {
         const float* gp = grad_pre.data() + co * N;
         for (int ci = 0; ci < c_in; ++ci) {
-            for (int d = 0; d <= radius; ++d) {
-                const float* sm = in_sm.data() + (ci * (radius + 1) + d) * N;
+            const float* in_ci = in + ci * N;
+            for (int k = 0; k < K; ++k) {
+                uint32_t m = masks[k];
                 float grad_k = 0.0f;
                 for (int v = 0; v < N; ++v) {
-                    grad_k += gp[v] * sm[v];
+                    grad_k += gp[v] * in_ci[v ^ m];
                 }
-                int ki = kernel_idx(co, ci, d);
+                int ki = kernel_idx(co, ci, k);
                 kernel_vel[ki] = momentum * kernel_vel[ki] + grad_k;
                 kernel[ki] -= learning_rate * kernel_vel[ki];
             }
@@ -156,42 +142,41 @@ void HCNN::compute_gradients(const float* grad_out, const float* in, const float
         grad_pre[i] = grad_out[i] * activate_derivative(pre_act[i]);
     }
 
-    std::vector<float> in_sm(c_in * (radius + 1) * N);
-    precompute_shell_means(in, c_in, in_sm.data());
-
+    // Input gradient
     if (grad_in) {
-        std::vector<float> gp_sm(c_out * (radius + 1) * N);
-        precompute_shell_means(grad_pre.data(), c_out, gp_sm.data());
-
         for (int ci = 0; ci < c_in; ++ci) {
             float* gi = grad_in + ci * N;
             for (int v = 0; v < N; ++v) gi[v] = 0.0f;
             for (int co = 0; co < c_out; ++co) {
-                for (int d = 0; d <= radius; ++d) {
-                    float w = kernel[kernel_idx(co, ci, d)];
-                    const float* gsm = gp_sm.data() + (co * (radius + 1) + d) * N;
+                const float* gp = grad_pre.data() + co * N;
+                for (int k = 0; k < K; ++k) {
+                    float w = kernel[kernel_idx(co, ci, k)];
+                    uint32_t m = masks[k];
                     for (int v = 0; v < N; ++v) {
-                        gi[v] += w * gsm[v];
+                        gi[v] += w * gp[v ^ m];
                     }
                 }
             }
         }
     }
 
+    // Kernel gradient
     for (int co = 0; co < c_out; ++co) {
         const float* gp = grad_pre.data() + co * N;
         for (int ci = 0; ci < c_in; ++ci) {
-            for (int d = 0; d <= radius; ++d) {
-                const float* sm = in_sm.data() + (ci * (radius + 1) + d) * N;
+            const float* in_ci = in + ci * N;
+            for (int k = 0; k < K; ++k) {
+                uint32_t m = masks[k];
                 float grad_k = 0.0f;
                 for (int v = 0; v < N; ++v) {
-                    grad_k += gp[v] * sm[v];
+                    grad_k += gp[v] * in_ci[v ^ m];
                 }
-                kernel_grad[kernel_idx(co, ci, d)] = grad_k;
+                kernel_grad[kernel_idx(co, ci, k)] = grad_k;
             }
         }
     }
 
+    // Bias gradient
     if (bias_grad && use_bias) {
         for (int co = 0; co < c_out; ++co) {
             float grad_b = 0.0f;
@@ -202,36 +187,6 @@ void HCNN::compute_gradients(const float* grad_out, const float* in, const float
             bias_grad[co] = grad_b;
         }
     }
-}
-
-void HCNN::precompute_shell_means(const float* data, int channels, float* buf) const {
-    for (int c = 0; c < channels; ++c) {
-        const float* chan = data + c * N;
-        for (int d = 0; d <= radius; ++d) {
-            float* dst = buf + (c * (radius + 1) + d) * N;
-            if (d == 0) {
-                for (int v = 0; v < N; ++v) dst[v] = chan[v];
-            } else {
-                for (int v = 0; v < N; ++v) dst[v] = 0.0f;
-                for (int m : shell_masks[d]) {
-                    for (int v = 0; v < N; ++v) {
-                        dst[v] += chan[v ^ m];
-                    }
-                }
-                float inv = 1.0f / static_cast<float>(shell_count[d]);
-                for (int v = 0; v < N; ++v) dst[v] *= inv;
-            }
-        }
-    }
-}
-
-float HCNN::shell_mean(int v, int d, const float* data) const {
-    if (d == 0) return data[v];
-    float s = 0.0f;
-    for (int m : shell_masks[d]) {
-        s += data[v ^ m];
-    }
-    return s / static_cast<float>(shell_count[d]);
 }
 
 float HCNN::activate(float x) const {

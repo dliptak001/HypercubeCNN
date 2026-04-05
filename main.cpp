@@ -50,9 +50,9 @@ int main() {
     // DIM=10 gives N=1024, fits 784 MNIST pixels with room to spare
     HCNNNetwork net(10);
 
-    net.add_conv(3, 16, true, true);   // r=3 reaches across MNIST rows
+    net.add_conv(16, true, true);     // K=18 sparse-vertex connections (DIM=10)
     net.add_pool(2, PoolType::MAX);   // DIM 10->8, N 1024->256
-    net.add_conv(2, 32, true, true);
+    net.add_conv(32, true, true);     // K=14 sparse-vertex connections (DIM=8)
 
     net.randomize_all_weights(0.1f);
 
@@ -62,17 +62,17 @@ int main() {
 
     std::cout << "Loading MNIST from " << data_dir << "...\n";
     auto train_data = load_mnist((data_dir / "train-images-idx3-ubyte").string(),
-                                 (data_dir / "train-labels-idx1-ubyte").string(), 0);
+                                 (data_dir / "train-labels-idx1-ubyte").string(), 10000);
     auto test_data = load_mnist((data_dir / "t10k-images-idx3-ubyte").string(),
-                                (data_dir / "t10k-labels-idx1-ubyte").string(), 0);
+                                (data_dir / "t10k-labels-idx1-ubyte").string(), 1000);
     std::cout << "Train: " << train_data.size() << " samples, "
               << "Test: " << test_data.size() << " samples\n\n";
 
     evaluate(net, test_data, "Initial test");
 
-    const int epochs = 50;
+    const int epochs = 5;
     const float momentum = 0.9f;
-    float lr = 0.01f;
+    float lr = 0.01f; // TODO: tune LR decay schedule — accuracy dips at epoch 5 with 10K samples
     for (int epoch = 0; epoch < epochs; ++epoch) {
         auto t0 = std::chrono::steady_clock::now();
         train_data.train_epoch(net, lr, momentum);

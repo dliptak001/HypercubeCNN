@@ -1,63 +1,196 @@
+/**
+ * @file HCNN.h
+ * @brief Hypercube convolutional layer — sparse-vertex convolution on a
+ *        binary hypercube using fixed XOR masks instead of spatial grids.
+ *
+ * An HCNN layer maps c_in input channels defined on the vertices of a
+ * DIM-dimensional binary hypercube (N = 2^DIM vertices) to c_out output
+ * channels on the same hypercube.  For each output vertex v, the layer
+ * computes:
+ *
+ *   out_co(v) = b_co + sum over (ci, k) of w[co,ci,k] * in[ci, v ^ masks[k]]
+ *
+ * where masks[k] is one of K = 2*DIM - 2 fixed XOR masks selecting specific
+ * neighbor vertices.  The mask set comprises:
+ *   - DIM - 2 shell masks: (1 << (i+1)) - 1 for i in [0, DIM-3],
+ *     giving cumulative-bit patterns 3, 7, 15, ... that span distances 2
+ *     through DIM-1.
+ *   - DIM nearest-neighbor masks: 1 << i for i in [0, DIM-1],
+ *     giving single-bit flips at Hamming distance 1.
+ *
+ * This connectivity pattern is imported from the HypercubeRC Reservoir class.
+ * Each mask selects exactly one neighbor per vertex; each gets its own learned
+ * weight, shared across all vertices (CNN-style weight sharing).
+ *
+ * All geometry is bitwise — neighbor lookup uses XOR with the mask array;
+ * there are no adjacency lists or spatial padding.
+ *
+ * Memory layout is **channel-major**: element [c*N + v] stores channel c,
+ * vertex v.
+ */
+
 #pragma once
 
 #include <vector>
 #include <cstdint>
 #include <random>
 
+/**
+ * @class HCNN
+ * @brief A single hypercube convolutional layer with optional ReLU and bias.
+ *
+ * Supports forward inference, backpropagation with SGD+momentum weight
+ * updates, and a separated gradient-computation path for numerical
+ * gradient checking.
+ */
 class HCNN {
 public:
-    HCNN(int dim, int c_in, int c_out, int radius, bool use_relu = true, bool use_bias = true);
+    /**
+     * @brief Construct a hypercube convolutional layer.
+     *
+     * Builds the K = 2*DIM - 2 XOR mask table (shell masks + nearest-neighbor
+     * masks).  Kernel and bias weights are initialized to zero; call
+     * randomize_weights() before training.
+     *
+     * Requires dim >= 3 so that K >= 4 (at least one shell mask exists).
+     *
+     * @param dim      Hypercube dimension.  The layer operates on N = 2^dim vertices.
+     * @param c_in     Number of input channels.
+     * @param c_out    Number of output channels (filters).
+     * @param use_relu If true, apply ReLU activation after convolution (default: true).
+     * @param use_bias If true, add a learnable per-output-channel bias (default: true).
+     */
+    HCNN(int dim, int c_in, int c_out, bool use_relu = true, bool use_bias = true);
 
+    /**
+     * @brief Initialize kernel weights to uniform random values in [-scale, +scale].
+     *
+     * Biases are reset to zero.  Momentum velocity buffers are cleared.
+     *
+     * @param scale  Half-width of the uniform initialization range.
+     * @param rng    Mersenne Twister PRNG instance (caller-owned).
+     */
     void randomize_weights(float scale, std::mt19937& rng);
 
-    // Forward pass. If pre_act is non-null, stores pre-activation values for backprop.
+    /**
+     * @brief Execute the forward pass over all output channels.
+     *
+     * For each output channel and each vertex, looks up K specific neighbors
+     * via XOR masks, multiplies by the corresponding kernel weight, sums,
+     * adds bias, and applies the activation function.
+     *
+     * @param[in]  in       Input activations, channel-major [c_in * N].
+     * @param[out] out      Output activations, channel-major [c_out * N].
+     * @param[out] pre_act  If non-null, receives the pre-activation (pre-ReLU)
+     *                      values [c_out * N].  Required by backward().
+     */
     void forward(const float* in, float* out, float* pre_act = nullptr) const;
 
-    // Backward pass: computes grad_in and updates weights via SGD with optional momentum.
-    // grad_in may be null if input gradients are not needed (first layer).
+    /**
+     * @brief Backward pass: compute input gradients and update weights via SGD.
+     *
+     * Applies the chain rule through the activation function, then:
+     *   -# Computes grad_in (if non-null) using the same XOR-lookup structure
+     *      as forward (XOR is self-inverse, so the transpose is itself).
+     *   -# Updates kernel weights using momentum SGD:
+     *      v <- mu*v + g,  w <- w - eta*v
+     *   -# Updates bias weights similarly (if bias is enabled).
+     *
+     * @param[in]  grad_out      Gradient of loss w.r.t. output activations [c_out * N].
+     * @param[in]  in            Input activations from the forward pass [c_in * N].
+     * @param[in]  pre_act       Pre-activation values from the forward pass [c_out * N].
+     * @param[out] grad_in       Gradient of loss w.r.t. input activations [c_in * N],
+     *                           or nullptr if not needed (e.g. first layer).
+     * @param      learning_rate SGD learning rate (eta).
+     * @param      momentum      SGD momentum coefficient (mu); default 0 (no momentum).
+     */
     void backward(const float* grad_out, const float* in, const float* pre_act,
                   float* grad_in, float learning_rate, float momentum = 0.0f);
 
-    // Compute gradients without applying SGD update.
-    // kernel_grad must have size c_out * c_in * (radius+1).
-    // bias_grad must have size c_out (or nullptr if no bias).
+    /**
+     * @brief Compute gradients without applying an SGD update.
+     *
+     * Identical to the gradient-computation portion of backward(), but writes
+     * raw gradients into caller-provided buffers instead of updating internal
+     * weights.  Used for numerical gradient checking.
+     *
+     * @param[in]  grad_out    Gradient of loss w.r.t. output activations [c_out * N].
+     * @param[in]  in          Input activations from the forward pass [c_in * N].
+     * @param[in]  pre_act     Pre-activation values from the forward pass [c_out * N].
+     * @param[out] grad_in     Gradient of loss w.r.t. input activations [c_in * N],
+     *                         or nullptr if not needed.
+     * @param[out] kernel_grad Gradient of loss w.r.t. kernel weights [c_out * c_in * K].
+     * @param[out] bias_grad   Gradient of loss w.r.t. bias [c_out],
+     *                         or nullptr if bias is disabled.
+     */
     void compute_gradients(const float* grad_out, const float* in, const float* pre_act,
                            float* grad_in, float* kernel_grad, float* bias_grad) const;
 
-    int get_dim() const { return DIM; }
-    int get_N() const { return N; }
-    int get_c_in() const { return c_in; }
-    int get_c_out() const { return c_out; }
-    int get_radius() const { return radius; }
+    /** @name Accessors */
+    ///@{
+    int get_dim() const { return DIM; }       ///< Hypercube dimension.
+    int get_N() const { return N; }           ///< Vertex count (2^DIM).
+    int get_c_in() const { return c_in; }     ///< Number of input channels.
+    int get_c_out() const { return c_out; }   ///< Number of output channels.
+    int get_K() const { return K; }           ///< Number of connection masks (2*DIM - 2).
+    ///@}
 
-    float* get_kernel_data() { return kernel.data(); }
-    int get_kernel_size() const { return static_cast<int>(kernel.size()); }
-    float* get_bias_data() { return bias.data(); }
-    int get_bias_size() const { return static_cast<int>(bias.size()); }
+    /** @name Raw weight access (for serialization and gradient checking) */
+    ///@{
+    float* get_kernel_data() { return kernel.data(); }                           ///< Pointer to kernel weight array.
+    int get_kernel_size() const { return static_cast<int>(kernel.size()); }      ///< Total kernel weight count.
+    float* get_bias_data() { return bias.data(); }                               ///< Pointer to bias array.
+    int get_bias_size() const { return static_cast<int>(bias.size()); }          ///< Bias element count (0 if bias disabled).
+    ///@}
 
 private:
-    int DIM, N, c_in, c_out, radius;
-    bool use_relu, use_bias;
-    std::vector<float> kernel;      // [c_out * c_in * (radius+1)]
-    std::vector<float> bias;        // [c_out]
-    std::vector<float> kernel_vel;  // momentum velocity for kernel
-    std::vector<float> bias_vel;    // momentum velocity for bias
-    std::vector<int> shell_count;   // [DIM+1] precomputed C(DIM, d)
+    int DIM;          ///< Hypercube dimension.
+    int N;            ///< Number of vertices, always 2^DIM.
+    int c_in;         ///< Input channel count.
+    int c_out;        ///< Output channel count (number of filters).
+    int K;            ///< Number of connection masks, always 2*DIM - 2.
+    bool use_relu;    ///< Whether ReLU activation is applied after convolution.
+    bool use_bias;    ///< Whether a learnable bias term is added per output channel.
 
-    // Precomputed shell masks: shell_masks[d] contains all C(DIM,d) bitmasks
-    // with exactly d bits set. XOR any vertex v with a mask to get a neighbor
-    // at Hamming distance d.
-    std::vector<std::vector<int>> shell_masks;
+    std::vector<float> kernel;          ///< Kernel weights, layout [c_out * c_in * K].
+    std::vector<float> bias;            ///< Per-output-channel bias, size c_out (empty if bias disabled).
+    std::vector<float> kernel_vel;      ///< Momentum velocity for kernel weights (same layout as kernel).
+    std::vector<float> bias_vel;        ///< Momentum velocity for bias (same layout as bias).
 
-    int kernel_idx(int co, int ci, int d) const {
-        return (co * c_in + ci) * (radius + 1) + d;
+    /**
+     * @brief Fixed XOR masks for sparse-vertex neighbor selection.
+     *
+     * K = 2*DIM - 2 masks total.  The first DIM-2 entries are shell masks
+     * (cumulative-bit patterns 3, 7, 15, ...) spanning Hamming distances
+     * 2 through DIM-1.  The remaining DIM entries are nearest-neighbor masks
+     * (single-bit flips 1, 2, 4, ...) at Hamming distance 1.
+     *
+     * XOR-ing vertex index v with masks[k] yields the k-th selected neighbor.
+     */
+    std::vector<uint32_t> masks;
+
+    /**
+     * @brief Compute the flat index into the kernel array.
+     * @param co Output channel index.
+     * @param ci Input channel index.
+     * @param k  Mask index (0 .. K-1).
+     * @return   Index into the kernel vector.
+     */
+    int kernel_idx(int co, int ci, int k) const {
+        return (co * c_in + ci) * K + k;
     }
-    float shell_mean(int v, int d, const float* data) const;
-    float activate(float x) const;
-    float activate_derivative(float x) const;
 
-    // Bulk-compute shell means for all vertices at once.
-    // buf must have size channels * (radius+1) * N.
-    // buf[(c * (radius+1) + d) * N + v] = shell_mean(v, d, data + c*N)
-    void precompute_shell_means(const float* data, int channels, float* buf) const;
+    /**
+     * @brief Apply the activation function (ReLU or identity).
+     * @param x Pre-activation value.
+     * @return  Activated value.
+     */
+    float activate(float x) const;
+
+    /**
+     * @brief Derivative of the activation function evaluated at @p x.
+     * @param x Pre-activation value.
+     * @return  1.0 if identity or x > 0; 0.0 otherwise.
+     */
+    float activate_derivative(float x) const;
 };
