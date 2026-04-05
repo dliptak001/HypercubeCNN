@@ -5,10 +5,12 @@
 #include <limits>
 
 enum class PoolType { MAX, AVG };
+enum class PoolGrouping { SUBCUBE, ANTIPODAL };
 
 class HCNNPool {
 public:
-    HCNNPool(int input_dim, int reduce_by, PoolType type = PoolType::MAX);
+    HCNNPool(int input_dim, int reduce_by, PoolType type = PoolType::MAX,
+             PoolGrouping grouping = PoolGrouping::SUBCUBE);
 
     void forward(const float* in, float* out, int num_channels,
                  std::vector<int>* max_indices = nullptr) const;
@@ -24,4 +26,5 @@ public:
 private:
     int input_dim, output_dim, reduce_by, input_N, output_N;
     PoolType type;
+    PoolGrouping grouping;
 };
