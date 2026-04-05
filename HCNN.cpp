@@ -8,6 +8,12 @@
 // Below this, fork-join overhead exceeds the per-vertex work.
 static constexpr int THREAD_DIM_THRESHOLD = 12;
 
+// Vertex-loop tile size for cache locality.  Must be a power of 2 and a
+// multiple of 8 (AVX-256 width).  At DIM=10 with T=64, 6 of 10 masks
+// stay within-tile; the remaining 4 each touch exactly one other tile,
+// keeping the working set in L1.
+static constexpr size_t TILE = 64;
+
 HCNN::HCNN(int dim, int c_in, int c_out, bool use_relu, bool use_bias)
     : DIM(dim), N(1 << dim), c_in(c_in), c_out(c_out),
       K(dim),
@@ -41,6 +47,7 @@ void HCNN::randomize_weights(float scale, std::mt19937& rng) {
 // ---------------------------------------------------------------------------
 // Forward: vertex-level threading within each output channel.
 // Each thread handles a contiguous vertex range — no write conflicts.
+// Tiled: output tile stays in L1 for full ci*K accumulation + activation.
 // ---------------------------------------------------------------------------
 void HCNN::forward(const float* in, float* out, float* pre_act) const {
     const bool use_threads = thread_pool && DIM >= THREAD_DIM_THRESHOLD;
@@ -50,26 +57,32 @@ void HCNN::forward(const float* in, float* out, float* pre_act) const {
         float b = use_bias ? bias[co] : 0.0f;
 
         auto do_vertices = [&](size_t v_begin, size_t v_end) {
-            for (size_t v = v_begin; v < v_end; ++v)
-                out_co[v] = b;
-            for (int ci = 0; ci < c_in; ++ci) {
-                const float* in_ci = in + ci * N;
-                for (int k = 0; k < K; ++k) {
-                    float w = kernel[kernel_idx(co, ci, k)];
-                    uint32_t m = 1u << k;
-                    for (size_t v = v_begin; v < v_end; ++v)
-                        out_co[v] += w * in_ci[v ^ m];
+            for (size_t t = v_begin; t < v_end; t += TILE) {
+                size_t t_end = std::min(t + TILE, v_end);
+                // Init tile with bias
+                for (size_t v = t; v < t_end; ++v)
+                    out_co[v] = b;
+                // Accumulate all ci*k contributions into this tile
+                for (int ci = 0; ci < c_in; ++ci) {
+                    const float* in_ci = in + ci * N;
+                    for (int k = 0; k < K; ++k) {
+                        float w = kernel[kernel_idx(co, ci, k)];
+                        uint32_t m = 1u << k;
+                        for (size_t v = t; v < t_end; ++v)
+                            out_co[v] += w * in_ci[v ^ m];
+                    }
                 }
-            }
-            if (pre_act) {
-                float* pa = pre_act + co * N;
-                for (size_t v = v_begin; v < v_end; ++v) {
-                    pa[v] = out_co[v];
-                    out_co[v] = activate(out_co[v]);
+                // Activate tile
+                if (pre_act) {
+                    float* pa = pre_act + co * N;
+                    for (size_t v = t; v < t_end; ++v) {
+                        pa[v] = out_co[v];
+                        out_co[v] = activate(out_co[v]);
+                    }
+                } else {
+                    for (size_t v = t; v < t_end; ++v)
+                        out_co[v] = activate(out_co[v]);
                 }
-            } else {
-                for (size_t v = v_begin; v < v_end; ++v)
-                    out_co[v] = activate(out_co[v]);
             }
         };
 
@@ -83,10 +96,8 @@ void HCNN::forward(const float* in, float* out, float* pre_act) const {
 }
 
 // ---------------------------------------------------------------------------
-// Backward: vertex-level threading for input gradients (same structure as
-// forward — each thread writes its own vertex range, no conflicts).
-// Channel-level threading for weight gradients (each c_out owns its own
-// kernel/bias slice, and the v reduction is kept sequential per thread).
+// Backward: vertex-level threading for input gradients (tiled).
+// Channel-level threading for weight gradients (tiled reduction).
 // ---------------------------------------------------------------------------
 void HCNN::backward(const float* grad_out, const float* in, const float* pre_act,
                     float* grad_in, float learning_rate, float momentum) {
@@ -97,20 +108,23 @@ void HCNN::backward(const float* grad_out, const float* in, const float* pre_act
     for (int i = 0; i < c_out * N; ++i)
         grad_pre[i] = grad_out[i] * activate_derivative(pre_act[i]);
 
-    // Input gradient: vertex-level parallelism
+    // Input gradient: vertex-level parallelism, tiled
     if (grad_in) {
         for (int ci = 0; ci < c_in; ++ci) {
             float* gi = grad_in + ci * N;
 
             auto do_vertices = [&](size_t v_begin, size_t v_end) {
-                for (size_t v = v_begin; v < v_end; ++v) gi[v] = 0.0f;
-                for (int co = 0; co < c_out; ++co) {
-                    const float* gp = grad_pre.data() + co * N;
-                    for (int k = 0; k < K; ++k) {
-                        float w = kernel[kernel_idx(co, ci, k)];
-                        uint32_t m = 1u << k;
-                        for (size_t v = v_begin; v < v_end; ++v)
-                            gi[v] += w * gp[v ^ m];
+                for (size_t t = v_begin; t < v_end; t += TILE) {
+                    size_t t_end = std::min(t + TILE, v_end);
+                    for (size_t v = t; v < t_end; ++v) gi[v] = 0.0f;
+                    for (int co = 0; co < c_out; ++co) {
+                        const float* gp = grad_pre.data() + co * N;
+                        for (int k = 0; k < K; ++k) {
+                            float w = kernel[kernel_idx(co, ci, k)];
+                            uint32_t m = 1u << k;
+                            for (size_t v = t; v < t_end; ++v)
+                                gi[v] += w * gp[v ^ m];
+                        }
                     }
                 }
             };
@@ -124,18 +138,24 @@ void HCNN::backward(const float* grad_out, const float* in, const float* pre_act
         }
     }
 
-    // Weight update: channel-level parallelism (each c_out is independent)
+    // Weight update: channel-level parallelism, tiled reduction
     auto do_weight_update = [&](int co) {
         const float* gp = grad_pre.data() + co * N;
         for (int ci = 0; ci < c_in; ++ci) {
             const float* in_ci = in + ci * N;
+            // Accumulate per-mask gradients across tiles
+            float grad_k[32] = {};  // K = DIM <= 32
+            for (int t = 0; t < N; t += static_cast<int>(TILE)) {
+                int t_end = std::min(t + static_cast<int>(TILE), N);
+                for (int k = 0; k < K; ++k) {
+                    uint32_t m = 1u << k;
+                    for (int v = t; v < t_end; ++v)
+                        grad_k[k] += gp[v] * in_ci[v ^ m];
+                }
+            }
             for (int k = 0; k < K; ++k) {
-                uint32_t m = 1u << k;
-                float grad_k = 0.0f;
-                for (int v = 0; v < N; ++v)
-                    grad_k += gp[v] * in_ci[v ^ m];
                 int ki = kernel_idx(co, ci, k);
-                kernel_vel[ki] = momentum * kernel_vel[ki] + grad_k;
+                kernel_vel[ki] = momentum * kernel_vel[ki] + grad_k[k];
                 kernel[ki] -= learning_rate * kernel_vel[ki];
             }
         }
@@ -158,7 +178,7 @@ void HCNN::backward(const float* grad_out, const float* in, const float* pre_act
 }
 
 // ---------------------------------------------------------------------------
-// compute_gradients: same threading strategy as backward, but writes raw
+// compute_gradients: same tiling strategy as backward, but writes raw
 // gradients to caller buffers instead of updating weights.
 // ---------------------------------------------------------------------------
 void HCNN::compute_gradients(const float* grad_out, const float* in, const float* pre_act,
@@ -169,20 +189,23 @@ void HCNN::compute_gradients(const float* grad_out, const float* in, const float
     for (int i = 0; i < c_out * N; ++i)
         grad_pre[i] = grad_out[i] * activate_derivative(pre_act[i]);
 
-    // Input gradient: vertex-level
+    // Input gradient: vertex-level, tiled
     if (grad_in) {
         for (int ci = 0; ci < c_in; ++ci) {
             float* gi = grad_in + ci * N;
 
             auto do_vertices = [&](size_t v_begin, size_t v_end) {
-                for (size_t v = v_begin; v < v_end; ++v) gi[v] = 0.0f;
-                for (int co = 0; co < c_out; ++co) {
-                    const float* gp = grad_pre.data() + co * N;
-                    for (int k = 0; k < K; ++k) {
-                        float w = kernel[kernel_idx(co, ci, k)];
-                        uint32_t m = 1u << k;
-                        for (size_t v = v_begin; v < v_end; ++v)
-                            gi[v] += w * gp[v ^ m];
+                for (size_t t = v_begin; t < v_end; t += TILE) {
+                    size_t t_end = std::min(t + TILE, v_end);
+                    for (size_t v = t; v < t_end; ++v) gi[v] = 0.0f;
+                    for (int co = 0; co < c_out; ++co) {
+                        const float* gp = grad_pre.data() + co * N;
+                        for (int k = 0; k < K; ++k) {
+                            float w = kernel[kernel_idx(co, ci, k)];
+                            uint32_t m = 1u << k;
+                            for (size_t v = t; v < t_end; ++v)
+                                gi[v] += w * gp[v ^ m];
+                        }
                     }
                 }
             };
@@ -196,17 +219,22 @@ void HCNN::compute_gradients(const float* grad_out, const float* in, const float
         }
     }
 
-    // Kernel + bias gradient: channel-level
+    // Kernel + bias gradient: channel-level, tiled reduction
     auto do_kernel_grad = [&](int co) {
         const float* gp = grad_pre.data() + co * N;
         for (int ci = 0; ci < c_in; ++ci) {
             const float* in_ci = in + ci * N;
+            float grad_k[32] = {};  // K = DIM <= 32
+            for (int t = 0; t < N; t += static_cast<int>(TILE)) {
+                int t_end = std::min(t + static_cast<int>(TILE), N);
+                for (int k = 0; k < K; ++k) {
+                    uint32_t m = 1u << k;
+                    for (int v = t; v < t_end; ++v)
+                        grad_k[k] += gp[v] * in_ci[v ^ m];
+                }
+            }
             for (int k = 0; k < K; ++k) {
-                uint32_t m = 1u << k;
-                float grad_k = 0.0f;
-                for (int v = 0; v < N; ++v)
-                    grad_k += gp[v] * in_ci[v ^ m];
-                kernel_grad[kernel_idx(co, ci, k)] = grad_k;
+                kernel_grad[kernel_idx(co, ci, k)] = grad_k[k];
             }
         }
         if (bias_grad && use_bias) {
