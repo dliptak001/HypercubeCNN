@@ -70,7 +70,7 @@ The channels are strongly coupled only during this convolution step (exactly as 
 ## 6. Stacking layers
 - Layer 1 output array (`C_out1 * N`) becomes **directly** the input array for Layer 2 (`C_in2 * N`).
 - No reshaping, no copying, no mapping. Just pass the pointer and the numbers `C_in2`, `C_out2`, `DIM`.
-- The spatial size (number of vertices) **never changes** until we explicitly add pooling (subcube average/max or dimension reduction).
+- The spatial size (number of vertices) **never changes** until we explicitly add pooling (antipodal max/avg, reducing DIM by 1).
 
 Concrete numbers (DIM=3, N=8):
 - Layer 1: 1×8 → 16×8 = 128 floats

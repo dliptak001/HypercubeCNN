@@ -17,7 +17,8 @@
    - Activation (ReLU) + optional bias applied per output channel.
 
 4. **Pooling layer (`HCNNPool`)**
-   - Reduces `DIM` by `reduce_by` via max or average over subcubes.
+   - Antipodal pooling: pairs each vertex with its bitwise complement, reduces DIM by 1.
+   - MAX or AVG reduction. Lower-half vertex survives.
    - Output is a perfect smaller hypercube — geometry preserved.
 
 5. **Stacking (`HCNNNetwork`)**

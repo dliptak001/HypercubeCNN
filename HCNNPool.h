@@ -2,15 +2,14 @@
 
 #include <vector>
 #include <cstdint>
-#include <limits>
 
 enum class PoolType { MAX, AVG };
-enum class PoolGrouping { SUBCUBE, ANTIPODAL };
 
+/// Antipodal pooling: pairs each vertex v with its bitwise complement v' (maximally
+/// distant vertex), reduces DIM by 1. The lower-half vertex survives.
 class HCNNPool {
 public:
-    HCNNPool(int input_dim, int reduce_by, PoolType type = PoolType::MAX,
-             PoolGrouping grouping = PoolGrouping::SUBCUBE);
+    HCNNPool(int input_dim, PoolType type = PoolType::MAX);
 
     void forward(const float* in, float* out, int num_channels,
                  std::vector<int>* max_indices = nullptr) const;
@@ -24,7 +23,6 @@ public:
     int get_output_N() const { return output_N; }
 
 private:
-    int input_dim, output_dim, reduce_by, input_N, output_N;
+    int input_dim, output_dim, input_N, output_N;
     PoolType type;
-    PoolGrouping grouping;
 };

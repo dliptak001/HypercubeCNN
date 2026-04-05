@@ -11,8 +11,7 @@ public:
     HCNNNetwork(int start_dim, int num_classes = 10);
 
     void add_conv(int c_out, bool use_relu = true, bool use_bias = true);
-    void add_pool(int reduce_by, PoolType type = PoolType::MAX,
-                  PoolGrouping grouping = PoolGrouping::SUBCUBE);
+    void add_pool(PoolType type = PoolType::MAX);
 
     void randomize_all_weights(float scale = 0.1f);
 

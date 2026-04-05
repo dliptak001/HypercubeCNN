@@ -4,7 +4,7 @@ Survey conducted 2026-04-04. Searched Google Scholar, arXiv, and general web for
 
 ## Conclusion
 
-No prior work combines all elements of this architecture: data embedded onto 2^DIM hypercube vertices, convolution with shared kernel [w0..wr] indexed by Hamming distance, shell enumeration via XOR bitmasks, subcube pooling by dimension reduction, and global average readout. The mathematical ingredients exist separately in the literature, but nobody has assembled them into a CNN architecture.
+No prior work combines all elements of this architecture: data embedded onto 2^DIM hypercube vertices, convolution with shared kernel indexed by Hamming distance, shell enumeration via XOR bitmasks, antipodal pooling by dimension reduction, and global average readout. The mathematical ingredients exist separately in the literature, but nobody has assembled them into a CNN architecture.
 
 ---
 
@@ -103,5 +103,5 @@ The specific combination of the following elements appears in no prior work:
 2. **Convolution with Hamming-distance-indexed shared kernel** [w0, w1, ..., wr] -- one weight per distance shell
 3. **Shell enumeration via XOR bitmasks** -- O(C(DIM,d)) per shell, not O(N)
 4. **Multi-channel convolution** with independent kernels per output channel
-5. **Subcube pooling by dimension reduction** (collapsing 2^reduce_by vertices, preserving hypercube geometry)
+5. **Antipodal pooling by dimension reduction** (pairing each vertex with its bitwise complement, preserving hypercube geometry)
 6. **Global average readout** per channel to class logits

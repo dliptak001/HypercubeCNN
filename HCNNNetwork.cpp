@@ -16,9 +16,9 @@ void HCNNNetwork::add_conv(int c_out, bool use_relu, bool use_bias) {
     is_conv_layer.push_back(true);
 }
 
-void HCNNNetwork::add_pool(int reduce_by, PoolType type, PoolGrouping grouping) {
-    pool_layers.emplace_back(current_dim, reduce_by, type, grouping);
-    current_dim -= reduce_by;
+void HCNNNetwork::add_pool(PoolType type) {
+    pool_layers.emplace_back(current_dim, type);
+    current_dim -= 1;
     channel_counts.push_back(channel_counts.back());
     is_conv_layer.push_back(false);
 }

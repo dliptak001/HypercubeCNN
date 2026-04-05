@@ -48,23 +48,29 @@ static void evaluate(HCNNNetwork& net, const HCNNMNISTDataset& dataset,
 
 static void train_and_evaluate(const char* name, HCNNNetwork& net,
                                HCNNMNISTDataset& train_data,
-                               const HCNNMNISTDataset& test_data) {
-    std::cout << "\n=== " << name << " ===\n";
+                               const HCNNMNISTDataset& test_data,
+                               float lr = 0.01f) {
+    std::cout << "\n=== " << name << " (lr=" << lr << ") ===\n";
     evaluate(net, test_data, "Initial test");
 
-    const int epochs = 5;
+    const int epochs = 15;
     const float momentum = 0.9f;
-    float lr = 0.01f;
+    float current_lr = lr;
     for (int epoch = 0; epoch < epochs; ++epoch) {
         auto t0 = std::chrono::steady_clock::now();
-        train_data.train_epoch(net, lr, momentum);
+        train_data.train_epoch(net, current_lr, momentum);
         auto t1 = std::chrono::steady_clock::now();
         double secs = std::chrono::duration<double>(t1 - t0).count();
 
         std::string label = "Epoch " + std::to_string(epoch + 1);
         evaluate(net, test_data, label.c_str());
-        std::cout << "  (" << secs << "s, "
+        std::cout << "  (lr=" << current_lr << ", " << secs << "s, "
                   << train_data.size() / secs << " samples/s)\n";
+
+        // Halve LR every 5 epochs
+        if ((epoch + 1) % 5 == 0) {
+            current_lr *= 0.5f;
+        }
     }
 }
 
@@ -81,26 +87,13 @@ int main() {
     std::cout << "Train: " << train_data.size() << " samples, "
               << "Test: " << test_data.size() << " samples\n";
 
-    // --- Subcube pooling: DIM 10->8 in one step ---
-    {
-        HCNNNetwork net(10);
-        net.add_conv(16, true, true);     // K=18 (DIM=10)
-        net.add_pool(2, PoolType::MAX);   // DIM 10->8, N 1024->256
-        net.add_conv(32, true, true);     // K=14 (DIM=8)
-        net.randomize_all_weights(0.1f);
-        train_and_evaluate("Subcube pooling (reduce_by=2)", net, train_data, test_data);
-    }
-
-    // --- Antipodal pooling: DIM 10->9->8 in two steps ---
-    {
-        HCNNNetwork net(10);
-        net.add_conv(16, true, true);                              // K=18 (DIM=10)
-        net.add_pool(1, PoolType::MAX, PoolGrouping::ANTIPODAL);  // DIM 10->9, N 1024->512
-        net.add_pool(1, PoolType::MAX, PoolGrouping::ANTIPODAL);  // DIM 9->8, N 512->256
-        net.add_conv(32, true, true);                              // K=14 (DIM=8)
-        net.randomize_all_weights(0.1f);
-        train_and_evaluate("Antipodal pooling (2x reduce_by=1)", net, train_data, test_data);
-    }
+    HCNNNetwork net(10);
+    net.add_conv(16, true, true);     // K=18 (DIM=10)
+    net.add_pool(PoolType::MAX);      // DIM 10->9, N 1024->512
+    net.add_pool(PoolType::MAX);      // DIM 9->8, N 512->256
+    net.add_conv(32, true, true);     // K=14 (DIM=8)
+    net.randomize_all_weights(0.1f);
+    train_and_evaluate("HCNN", net, train_data, test_data, 0.005f);
 
     return 0;
 }
