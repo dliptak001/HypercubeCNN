@@ -8,12 +8,10 @@
  * channels on the same hypercube.  For each output vertex v, the layer
  * computes:
  *
- *   out_co(v) = b_co + sum over (ci, k) of w[co,ci,k] * in[ci, v ^ masks[k]]
+ *   out_co(v) = b_co + sum over (ci, k) of w[co,ci,k] * in[ci, v ^ (1 << k)]
  *
- * where masks[k] is one of K = DIM fixed XOR masks selecting specific
- * neighbor vertices.  The mask set contains DIM nearest-neighbor masks:
- *   1 << i for i in [0, DIM-1],
- * giving single-bit flips at Hamming distance 1.
+ * where k ranges over [0, DIM), so each mask is a single-bit flip
+ * selecting the nearest neighbor at Hamming distance 1 along bit k.
  *
  * Each mask selects exactly one neighbor per vertex; each gets its own learned
  * weight, shared across all vertices (CNN-style weight sharing).
@@ -28,7 +26,6 @@
 #pragma once
 
 #include <vector>
-#include <cstdint>
 #include <random>
 
 class ThreadPool;
@@ -177,15 +174,6 @@ private:
     std::vector<float> bias_vel;        ///< Momentum velocity for bias (same layout as bias).
 
     ThreadPool* thread_pool = nullptr;  ///< Optional thread pool for parallel execution.
-
-    /**
-     * @brief Fixed XOR masks for nearest-neighbor vertex selection.
-     *
-     * K = DIM masks: single-bit flips (1, 2, 4, ..., 2^(DIM-1)) at
-     * Hamming distance 1.  XOR-ing vertex index v with masks[k] yields
-     * the k-th selected neighbor.
-     */
-    std::vector<uint32_t> masks;
 
     /**
      * @brief Compute the flat index into the kernel array.

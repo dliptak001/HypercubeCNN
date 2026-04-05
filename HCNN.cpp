@@ -19,12 +19,6 @@ HCNN::HCNN(int dim, int c_in, int c_out, bool use_relu, bool use_bias)
     if (DIM < 3) {
         throw std::runtime_error("HCNN requires DIM >= 3");
     }
-
-    // Nearest-neighbor masks: single-bit flips at Hamming distance 1.
-    masks.resize(K);
-    for (int i = 0; i < DIM; ++i) {
-        masks[i] = 1u << i;
-    }
 }
 
 void HCNN::randomize_weights(float scale, std::mt19937& rng) {
@@ -62,7 +56,7 @@ void HCNN::forward(const float* in, float* out, float* pre_act) const {
                 const float* in_ci = in + ci * N;
                 for (int k = 0; k < K; ++k) {
                     float w = kernel[kernel_idx(co, ci, k)];
-                    uint32_t m = masks[k];
+                    uint32_t m = 1u << k;
                     for (size_t v = v_begin; v < v_end; ++v)
                         out_co[v] += w * in_ci[v ^ m];
                 }
@@ -114,7 +108,7 @@ void HCNN::backward(const float* grad_out, const float* in, const float* pre_act
                     const float* gp = grad_pre.data() + co * N;
                     for (int k = 0; k < K; ++k) {
                         float w = kernel[kernel_idx(co, ci, k)];
-                        uint32_t m = masks[k];
+                        uint32_t m = 1u << k;
                         for (size_t v = v_begin; v < v_end; ++v)
                             gi[v] += w * gp[v ^ m];
                     }
@@ -136,7 +130,7 @@ void HCNN::backward(const float* grad_out, const float* in, const float* pre_act
         for (int ci = 0; ci < c_in; ++ci) {
             const float* in_ci = in + ci * N;
             for (int k = 0; k < K; ++k) {
-                uint32_t m = masks[k];
+                uint32_t m = 1u << k;
                 float grad_k = 0.0f;
                 for (int v = 0; v < N; ++v)
                     grad_k += gp[v] * in_ci[v ^ m];
@@ -186,7 +180,7 @@ void HCNN::compute_gradients(const float* grad_out, const float* in, const float
                     const float* gp = grad_pre.data() + co * N;
                     for (int k = 0; k < K; ++k) {
                         float w = kernel[kernel_idx(co, ci, k)];
-                        uint32_t m = masks[k];
+                        uint32_t m = 1u << k;
                         for (size_t v = v_begin; v < v_end; ++v)
                             gi[v] += w * gp[v ^ m];
                     }
@@ -208,7 +202,7 @@ void HCNN::compute_gradients(const float* grad_out, const float* in, const float
         for (int ci = 0; ci < c_in; ++ci) {
             const float* in_ci = in + ci * N;
             for (int k = 0; k < K; ++k) {
-                uint32_t m = masks[k];
+                uint32_t m = 1u << k;
                 float grad_k = 0.0f;
                 for (int v = 0; v < N; ++v)
                     grad_k += gp[v] * in_ci[v ^ m];

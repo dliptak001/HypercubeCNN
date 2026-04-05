@@ -14,6 +14,11 @@ public:
     HCNNNetwork(int start_dim, int num_classes = 10, size_t num_threads = 0);
     ~HCNNNetwork();
 
+    HCNNNetwork(const HCNNNetwork&) = delete;
+    HCNNNetwork& operator=(const HCNNNetwork&) = delete;
+    HCNNNetwork(HCNNNetwork&&) = delete;
+    HCNNNetwork& operator=(HCNNNetwork&&) = delete;
+
     void add_conv(int c_out, bool use_relu = true, bool use_bias = true);
     void add_pool(PoolType type = PoolType::MAX);
 

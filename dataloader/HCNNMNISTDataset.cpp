@@ -105,7 +105,6 @@ HCNNMNISTDataset load_mnist(const std::string& images_path,
 
 void HCNNMNISTDataset::train_epoch(HCNNNetwork& net, float learning_rate,
                                    float momentum, int batch_size) {
-    static std::mt19937 rng(42);
     std::vector<size_t> order(samples.size());
     std::iota(order.begin(), order.end(), 0);
     std::shuffle(order.begin(), order.end(), rng);

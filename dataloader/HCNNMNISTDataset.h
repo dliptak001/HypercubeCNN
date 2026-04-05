@@ -1,6 +1,7 @@
 #pragma once
 
 #include "HCNNNetwork.h"
+#include <random>
 #include <vector>
 #include <string>
 
@@ -11,6 +12,7 @@ struct HCNNMNISTDataset {
     };
 
     std::vector<Sample> samples;
+    std::mt19937 rng{42};           // shuffle RNG, per-dataset for thread safety
 
     size_t size() const { return samples.size(); }
     const Sample& get(size_t i) const { return samples[i]; }

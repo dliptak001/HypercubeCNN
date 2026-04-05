@@ -1,6 +1,7 @@
 #include "HCNNNetwork.h"
 #include "ThreadPool.h"
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <random>
 
@@ -8,6 +9,9 @@ HCNNNetwork::HCNNNetwork(int dim, int num_classes, size_t num_threads)
     : start_dim(dim), current_dim(dim), num_classes(num_classes),
       readout(num_classes, 1),
       thread_pool(std::make_unique<ThreadPool>(num_threads)) {
+    if (dim < 3) {
+        throw std::runtime_error("HCNNNetwork requires start_dim >= 3");
+    }
     channel_counts.push_back(1);
 }
 
@@ -48,12 +52,9 @@ void HCNNNetwork::embed_input(const float* raw_input, int input_length,
                                  + std::to_string(N));
     }
     for (int i = 0; i < input_length; ++i) {
-        float val = raw_input[i];
-        if (val < -1.0f || val > 1.0f) {
-            throw std::runtime_error("Input value out of range [-1.0, 1.0]: "
-                                     + std::to_string(val));
-        }
-        out[i] = val;
+        assert(raw_input[i] >= -1.0f && raw_input[i] <= 1.0f &&
+               "Input value out of range [-1.0, 1.0]");
+        out[i] = raw_input[i];
     }
     for (int i = input_length; i < N; ++i) {
         out[i] = 0.0f;
@@ -61,7 +62,9 @@ void HCNNNetwork::embed_input(const float* raw_input, int input_length,
 }
 
 void HCNNNetwork::forward(const float* first_layer_activations, float* logits) const {
-    if (conv_layers.empty()) return;
+    if (conv_layers.empty()) {
+        throw std::runtime_error("HCNNNetwork::forward called with no conv layers");
+    }
 
     // Compute max buffer size
     int cur_N = 1 << start_dim;

@@ -51,8 +51,8 @@ void HCNNPool::backward(const float* grad_out, float* grad_in, int num_channels,
             }
         } else {
             for (int v = 0; v < output_N; ++v) {
-                g_in[v] = g_out[v] * 0.5f;
-                g_in[v ^ anti_mask] = g_out[v] * 0.5f;
+                g_in[v] += g_out[v] * 0.5f;
+                g_in[v ^ anti_mask] += g_out[v] * 0.5f;
             }
         }
     }

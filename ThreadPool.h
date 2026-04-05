@@ -52,6 +52,7 @@ public:
 
     /// Execute func(thread_id, range_begin, range_end) for chunks of [0, count).
     /// Caller participates as thread 0. Blocks until all work completes.
+    /// Must be called from a single thread (not concurrently with itself).
     template <typename F>
     void ForEach(size_t count, F&& func)
     {
@@ -94,14 +95,16 @@ private:
         size_t local_gen = 0;
         while (true)
         {
+            std::function<void(size_t)> fn;
             {
                 std::unique_lock lock(mutex_);
                 cv_work_.wait(lock, [&] { return stop_ || generation_ > local_gen; });
                 if (stop_) return;
                 local_gen = generation_;
+                fn = for_func_;   // copy under lock to avoid race with ForEach clearing it
             }
 
-            for_func_(tid);
+            fn(tid);
 
             if (remaining_.fetch_sub(1) == 1)
                 cv_done_.notify_one();
