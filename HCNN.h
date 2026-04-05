@@ -16,7 +16,7 @@
  * Each mask selects exactly one neighbor per vertex; each gets its own learned
  * weight, shared across all vertices (CNN-style weight sharing).
  *
- * All geometry is bitwise — neighbor lookup uses XOR with the mask array;
+ * All geometry is bitwise — neighbor lookup uses XOR with single-bit masks;
  * there are no adjacency lists or spatial padding.
  *
  * Memory layout is **channel-major**: element [c*N + v] stores channel c,
@@ -43,8 +43,8 @@ public:
     /**
      * @brief Construct a hypercube convolutional layer.
      *
-     * Builds the K = DIM nearest-neighbor XOR mask table.  Kernel and bias
-     * weights are initialized to zero; call randomize_weights() before training.
+     * Uses K = DIM nearest-neighbor XOR masks (computed inline).  Kernel and
+     * bias weights are initialized to zero; call randomize_weights() before training.
      *
      * Requires dim >= 3 so that K >= 3.
      *

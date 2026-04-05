@@ -17,7 +17,7 @@ PS1
 
 **Debug build:** Replace `cmake-build-release` with `cmake-build-debug`.
 
-**Run executable** (needs MinGW on PATH for libgomp-1.dll):
+**Run executable** (needs MinGW on PATH for MinGW runtime DLLs):
 ```bash
 powershell.exe -File - <<'PS1'
 $env:PATH = "C:\Program Files\JetBrains\CLion 2024.3.2\bin\mingw\bin;" + $env:PATH
