@@ -5,8 +5,10 @@
 #include <cmath>
 #include <random>
 
-HCNNNetwork::HCNNNetwork(int dim, int num_classes, size_t num_threads)
+HCNNNetwork::HCNNNetwork(int dim, int num_classes, ReadoutType readout_type,
+                         size_t num_threads)
     : start_dim(dim), current_dim(dim), num_classes(num_classes),
+      readout_type(readout_type),
       readout(num_classes, 1),
       thread_pool(std::make_unique<ThreadPool>(num_threads)) {
     if (dim < 3) {
@@ -33,9 +35,19 @@ void HCNNNetwork::add_pool(PoolType type) {
 }
 
 void HCNNNetwork::randomize_all_weights(float scale) {
-    // Rebuild readout with correct final channel count
     int final_channels = channel_counts.back();
-    readout = HCNNReadout(num_classes, final_channels);
+    int final_N = 1 << current_dim;
+
+    if (readout_type == ReadoutType::FLATTEN) {
+        // Flatten: readout sees all channel*vertex activations as independent inputs.
+        // Pass N=1 to readout so GAP is a no-op (average of 1 value = identity).
+        readout = HCNNReadout(num_classes, final_channels * final_N);
+        readout_N = 1;
+    } else {
+        // GAP: readout sees one averaged scalar per channel.
+        readout = HCNNReadout(num_classes, final_channels);
+        readout_N = final_N;
+    }
 
     std::mt19937 rng(42);
     for (auto& layer : conv_layers) {
@@ -102,7 +114,7 @@ void HCNNNetwork::forward(const float* first_layer_activations, float* logits) c
         std::swap(current, next_buf);
     }
 
-    readout.forward(current, logits, cur_N);
+    readout.forward(current, logits, readout_N);
 }
 
 void HCNNNetwork::train_step(const float* raw_input, int input_length,
@@ -159,7 +171,7 @@ void HCNNNetwork::train_step(const float* raw_input, int input_length,
     // Readout forward
     auto& final_c = cache[num_layers];
     std::vector<float> logits(num_classes, 0.0f);
-    readout.forward(final_c.activation.data(), logits.data(), final_c.N);
+    readout.forward(final_c.activation.data(), logits.data(), readout_N);
 
     // Softmax + cross-entropy gradient
     // softmax: p[i] = exp(logits[i] - max) / sum(exp(logits[j] - max))
@@ -188,7 +200,7 @@ void HCNNNetwork::train_step(const float* raw_input, int input_length,
     // Backward through readout
     std::vector<float> grad_current(final_c.channels * final_c.N);
     readout.backward(grad_logits.data(), final_c.activation.data(),
-                     final_c.N, grad_current.data(), learning_rate, momentum,
+                     readout_N, grad_current.data(), learning_rate, momentum,
                      weight_decay);
 
     // Backward through layers in reverse
@@ -302,7 +314,7 @@ void HCNNNetwork::train_batch(const float* const* inputs, const int* input_lengt
         // Readout forward
         auto& final_c = cache[num_layers];
         std::vector<float> logits(num_classes, 0.0f);
-        readout.forward(final_c.activation.data(), logits.data(), final_c.N);
+        readout.forward(final_c.activation.data(), logits.data(), readout_N);
 
         // Softmax + cross-entropy gradient
         float max_logit = logits[0];
@@ -326,7 +338,7 @@ void HCNNNetwork::train_batch(const float* const* inputs, const int* input_lengt
         std::vector<float> rw_grad(readout.get_weight_size());
         std::vector<float> rb_grad(readout.get_bias_size());
         readout.compute_gradients(grad_logits.data(), final_c.activation.data(),
-                                  final_c.N, grad_current.data(),
+                                  readout_N, grad_current.data(),
                                   rw_grad.data(), rb_grad.data());
 
         // Accumulate readout gradients

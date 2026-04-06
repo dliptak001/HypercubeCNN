@@ -9,9 +9,16 @@
 
 class ThreadPool;
 
+/// Readout strategy after the final conv/pool layer.
+/// GAP: global average pooling per channel → linear (translation-invariant).
+/// FLATTEN: concatenate all channel×vertex activations → linear (position-sensitive).
+enum class ReadoutType { GAP, FLATTEN };
+
 class HCNNNetwork {
 public:
-    HCNNNetwork(int start_dim, int num_classes = 10, size_t num_threads = 0);
+    HCNNNetwork(int start_dim, int num_classes = 10,
+                ReadoutType readout_type = ReadoutType::GAP,
+                size_t num_threads = 0);
     ~HCNNNetwork();
 
     HCNNNetwork(const HCNNNetwork&) = delete;
@@ -57,6 +64,8 @@ private:
     int start_dim;
     int current_dim;
     int num_classes;
+    ReadoutType readout_type;
+    int readout_N{1};          // N passed to readout: 1 for FLATTEN, final_N for GAP
     std::vector<HCNN> conv_layers;
     std::vector<HCNNPool> pool_layers;
     std::vector<bool> is_conv_layer;

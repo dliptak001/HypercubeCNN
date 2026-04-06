@@ -2,8 +2,8 @@
 /// Tests HCNN on parity, majority, threshold, and DNF functions where
 /// the input IS a hypercube vertex (no embedding distortion).
 ///
-/// Each sample: vertex v → one-hot activation (N floats), label ∈ {0,1}.
-/// Binary classification with 2-class softmax.
+/// Each sample: vertex v → bipolar activation (+1 at v, -1 elsewhere), label ∈ {0,1}.
+/// Binary classification with 2-class softmax, flatten readout (not GAP).
 
 #include "HCNNNetwork.h"
 #include "BooleanData.h"
@@ -28,15 +28,14 @@ static float evaluate(const HCNNNetwork& net,
     int N = net.get_start_N();
     int K = net.get_num_classes();
     int correct = 0;
-    std::vector<float> input(N, 0.0f);
+    std::vector<float> embedded(N);
     std::vector<float> logits(K);
 
     for (const auto& s : samples) {
-        // One-hot encoding: 1.0 at vertex s.vertex, 0.0 elsewhere
-        std::fill(input.begin(), input.end(), 0.0f);
-        input[s.vertex] = 1.0f;
-        net.embed_input(input.data(), N, input.data());
-        net.forward(input.data(), logits.data());
+        // Bipolar encoding: +1 at input vertex, -1 elsewhere
+        std::fill(embedded.begin(), embedded.end(), -1.0f);
+        embedded[s.vertex] = 1.0f;
+        net.forward(embedded.data(), logits.data());
         if (argmax(logits.data(), K) == s.label) ++correct;
     }
     return 100.0f * correct / static_cast<float>(samples.size());
@@ -59,15 +58,16 @@ static RunResult train_and_eval(const BooleanDataset& ds,
     int dim = ds.dim;
     int num_classes = 2;  // binary classification
 
-    HCNNNetwork net(dim, num_classes);
+    // FLATTEN readout: conv+GAP is translation-invariant on the hypercube,
+    // so it provably cannot distinguish bipolar-encoded vertices.
+    // Flatten preserves positional information needed for vertex classification.
+    HCNNNetwork net(dim, num_classes, ReadoutType::FLATTEN);
 
     // Build conv (+ optional pool) layers
     int c_out = num_channels;
     for (int i = 0; i < num_conv_layers; ++i) {
         net.add_conv(c_out, true, true);
-        if (use_pooling && i < num_conv_layers - 1) {
-            // Only pool between layers, not after the last one
-            // And only if DIM is still > 3 after pooling
+        if (use_pooling) {
             if (dim - 1 >= 3) {
                 net.add_pool(PoolType::MAX);
                 --dim;
@@ -76,9 +76,9 @@ static RunResult train_and_eval(const BooleanDataset& ds,
     }
     net.randomize_all_weights();
 
-    // Prepare one-hot training inputs
+    // Prepare bipolar training inputs: +1 at input vertex, -1 elsewhere
     int N = net.get_start_N();
-    std::vector<std::vector<float>> train_inputs(ds.train.size(), std::vector<float>(N, 0.0f));
+    std::vector<std::vector<float>> train_inputs(ds.train.size(), std::vector<float>(N, -1.0f));
     std::vector<const float*> input_ptrs(ds.train.size());
     std::vector<int> targets(ds.train.size());
 
@@ -163,10 +163,10 @@ int main() {
     const int DIM = 10;
     const float train_fraction = 0.7f;  // 70% train, 30% test
     const int epochs = 100;
-    const float lr = 0.06f;
-    const int channels = 32;
+    const float lr = 0.01f;           // lower LR for flatten readout (more params)
+    const int channels = 16;          // fewer channels to limit flatten readout size
     const int conv_layers = 3;
-    const bool use_pooling = false;  // start without pooling
+    const bool use_pooling = true;    // pool to reduce N before flatten
 
     std::cout << "Boolean Function Learning Experiment\n";
     std::cout << "DIM=" << DIM << " (N=" << (1 << DIM) << ")"
