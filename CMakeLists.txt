@@ -16,6 +16,7 @@ add_library(HypercubeCNNCore STATIC
     HCNNNetwork.cpp
     HCNNReadout.cpp
     dataloader/HCNNMNISTDataset.cpp
+    dataloader/MoleculeNetDataset.cpp
 )
 
 set(PUBLIC_HEADERS
@@ -25,6 +26,7 @@ set(PUBLIC_HEADERS
     HCNNReadout.h
     ThreadPool.h
     dataloader/HCNNMNISTDataset.h
+    dataloader/MoleculeNetDataset.h
 )
 
 target_include_directories(HypercubeCNNCore
@@ -58,10 +60,11 @@ endif()
 # ——— Executables: only when building standalone (not via FetchContent) ———
 if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
     add_executable(HypercubeCNN main.cpp)
+    add_executable(MolNetTrain molnet_train.cpp)
     add_executable(GradientCheck diagnostics/gradient_check.cpp)
     add_executable(LayerIsolation diagnostics/layer_isolation.cpp)
 
-    set(EXE_TARGETS HypercubeCNN GradientCheck LayerIsolation)
+    set(EXE_TARGETS HypercubeCNN MolNetTrain GradientCheck LayerIsolation)
 
     foreach(tgt IN LISTS EXE_TARGETS)
         target_link_libraries(${tgt} PRIVATE HypercubeCNNCore)
