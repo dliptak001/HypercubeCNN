@@ -274,122 +274,162 @@ void HCNNNetwork::train_batch(const float* const* inputs, const int* input_lengt
         a.readout_bias_grad.assign(readout.get_bias_size(), 0.0f);
     }
 
-    int total = input_channels * N;
+    // Pre-compute per-layer sizes (N and channels) so we can pre-allocate.
+    struct LayerInfo { int N; int channels; };
+    std::vector<LayerInfo> layer_info(num_layers + 1);
+    layer_info[0] = {N, input_channels};
+    {
+        int cur = N;
+        size_t ci2 = 0, pi2 = 0;
+        for (int i = 0; i < num_layers; ++i) {
+            if (is_conv_layer[i]) {
+                layer_info[i + 1] = {cur, conv_layers[ci2].get_c_out()};
+                ++ci2;
+            } else {
+                int out_N = pool_layers[pi2].get_output_N();
+                layer_info[i + 1] = {out_N, layer_info[i].channels};
+                cur = out_N;
+                ++pi2;
+            }
+        }
+    }
 
-    // Process samples in parallel, each thread accumulates into its own accum
-    auto process_sample = [&](size_t tid, int sample_idx) {
-        auto& a = accum[tid];
-
-        std::vector<float> embedded(total, 0.0f);
-        embed_input(inputs[sample_idx], input_lengths[sample_idx], embedded.data());
-
-        // Per-layer cache
+    // Pre-allocated per-thread work buffers (eliminates ~40 heap allocs per sample).
+    struct ThreadBuf {
         struct LayerCache {
             std::vector<float> activation;
             std::vector<float> pre_act;
             std::vector<int> max_indices;
-            int N;
-            int channels;
         };
-        std::vector<LayerCache> cache(num_layers + 1);
+        std::vector<LayerCache> cache;
+        std::vector<float> logits, probs, grad_logits;
+        std::vector<float> grad_a, grad_b;  // ping-pong gradient buffers
+        std::vector<float> rw_grad, rb_grad;
+        std::vector<std::vector<float>> kg, bg;  // per-conv-layer gradient scratch
+    };
 
-        cache[0].N = N;
-        cache[0].channels = input_channels;
-        cache[0].activation.assign(embedded.begin(), embedded.end());
+    std::vector<ThreadBuf> tbufs(nt);
+    for (size_t t = 0; t < nt; ++t) {
+        auto& b = tbufs[t];
+        b.cache.resize(num_layers + 1);
+        for (int i = 0; i <= num_layers; ++i) {
+            auto& li = layer_info[i];
+            b.cache[i].activation.resize(li.channels * li.N);
+            b.cache[i].pre_act.resize(li.channels * li.N);
+            b.cache[i].max_indices.resize(li.channels * li.N);
+        }
+        b.logits.resize(num_classes);
+        b.probs.resize(num_classes);
+        b.grad_logits.resize(num_classes);
+        // grad buffers sized to max layer size
+        int max_layer_size = 0;
+        for (int i = 0; i <= num_layers; ++i)
+            max_layer_size = std::max(max_layer_size,
+                                      layer_info[i].channels * layer_info[i].N);
+        b.grad_a.resize(max_layer_size);
+        b.grad_b.resize(max_layer_size);
+        b.rw_grad.resize(readout.get_weight_size());
+        b.rb_grad.resize(readout.get_bias_size());
+        b.kg.resize(num_conv);
+        b.bg.resize(num_conv);
+        for (size_t ci2 = 0; ci2 < num_conv; ++ci2) {
+            b.kg[ci2].resize(conv_layers[ci2].get_kernel_size());
+            b.bg[ci2].resize(conv_layers[ci2].get_bias_size());
+        }
+    }
 
-        int cur_N = N;
+    // Process samples in parallel, each thread accumulates into its own accum
+    auto process_sample = [&](size_t tid, int sample_idx) {
+        auto& a = accum[tid];
+        auto& b = tbufs[tid];
+
+        // Embed directly into cache[0]
+        auto& c0 = b.cache[0];
+        std::fill(c0.activation.begin(), c0.activation.end(), 0.0f);
+        embed_input(inputs[sample_idx], input_lengths[sample_idx], c0.activation.data());
+
         size_t ci = 0, pi = 0;
 
         // Forward pass
         for (int i = 0; i < num_layers; ++i) {
-            auto& c = cache[i + 1];
+            auto& c = b.cache[i + 1];
             if (is_conv_layer[i]) {
-                c.N = cur_N;
-                c.channels = conv_layers[ci].get_c_out();
-                c.activation.resize(c.channels * cur_N);
-                c.pre_act.resize(c.channels * cur_N);
-                conv_layers[ci].forward(cache[i].activation.data(),
+                conv_layers[ci].forward(b.cache[i].activation.data(),
                                         c.activation.data(), c.pre_act.data());
                 ++ci;
             } else {
-                c.N = pool_layers[pi].get_output_N();
-                c.channels = cache[i].channels;
-                c.activation.resize(c.channels * c.N);
-                pool_layers[pi].forward(cache[i].activation.data(),
-                                        c.activation.data(), c.channels,
+                pool_layers[pi].forward(b.cache[i].activation.data(),
+                                        c.activation.data(),
+                                        layer_info[i].channels,
                                         &c.max_indices);
-                cur_N = c.N;
                 ++pi;
             }
         }
 
         // Readout forward
-        auto& final_c = cache[num_layers];
-        std::vector<float> logits(num_classes, 0.0f);
-        readout.forward(final_c.activation.data(), logits.data(), readout_N);
+        auto& final_c = b.cache[num_layers];
+        std::fill(b.logits.begin(), b.logits.end(), 0.0f);
+        readout.forward(final_c.activation.data(), b.logits.data(), readout_N);
 
         // Softmax + cross-entropy gradient
-        float max_logit = logits[0];
+        float max_logit = b.logits[0];
         for (int i = 1; i < num_classes; ++i)
-            if (logits[i] > max_logit) max_logit = logits[i];
+            if (b.logits[i] > max_logit) max_logit = b.logits[i];
 
-        std::vector<float> probs(num_classes);
         float sum_exp = 0.0f;
         for (int i = 0; i < num_classes; ++i) {
-            probs[i] = std::exp(logits[i] - max_logit);
-            sum_exp += probs[i];
+            b.probs[i] = std::exp(b.logits[i] - max_logit);
+            sum_exp += b.probs[i];
         }
-        for (int i = 0; i < num_classes; ++i) probs[i] /= sum_exp;
+        for (int i = 0; i < num_classes; ++i) b.probs[i] /= sum_exp;
 
-        std::vector<float> grad_logits(num_classes);
         float cw = (class_weights != nullptr) ? class_weights[targets[sample_idx]] : 1.0f;
         for (int i = 0; i < num_classes; ++i)
-            grad_logits[i] = cw * (probs[i] - (i == targets[sample_idx] ? 1.0f : 0.0f));
+            b.grad_logits[i] = cw * (b.probs[i] - (i == targets[sample_idx] ? 1.0f : 0.0f));
 
-        // Readout backward (compute_gradients only)
-        std::vector<float> grad_current(final_c.channels * final_c.N);
-        std::vector<float> rw_grad(readout.get_weight_size());
-        std::vector<float> rb_grad(readout.get_bias_size());
-        readout.compute_gradients(grad_logits.data(), final_c.activation.data(),
-                                  readout_N, grad_current.data(),
-                                  rw_grad.data(), rb_grad.data());
+        // Readout backward
+        int final_size = layer_info[num_layers].channels * layer_info[num_layers].N;
+        std::fill(b.grad_a.begin(), b.grad_a.begin() + final_size, 0.0f);
+        readout.compute_gradients(b.grad_logits.data(), final_c.activation.data(),
+                                  readout_N, b.grad_a.data(),
+                                  b.rw_grad.data(), b.rb_grad.data());
 
-        // Accumulate readout gradients
         for (int i = 0; i < readout.get_weight_size(); ++i)
-            a.readout_weight_grad[i] += rw_grad[i];
+            a.readout_weight_grad[i] += b.rw_grad[i];
         for (int i = 0; i < readout.get_bias_size(); ++i)
-            a.readout_bias_grad[i] += rb_grad[i];
+            a.readout_bias_grad[i] += b.rb_grad[i];
 
-        // Backward through layers
+        // Backward through layers — ping-pong between grad_a and grad_b
+        // grad_a holds the current gradient (from readout backward above)
         ci = conv_layers.size();
         pi = pool_layers.size();
 
         for (int i = num_layers - 1; i >= 0; --i) {
-            std::vector<float> grad_prev(cache[i].channels * cache[i].N, 0.0f);
+            int prev_size = layer_info[i].channels * layer_info[i].N;
+            std::fill(b.grad_b.begin(), b.grad_b.begin() + prev_size, 0.0f);
 
             if (is_conv_layer[i]) {
                 --ci;
-                std::vector<float> kg(conv_layers[ci].get_kernel_size());
-                std::vector<float> bg(conv_layers[ci].get_bias_size());
                 conv_layers[ci].compute_gradients(
-                    grad_current.data(),
-                    cache[i].activation.data(),
-                    cache[i + 1].pre_act.data(),
-                    (i > 0) ? grad_prev.data() : nullptr,
-                    kg.data(), bg.empty() ? nullptr : bg.data());
+                    b.grad_a.data(),
+                    b.cache[i].activation.data(),
+                    b.cache[i + 1].pre_act.data(),
+                    (i > 0) ? b.grad_b.data() : nullptr,
+                    b.kg[ci].data(),
+                    b.bg[ci].empty() ? nullptr : b.bg[ci].data());
 
-                // Accumulate conv gradients
                 for (int j = 0; j < conv_layers[ci].get_kernel_size(); ++j)
-                    a.conv_kernel_grad[ci][j] += kg[j];
+                    a.conv_kernel_grad[ci][j] += b.kg[ci][j];
                 for (int j = 0; j < conv_layers[ci].get_bias_size(); ++j)
-                    a.conv_bias_grad[ci][j] += bg[j];
+                    a.conv_bias_grad[ci][j] += b.bg[ci][j];
             } else {
                 --pi;
-                pool_layers[pi].backward(grad_current.data(), grad_prev.data(),
-                                         cache[i].channels, &cache[i + 1].max_indices);
+                pool_layers[pi].backward(b.grad_a.data(), b.grad_b.data(),
+                                         layer_info[i].channels,
+                                         &b.cache[i + 1].max_indices);
             }
 
-            grad_current = std::move(grad_prev);
+            std::swap(b.grad_a, b.grad_b);
         }
     };
 

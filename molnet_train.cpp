@@ -139,17 +139,18 @@ int main(int argc, char** argv) {
     printf("Train label balance: %d/%d positive (%.0f%%)\n",
            pos, valid_train, 100.0f * pos_frac);
 
-    // Class weights: inverse frequency, normalized so weights average to 1.
-    // w[c] = N / (num_classes * count[c])
-    float class_weights[2] = {
-        static_cast<float>(valid_train) / (2.0f * neg),
-        static_cast<float>(valid_train) / (2.0f * pos)
-    };
-    // Only apply if imbalanced (minority < 30%)
-    bool use_class_weights = (pos_frac < 0.3f || pos_frac > 0.7f);
-    if (use_class_weights) {
-        printf("Class weights: neg=%.3f pos=%.3f (imbalanced)\n",
-               class_weights[0], class_weights[1]);
+    // For extreme imbalance, oversample minority class to ~50/50.
+    // This ensures every batch sees positives, which is more effective than
+    // loss weighting when the minority is <10%.
+    bool oversample = (pos_frac < 0.2f || pos_frac > 0.8f);
+    std::vector<size_t> pos_indices, neg_indices;
+    for (size_t i = 0; i < ds.train.size(); ++i) {
+        if (ds.train[i].label == 1) pos_indices.push_back(i);
+        else if (ds.train[i].label == 0) neg_indices.push_back(i);
+    }
+    if (oversample) {
+        printf("Oversampling: %d pos -> %d (to match %d neg)\n",
+               pos, neg, neg);
     }
 
     // Scale architecture and hyperparameters to dataset size
@@ -159,8 +160,8 @@ int main(int argc, char** argv) {
     const int batch_size = 32;
 
     bool large_dataset = (ds.train.size() > 5000);
-    int epochs       = large_dataset ? 20 : 60;
-    float lr_max     = large_dataset ? 0.06f : 0.03f;
+    int epochs       = large_dataset ? 40 : 60;
+    float lr_max     = large_dataset ? 0.03f : 0.03f;
     float lr_min     = 1e-5f;
     float weight_decay = large_dataset ? 1e-4f : 1e-3f;
 
@@ -219,12 +220,25 @@ int main(int argc, char** argv) {
 
         auto t0 = std::chrono::steady_clock::now();
 
-        // Shuffle and train mini-batches
-        std::vector<size_t> order(ds.train.size());
-        std::iota(order.begin(), order.end(), 0);
+        // Build epoch training order: oversample minority if needed
+        std::vector<size_t> order;
+        if (oversample) {
+            // All negatives + positives repeated to match
+            order = neg_indices;
+            std::shuffle(order.begin(), order.end(), shuffle_rng);
+            // Resample positives with replacement to match neg count
+            std::vector<size_t> pos_resampled(neg_indices.size());
+            std::uniform_int_distribution<size_t> pos_dist(0, pos_indices.size() - 1);
+            for (size_t i = 0; i < pos_resampled.size(); ++i)
+                pos_resampled[i] = pos_indices[pos_dist(shuffle_rng)];
+            order.insert(order.end(), pos_resampled.begin(), pos_resampled.end());
+        } else {
+            order.resize(ds.train.size());
+            std::iota(order.begin(), order.end(), 0);
+        }
         std::shuffle(order.begin(), order.end(), shuffle_rng);
 
-        int n = static_cast<int>(ds.train.size());
+        int n = static_cast<int>(order.size());
         for (int start = 0; start < n; start += batch_size) {
             int actual = std::min(batch_size, n - start);
             std::vector<const float*> batch_ptrs(actual);
@@ -238,7 +252,7 @@ int main(int argc, char** argv) {
             net.train_batch(batch_ptrs.data(), batch_lens.data(),
                             batch_targets.data(), actual,
                             current_lr, momentum, weight_decay,
-                            use_class_weights ? class_weights : nullptr);
+                            nullptr);
         }
 
         auto t1 = std::chrono::steady_clock::now();
