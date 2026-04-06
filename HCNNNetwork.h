@@ -41,14 +41,17 @@ public:
 
     void train_step(const float* raw_input, int input_length,
                     int target_class, float learning_rate, float momentum = 0.0f,
-                    float weight_decay = 0.0f);
+                    float weight_decay = 0.0f,
+                    const float* class_weights = nullptr);
 
     /// Mini-batch training: process batch_size samples in parallel, average
     /// gradients, then apply a single weight update. Requires ThreadPool.
+    /// class_weights: optional per-class loss scaling (length num_classes).
     void train_batch(const float* const* inputs, const int* input_lengths,
                      const int* targets, int batch_size,
                      float learning_rate, float momentum = 0.0f,
-                     float weight_decay = 0.0f);
+                     float weight_decay = 0.0f,
+                     const float* class_weights = nullptr);
 
     int get_start_dim() const { return start_dim; }
     int get_start_N() const { return 1 << start_dim; }

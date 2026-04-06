@@ -134,8 +134,23 @@ int main(int argc, char** argv) {
         ++valid_train;
         if (s.label == 1) ++pos;
     }
+    int neg = valid_train - pos;
+    float pos_frac = static_cast<float>(pos) / valid_train;
     printf("Train label balance: %d/%d positive (%.0f%%)\n",
-           pos, valid_train, 100.0f * pos / valid_train);
+           pos, valid_train, 100.0f * pos_frac);
+
+    // Class weights: inverse frequency, normalized so weights average to 1.
+    // w[c] = N / (num_classes * count[c])
+    float class_weights[2] = {
+        static_cast<float>(valid_train) / (2.0f * neg),
+        static_cast<float>(valid_train) / (2.0f * pos)
+    };
+    // Only apply if imbalanced (minority < 30%)
+    bool use_class_weights = (pos_frac < 0.3f || pos_frac > 0.7f);
+    if (use_class_weights) {
+        printf("Class weights: neg=%.3f pos=%.3f (imbalanced)\n",
+               class_weights[0], class_weights[1]);
+    }
 
     // Scale architecture and hyperparameters to dataset size
     const int DIM = 10;
@@ -222,7 +237,8 @@ int main(int argc, char** argv) {
             }
             net.train_batch(batch_ptrs.data(), batch_lens.data(),
                             batch_targets.data(), actual,
-                            current_lr, momentum, weight_decay);
+                            current_lr, momentum, weight_decay,
+                            use_class_weights ? class_weights : nullptr);
         }
 
         auto t1 = std::chrono::steady_clock::now();

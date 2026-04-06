@@ -127,7 +127,7 @@ void HCNNNetwork::forward(const float* first_layer_activations, float* logits) c
 
 void HCNNNetwork::train_step(const float* raw_input, int input_length,
                              int target_class, float learning_rate, float momentum,
-                             float weight_decay) {
+                             float weight_decay, const float* class_weights) {
     int N = 1 << start_dim;
     int total = input_channels * N;
     std::vector<float> embedded(total, 0.0f);
@@ -202,8 +202,9 @@ void HCNNNetwork::train_step(const float* raw_input, int input_length,
     }
 
     std::vector<float> grad_logits(num_classes);
+    float cw = (class_weights != nullptr) ? class_weights[target_class] : 1.0f;
     for (int i = 0; i < num_classes; ++i) {
-        grad_logits[i] = probs[i] - (i == target_class ? 1.0f : 0.0f);
+        grad_logits[i] = cw * (probs[i] - (i == target_class ? 1.0f : 0.0f));
     }
 
     // Backward through readout
@@ -243,7 +244,7 @@ void HCNNNetwork::train_step(const float* raw_input, int input_length,
 void HCNNNetwork::train_batch(const float* const* inputs, const int* input_lengths,
                               const int* targets, int batch_size,
                               float learning_rate, float momentum,
-                              float weight_decay) {
+                              float weight_decay, const float* class_weights) {
     if (batch_size <= 0) return;
 
     int N = 1 << start_dim;
@@ -341,8 +342,9 @@ void HCNNNetwork::train_batch(const float* const* inputs, const int* input_lengt
         for (int i = 0; i < num_classes; ++i) probs[i] /= sum_exp;
 
         std::vector<float> grad_logits(num_classes);
+        float cw = (class_weights != nullptr) ? class_weights[targets[sample_idx]] : 1.0f;
         for (int i = 0; i < num_classes; ++i)
-            grad_logits[i] = probs[i] - (i == targets[sample_idx] ? 1.0f : 0.0f);
+            grad_logits[i] = cw * (probs[i] - (i == targets[sample_idx] ? 1.0f : 0.0f));
 
         // Readout backward (compute_gradients only)
         std::vector<float> grad_current(final_c.channels * final_c.N);
