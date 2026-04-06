@@ -104,9 +104,14 @@ static EvalResult evaluate(const HCNNNetwork& net,
 // ---------------------------------------------------------------------------
 
 int main(int argc, char** argv) {
-    // Data path
+    // Parse arguments
     std::string data_path = "data/bbbp_ecfp4_1024.hcfp";
-    if (argc > 1) data_path = argv[1];
+    bool no_conv = false;
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--no-conv") no_conv = true;
+        else data_path = arg;
+    }
 
     std::cout << "Loading " << data_path << "...\n";
     auto ds = load_hcfp(data_path, "BBBP");
@@ -132,17 +137,24 @@ int main(int argc, char** argv) {
     const float momentum = 0.9f;
     const int batch_size = 32;
 
-    // Small model sized for ~1600 training samples (~5K params)
     HCNNNetwork net(DIM, num_classes);
-    net.add_conv(16, true, true);     // K=10, 1->16
-    net.add_pool(PoolType::MAX);      // DIM 10->9
-    net.add_conv(32, true, true);     // K=9, 16->32
-    net.add_pool(PoolType::MAX);      // DIM 9->8
+    if (no_conv) {
+        // Ablation: single conv (1 channel, no ReLU, no bias) + no pooling.
+        // This is the minimal pipeline: a linear combination of Hamming-1
+        // neighbors → GAP → linear readout. Tests whether stacked conv+pool
+        // adds value beyond a single-hop linear filter.
+        net.add_conv(1, /*use_relu=*/false, /*use_bias=*/false);  // K=10, 10 params
+    } else {
+        // Full model: 2 conv+pool stages (~5K params)
+        net.add_conv(16, true, true);     // K=10, 1->16
+        net.add_pool(PoolType::MAX);      // DIM 10->9
+        net.add_conv(32, true, true);     // K=9, 16->32
+        net.add_pool(PoolType::MAX);      // DIM 9->8
+    }
     net.randomize_all_weights();
 
-    std::cout << "\nArchitecture: 2 conv+pool stages (16->32)"
-              << " DIM " << DIM << "->8"
-              << " ~5K params\n";
+    std::cout << "\nArchitecture: " << (no_conv ? "NO CONV (GAP -> linear ablation)" :
+              "2 conv+pool stages (16->32)") << "\n";
     std::cout << "Optimizer: SGD, momentum=" << momentum
               << " wd=" << weight_decay
               << " lr=" << lr_max << "->cosine->" << lr_min
