@@ -1,94 +1,80 @@
-**Hypercube Convolutional Neural Networks (HypercubeCNN)**  
-**Project Document: Initial Assessment**
+# HypercubeCNN — Concept
 
-**Author:** David Liptak  
-**Date:** April 3, 2026
+**Author:** David Liptak
+**Date:** April 2026 (revised)
 
-**References:**
-- [HypercubeRC (HRC)](https://github.com/dliptak001/HypercubeRC) -- Reservoir-computing implementation on a hypercube substrate.
-- [HypercubeHopfield (HHOP)](https://github.com/dliptak001/HypercubeHopfield) -- Sparse local-attention modern Hopfield network built on the same hypercube primitive.
+## What is HypercubeCNN?
 
-**Important Scope Note:** HRC and HHOP are for concept-level awareness only. There is no intention to integrate them with HypercubeCNN.
+HypercubeCNN is a convolutional neural network that operates on binary hypercubes instead of spatial grids. The substrate is a DIM-dimensional hypercube with N = 2^DIM vertices. Each vertex is a DIM-bit integer; neighbors are reached by flipping single bits (XOR). All geometry is bitwise — no adjacency lists, no spatial coordinates, no padding.
 
----
+The convolution kernel learns one weight per bit-flip direction (per input/output channel pair), shared across all vertices. This is the hypercube analogue of a 3x3 spatial kernel shared across all pixel positions. The weight sharing is mathematically exact: the hypercube's vertex-transitive symmetry (the group Z_2^n) guarantees that every vertex has identical local structure.
 
-### Executive Summary
+## Where it came from
 
-HypercubeRC and HypercubeHopfield have demonstrated the power of the hypercube as a core structural primitive in machine-learning architectures. HypercubeCNN explores extending this same hypercube substrate -- vertices as DIM-bit binary indices, edges via single-bit flips, neighborhoods defined by Hamming distance/shells -- to Convolutional Neural Networks.
+HypercubeCNN is the third project built on the binary hypercube primitive:
 
-HRC and HHOP showed that the hypercube delivers scale-invariant hyperparameters, O(1) neighbor lookup with zero adjacency storage, exponential capacity, and hardware-friendly bitwise operations. The central question for HypercubeCNN is whether this discrete Hamming-space geometry can support the kind of local feature extraction that makes Euclidean CNNs so powerful on vision tasks.
+- **HypercubeRC** — reservoir computing on hypercube topology. Demonstrated XOR-based neighbor lookup, Hamming-shell connectivity, and scale-invariant hyperparameters.
+- **HypercubeHopfield** — sparse local-attention Hopfield network. Demonstrated Hamming-ball neighborhoods for associative memory with >250x capacity scaling.
 
-**Initial verdict:** Yes -- by redefining "convolution" geometrically on the hypercube graph itself rather than forcing Euclidean kernels. The result could be a new family of compact, translation-equivariant (in Hamming sense), and extremely efficient conv architectures.
+Both projects proved the hypercube is a practical, storage-free, hardware-native substrate for neural computation. HypercubeCNN asks: can the same substrate support learned convolutional feature extraction with end-to-end backpropagation?
 
----
+**Important:** HRC and HHOP are conceptual predecessors only. There is no code integration between the projects.
 
-### 1. Core Insight from Existing Work (Conceptual Only)
+## The core operation
 
-HRC arranges reservoir neurons on a Boolean hypercube graph and uses implicit XOR/Hamming-shell connectivity plus a quadratic translation layer to achieve dramatic performance gains on benchmarks such as NARMA-10.
+For each output channel and each vertex v:
 
-HHOP leverages the identical topology for sparse local-attention within Hamming-ball neighborhoods, yielding >250x capacity scaling at DIM=8 while preserving perfect recall under noise and ultra-fast XOR-based retrieval.
+```
+out(v) = bias + sum over (input_channel, k) of w[channel, k] * in[channel, v ^ (1 << k)]
+```
 
-These projects illustrate how the hypercube's vertex-transitive symmetry can turn a seemingly "non-Euclidean" structure into a practical, storage-free, and hardware-native primitive.
+The expression `v ^ (1 << k)` is an XOR that flips bit k of vertex v, yielding the nearest neighbor along dimension k. With K = DIM directions per vertex, the kernel sees all Hamming-distance-1 neighbors — the tightest possible local neighborhood on the hypercube.
 
----
+After the weighted sum: optional bias, then ReLU activation. Standard CNN mechanics.
 
-### 2. The Apparent Mismatch and Why It Is Bridgeable
+## Why it works
 
-Classic CNNs rely on 2D/3D Euclidean lattices for sliding kernels, shared weights, translation equivariance, and hierarchical feature learning. The hypercube lives in discrete Hamming space.
+**Vertex-transitive symmetry.** Every vertex of a binary hypercube is structurally identical to every other. Weight sharing is not an approximation (as it arguably is at image boundaries in spatial CNNs) — it is exact. The kernel applied at vertex 0 sees the same local geometry as the kernel at vertex 571.
 
-**Key observation:** There is no need to force Euclidean geometry. Instead, convolution is redefined as shared-weight message passing over Hamming-ball neighborhoods or Hamming shells. Because the hypercube is vertex-transitive, the same kernel automatically applies to every vertex with perfect symmetry -- no padding, no border artifacts.
+**Composable receptive fields.** One layer sees Hamming distance 1. Two stacked layers see distance 2. After DIM layers, every vertex can influence every other vertex. The hypercube diameter is only DIM (logarithmic in N), so global information propagates fast.
 
-This yields a native hypercube convolution operator that is:
-- Parameter-efficient (one kernel per layer, applied uniformly)
-- Computationally trivial (bit-flip indexing + XOR)
-- Naturally sparse and local in Hamming distance
+**Bitwise computation.** Neighbor lookup is a single XOR instruction. No pointer chasing, no adjacency storage, no hash tables. The entire topology is implicit in the bit representation of vertex indices.
 
-The only binary element is the addressing scheme for vertex neighbors (DIM-bit indices and single-bit flips). All activations remain ordinary scalars (or vectors), exactly as in a standard network.
+**Parameter efficiency.** The kernel has K = DIM weights per input/output channel pair. At DIM=10, that's 10 weights — comparable to a 3x3 spatial kernel (9 weights). The architecture is not wider than a standard CNN; it's shaped differently.
 
----
+## Pooling
 
-### 3. Promising Adaptation Pathways
+Antipodal pooling pairs each vertex v with its bitwise complement `v ^ (2^DIM - 1)`, the maximally distant vertex. One survives (max or average). This reduces DIM by 1 — the output is a perfect (DIM-1)-dimensional hypercube.
 
-1. **Hypercube-Graph Convolution**
-    - Kernel = small set of learnable weights applied to all neighbors at distance 1-r.
-    - Mirrors the spirit of local connectivity explored conceptually in prior work.
-    - Backprop-friendly and fully differentiable.
+The analogy to 2x2 spatial max-pooling holds, but instead of collapsing adjacent pixels, antipodal pooling collapses maximally separated vertices — capturing the widest possible context per reduction step.
 
-2. **Euclidean-to-Hypercube Embedding**
-    - Inputs are scalars (e.g., pixel values or patch features).
-    - Map them directly onto hypercube vertices. No binary encoding of data is required -- the addressing scheme already provides the binary structure.
-    - The diameter of the hypercube is only DIM (extremely small in practice), so information from any one point propagates to all others in just a few message-passing steps. This makes the embedding effectively self-resolving; spatial hierarchies are preserved naturally through the fast global reach of the graph.
+## What it's for
 
-3. **Hierarchical / Recursive Hypercubes**
-    - Treat higher-DIM hypercubes as composed of lower-DIM subcubes, forming natural multi-resolution "pyramids" for pooling/striding.
-    - Provides the same hierarchical feature extraction that powers today's CNNs.
+HypercubeCNN is designed for data that naturally lives on binary hypercubes — or can be meaningfully mapped onto them:
 
-4. **Hardware-Native Advantages**
-    - Pure bitwise operations (for addressing) + scalar arithmetic -- ideal for FPGA, neuromorphic, or in-memory computing.
-    - Zero adjacency storage, deterministic topology, scale-invariant tuning.
+**Native hypercube data** (the sweet spot):
+- **Molecular fingerprints** — ECFP and MACCS keys are binary vectors (1024 or 2048 bits). Each molecule is literally a hypercube vertex. Molecular similarity is measured by Hamming distance (Tanimoto similarity). The convolution kernel operates in exactly the geometry chemists use to compare molecules.
+- **Boolean function learning** — inputs are bit vectors, outputs are binary. The architecture's Hamming-distance inductive bias is structurally aligned with functions that depend on bit interactions (parity, threshold, DNF formulas).
+- **Combinatorial feature interactions** — any domain with N binary features where interactions between features matter.
 
----
+**Embedded data** (works, but handicapped):
+- **Image classification** — pixels are mapped onto hypercube vertices via direct linear assignment. The spatial locality of the original image is not preserved. The network must learn all useful relationships from the hypercube topology alone. MNIST reaches ~98% accuracy — respectable but below spatial CNNs (~99.3%) that get 2D locality for free.
 
-### 4. Anticipated Benefits
+The research strategy: prove the architecture on native hypercube data first (where it has a structural advantage), then explore spatial embeddings that could close the gap on image tasks.
 
-- Superior parameter efficiency and generalization via high-dimensional symmetry.
-- New invariances (Hamming-distance equivariance) that may be especially powerful for binary/sparse data or high-dim latent spaces.
-- Retention (or improvement) of the local receptive-field spirit that makes convnets work so well.
+## Current results
 
----
+**MNIST** (no spatial inductive bias):
+- 60K train / 10K test, 4 conv+pool stages, ~200K parameters
+- ~98% test accuracy with Xavier init, cosine LR, L2 weight decay
+- 1.54x faster than the original shell-mask architecture after optimization
 
-### 5. Open Challenges
+**Boolean functions** (in progress):
+- Parity, majority, threshold, DNF functions at DIM=10
+- Expected to demonstrate sample efficiency advantage over MLPs
 
-- Validation that hypercube symmetry can replicate (or surpass) Euclidean translation equivariance on real vision benchmarks.
-- Training stability when moving from fixed-reservoir or attention models to full end-to-end backprop through hypercube-conv layers.
+## Implementation
 
-The Euclidean-to-hypercube embedding is expected to be largely self-resolving thanks to the small graph diameter.
+Pure C++23 with zero external dependencies. All core classes live in the `HypercubeCNNCore` static library. Threading uses a custom fork-join ThreadPool (no OpenMP). The library is designed as a future C++ SDK surface — executables are thin wrappers that link against it.
 
----
-
-### 6. Recommended Next Steps
-
-1. Draft a minimal C++ hypercube-conv layer (pure C++ with zero external dependencies -- only standard library containers, fixed-size arrays, and raw pointers where needed for performance).
-2. Test on a small image-classification toy problem (MNIST or CIFAR-10 subset).
-3. Explore theoretical invariance properties (Hamming vs. Euclidean).
-4. Compare parameter count, FLOPs, and accuracy against baseline Euclidean CNNs of similar size.
+See [architecture.md](architecture.md) for full technical details.
