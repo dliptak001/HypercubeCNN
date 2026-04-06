@@ -114,47 +114,68 @@ int main(int argc, char** argv) {
     }
 
     std::cout << "Loading " << data_path << "...\n";
-    auto ds = load_hcfp(data_path, "BBBP");
-    std::cout << "BBBP: train=" << ds.train.size()
+    auto ds = load_hcfp(data_path, "dataset");
+    std::cout << ds.name << ": train=" << ds.train.size()
               << " val=" << ds.val.size()
               << " test=" << ds.test.size()
-              << " bits=" << ds.num_bits << "\n";
+              << " bits=" << ds.num_bits
+              << " tasks=" << ds.num_tasks << "\n";
 
-    // Count label balance
-    int pos = 0;
-    for (auto& s : ds.train) if (s.label == 1) ++pos;
+    if (ds.num_tasks > 1) {
+        std::cerr << "Multi-task datasets not yet supported (got "
+                  << ds.num_tasks << " tasks). Use single-task datasets.\n";
+        return 1;
+    }
+
+    // Count label balance (skip missing)
+    int pos = 0, valid_train = 0;
+    for (auto& s : ds.train) {
+        if (s.label < 0) continue;
+        ++valid_train;
+        if (s.label == 1) ++pos;
+    }
     printf("Train label balance: %d/%d positive (%.0f%%)\n",
-           pos, static_cast<int>(ds.train.size()),
-           100.0f * pos / ds.train.size());
+           pos, valid_train, 100.0f * pos / valid_train);
 
-    // Network configuration
-    const int DIM = 10;  // 2^10 = 1024 bits
+    // Scale architecture and hyperparameters to dataset size
+    const int DIM = 10;
     const int num_classes = 2;
-    const int epochs = 60;
-    const float lr_max = 0.03f;
-    const float lr_min = 1e-5f;
-    const float weight_decay = 1e-3f;  // stronger regularization for small dataset
     const float momentum = 0.9f;
     const int batch_size = 32;
 
+    bool large_dataset = (ds.train.size() > 5000);
+    int epochs       = large_dataset ? 20 : 60;
+    float lr_max     = large_dataset ? 0.06f : 0.03f;
+    float lr_min     = 1e-5f;
+    float weight_decay = large_dataset ? 1e-4f : 1e-3f;
+
     HCNNNetwork net(DIM, num_classes);
     if (no_conv) {
-        // Ablation: single conv (1 channel, no ReLU, no bias) + no pooling.
-        // This is the minimal pipeline: a linear combination of Hamming-1
-        // neighbors → GAP → linear readout. Tests whether stacked conv+pool
-        // adds value beyond a single-hop linear filter.
-        net.add_conv(1, /*use_relu=*/false, /*use_bias=*/false);  // K=10, 10 params
+        net.add_conv(1, /*use_relu=*/false, /*use_bias=*/false);
+    } else if (large_dataset) {
+        // Larger model for >5K samples (~200K params)
+        net.add_conv(32, true, true);
+        net.add_pool(PoolType::MAX);
+        net.add_conv(64, true, true);
+        net.add_pool(PoolType::MAX);
+        net.add_conv(128, true, true);
+        net.add_pool(PoolType::MAX);
+        net.add_conv(128, true, true);
+        net.add_pool(PoolType::MAX);
     } else {
-        // Full model: 2 conv+pool stages (~5K params)
-        net.add_conv(16, true, true);     // K=10, 1->16
-        net.add_pool(PoolType::MAX);      // DIM 10->9
-        net.add_conv(32, true, true);     // K=9, 16->32
-        net.add_pool(PoolType::MAX);      // DIM 9->8
+        // Small model for <5K samples (~5K params)
+        net.add_conv(16, true, true);
+        net.add_pool(PoolType::MAX);
+        net.add_conv(32, true, true);
+        net.add_pool(PoolType::MAX);
     }
     net.randomize_all_weights();
 
-    std::cout << "\nArchitecture: " << (no_conv ? "NO CONV (GAP -> linear ablation)" :
-              "2 conv+pool stages (16->32)") << "\n";
+    std::cout << "\nArchitecture: ";
+    if (no_conv) std::cout << "NO CONV (ablation)";
+    else if (large_dataset) std::cout << "4 conv+pool (32->64->128->128) ~200K params";
+    else std::cout << "2 conv+pool (16->32) ~5K params";
+    std::cout << "\n";
     std::cout << "Optimizer: SGD, momentum=" << momentum
               << " wd=" << weight_decay
               << " lr=" << lr_max << "->cosine->" << lr_min
@@ -232,12 +253,10 @@ int main(int argc, char** argv) {
     printf("Test:   acc=%5.1f%%  auc=%.4f  loss=%.4f\n",
            test_r.accuracy, test_r.auc_roc, test_r.loss);
 
-    // Published baselines for comparison
-    std::cout << "\nPublished BBBP baselines (scaffold split):\n";
-    std::cout << "  Random Forest:  AUC ~0.71\n";
-    std::cout << "  MLP:            AUC ~0.67\n";
-    std::cout << "  GCN:            AUC ~0.69\n";
-    std::cout << "  MPNN:           AUC ~0.71\n";
+    // Published MoleculeNet baselines (scaffold split, 2018 paper):
+    // BBBP:  RF ~0.71, MLP ~0.67, GCN ~0.69, MPNN ~0.71
+    // BACE:  RF ~0.68, MLP ~0.67, GCN ~0.78, MPNN ~0.81
+    // HIV:   RF ~0.79, MLP ~0.78, GCN ~0.76, MPNN ~0.77
 
     return 0;
 }
