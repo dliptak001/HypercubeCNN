@@ -60,12 +60,8 @@ if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
     add_executable(HypercubeCNN main.cpp)
     add_executable(GradientCheck diagnostics/gradient_check.cpp)
     add_executable(LayerIsolation diagnostics/layer_isolation.cpp)
-    add_executable(BooleanExperiment experiments/boolean/boolean_experiment.cpp)
 
-    target_include_directories(BooleanExperiment PRIVATE
-        ${PROJECT_SOURCE_DIR}/experiments/boolean)
-
-    set(EXE_TARGETS HypercubeCNN GradientCheck LayerIsolation BooleanExperiment)
+    set(EXE_TARGETS HypercubeCNN GradientCheck LayerIsolation)
 
     foreach(tgt IN LISTS EXE_TARGETS)
         target_link_libraries(${tgt} PRIVATE HypercubeCNNCore)

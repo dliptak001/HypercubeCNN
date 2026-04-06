@@ -54,8 +54,7 @@ HypercubeCNN is designed for data that naturally lives on binary hypercubes — 
 
 **Native hypercube data** (the sweet spot):
 - **Molecular fingerprints** — ECFP and MACCS keys are binary vectors (1024 or 2048 bits). Each molecule is literally a hypercube vertex. Molecular similarity is measured by Hamming distance (Tanimoto similarity). The convolution kernel operates in exactly the geometry chemists use to compare molecules.
-- **Boolean function learning** — inputs are bit vectors, outputs are binary. The architecture's Hamming-distance inductive bias is structurally aligned with functions that depend on bit interactions (parity, threshold, DNF formulas).
-- **Combinatorial feature interactions** — any domain with N binary features where interactions between features matter.
+- **Combinatorial feature interactions** — any domain with N binary features where the full binary vector is the input and interactions between features matter for classification.
 
 **Embedded data** (works, but handicapped):
 - **Image classification** — pixels are mapped onto hypercube vertices via direct linear assignment. The spatial locality of the original image is not preserved. The network must learn all useful relationships from the hypercube topology alone. MNIST reaches ~98% accuracy — respectable but below spatial CNNs (~99.3%) that get 2D locality for free.
@@ -69,9 +68,8 @@ The research strategy: prove the architecture on native hypercube data first (wh
 - ~98% test accuracy with Xavier init, cosine LR, L2 weight decay
 - 1.54x faster than the original shell-mask architecture after optimization
 
-**Boolean functions** (in progress):
-- Parity, majority, threshold, DNF functions at DIM=10
-- Expected to demonstrate sample efficiency advantage over MLPs
+**Boolean functions** (abandoned):
+- Point-classification task (predict f(v) for a single vertex) is fundamentally mismatched with CNN architecture, which processes fields over a domain. See [boolean_functions.md](boolean_functions.md) for full analysis.
 
 ## Implementation
 

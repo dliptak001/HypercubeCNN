@@ -1,70 +1,68 @@
-# Boolean Functions on the Hypercube
+# Boolean Functions: Lessons Learned
 
-## The setup
+## The original hypothesis
 
-A Boolean function is simply f: {0,1}^n → {0,1}. The input is an n-bit binary vector — a vertex of the n-dimensional hypercube. The output is a single bit.
+Boolean functions f: {0,1}^n -> {0,1} were proposed as the ideal test case for HypercubeCNN. The reasoning: the input IS a hypercube vertex, there's no embedding distortion, and functions like parity have structure aligned with Hamming distance. If the architecture can't win here, it can't win anywhere.
 
-This is the purest possible test for HCNN. There's no embedding, no distortion, no spatial structure being destroyed. The input IS a hypercube vertex. If the architecture can't win here, it can't win anywhere.
+**This hypothesis was wrong.** The encoding difficulty revealed a fundamental mismatch between the task and the architecture.
 
-## Why parity is the killer test
+## What went wrong
 
-The **parity function** outputs 1 if the number of set bits is odd, 0 if even. Equivalently, it's the XOR of all input bits:
+### The task vs. the architecture
 
-```
-parity(x) = x_0 ⊕ x_1 ⊕ x_2 ⊕ ... ⊕ x_{n-1}
-```
+HypercubeCNN is a convolutional neural network. Like all CNNs, it processes a **field over a domain** — a value at every point in the space. A spatial CNN processes an image (a value at every pixel). HypercubeCNN processes an activation map (a value at every hypercube vertex).
 
-This function is notoriously hard for MLPs. Here's why:
+Boolean function learning asks a different question: given a single **point** (vertex v), predict f(v). The input is a coordinate, not a field. This is the equivalent of asking a spatial CNN to predict the color of pixel (x, y) given just the coordinates — not a task CNNs are designed for. You'd use an MLP.
 
-**MLPs compute parity by accident, not by design.** An MLP with ReLU activations computes piecewise-linear functions. To represent parity on n bits, it needs to carve {0,1}^n into 2^n regions (every vertex gets a different sign from at least one neighbor). A single hidden layer needs width proportional to 2^(n-1). Even deep MLPs need total parameters proportional to 2^n. This is a proven lower bound — not a matter of training tricks.
+### Three failed encodings
 
-**HCNN computes parity by structure.** Look at what parity means geometrically on the hypercube: every vertex has the opposite parity from all its Hamming-distance-1 neighbors (flipping any single bit changes parity). This is exactly what our K=DIM nearest-neighbor kernel sees. A single HCNN conv layer with 1 output channel could, in principle, learn: "if the weighted sum of my neighbors disagrees with me, I'm at a parity boundary." The architecture's inductive bias is aligned with the function's structure.
+Each encoding attempt tried to manufacture a field from a point, with escalating complexity:
 
-## The family of test functions
+1. **One-hot** (1 channel, 1.0 at vertex v, 0.0 elsewhere): Too sparse. Only 1 of 1024 vertices has signal. Conv layers had almost nothing to work with. Result: stuck at random chance (50%).
 
-Parity is one extreme. Here's the full spectrum, from HCNN-friendly to HCNN-neutral:
+2. **Bipolar** (1 channel, +1 at vertex v, -1 elsewhere): Slightly better signal density, but conv+GAP is provably translation-invariant on the hypercube, and bipolar encodings of different vertices are related by XOR-translations. Mathematical result: `GAP(conv(input_a)) = GAP(conv(input_b))` for all vertices a, b. The network produced identical output for every input. Result: stuck at 50%.
 
-**Parity (k-bit)**: XOR of k specific bits. When k=n, this is full parity. When k=3, it's a 3-bit XOR embedded in n dimensions. The key property: the function value changes whenever any of the k participating bits flips. This creates a checkerboard pattern on the hypercube that perfectly matches Hamming-distance-1 convolution.
+3. **Bipolar + flatten readout**: Replaced GAP with flatten to preserve positional information. Learning occurred (50% -> 56% train) but severe overfitting (test dropped to 36%). The flatten readout had 4098 parameters for 716 training samples. The conv layers produced weak features from the sparse input.
 
-**Threshold functions**: output 1 if the Hamming weight (number of set bits) is >= k. For example, "majority" outputs 1 if more than half the bits are set. These functions are *constant* on Hamming shells — all vertices with the same Hamming weight have the same output. This is exactly the symmetry our convolution respects (distance-indexed kernels treat all same-distance neighbors identically).
+4. **Bit-channel encoding** (DIM channels, channel k = +1 where bit k of u matches bit k of v): Dense, structured input that breaks translation symmetry. Not tested — we stopped here after recognizing the fundamental problem.
 
-**DNF formulas**: a k-term Disjunctive Normal Form, like `(x_1 ∧ x_3 ∧ x_7) ∨ (x_2 ∧ x_5)`. Each term is a conjunction (AND) of a few variables. The output is 1 if any term is satisfied. These have localized structure on the hypercube — each term defines a subcube corner, and the OR creates a union of subcube neighborhoods. HCNN should learn these through multi-layer feature composition.
+### Why the encoding struggle is the diagnosis
 
-**Random Boolean functions**: a random truth table over 2^n entries. No structure at all. No method should do well without memorizing the whole table. This is the control — HCNN and MLP should perform equally (both just memorize).
+If a task requires increasingly elaborate input encoding to work with an architecture, the architecture is wrong for the task. Each encoding was a workaround, not the architecture operating on its native substrate. The bit-channel encoding in particular is essentially feeding the network a manufactured "image" that encodes positional information — the conv layers process this synthetic field, but the encoding does most of the work.
 
-## What the experiment looks like
+### The spatial CNN analogy
 
-For each function class at DIM=10 (1024 vertices):
+| Spatial CNN | HypercubeCNN |
+|-------------|-------------|
+| Image classification: input is a field (pixel values over a 2D grid). Natural fit. | Molecular fingerprint classification: input is a field (bit values over hypercube vertices). Natural fit. |
+| "Predict color at coordinate (x,y)": input is a point. Wrong tool. Use an MLP. | "Predict f(v) for vertex v": input is a point. Wrong tool. Use an MLP. |
 
-1. **Generate the truth table**: all 1024 input/output pairs are known exactly.
-2. **Split**: train on a random subset (say 50%, 70%, 90% of vertices), test on the rest.
-3. **Train HCNN and MLP** with the same parameter budget.
-4. **Measure**: accuracy on held-out vertices (generalization), epochs to converge, training set size needed for 99% accuracy (sample efficiency).
+Boolean function learning is the second row. The input IS a hypercube vertex, but the task is point classification, not field classification.
 
-The generalization question is the interesting one: given 50% of the truth table, can the model predict the other 50%? An MLP has no reason to generalize — every vertex is independent to it. But HCNN knows that nearby vertices (Hamming distance 1) should be processed similarly. For parity, that's exactly the right bias: if you know the parity of vertex v, you know the parity of all its neighbors (it's flipped).
+## What native hypercube data actually looks like
 
-## The theoretical argument
+The architecture's natural input is an **activation map** — a value at every vertex, or a binary vector where each bit has independent meaning. Examples:
 
-On Z_2^n (the Boolean hypercube as a group), any Boolean function has a unique **Fourier expansion** over the Walsh-Hadamard basis. The Fourier coefficients at each "frequency" correspond to subsets of input bits that interact.
+- **Molecular fingerprints**: a 1024-bit ECFP fingerprint where each bit indicates the presence of a molecular substructure. The input IS a pattern over the hypercube. Hamming distance between fingerprints measures structural similarity. The conv kernel sees neighbors at distance 1 — structurally meaningful.
 
-Parity has its entire energy at the highest frequency (all bits participate). Low-degree functions (like threshold-1 or single-term ANDs) have energy at low frequencies.
+- **Feature interaction data**: N binary features where the prediction depends on feature combinations. The full feature vector IS the activation map.
 
-Our Hamming-distance-1 convolution is essentially a graph filter on the hypercube's Cayley graph. It naturally captures interactions between adjacent vertices — which corresponds to specific frequency bands in the Walsh-Hadamard spectrum. This is the theoretical reason HCNN should excel: its convolution is a natural spectral filter on the hypercube, whereas an MLP has to learn the spectral structure from scratch.
+The key distinction: in native hypercube data, the **entire vector** is the input, and the task is to classify the **pattern**. In Boolean function learning, a **single vertex** is the input, and the task is to classify the **position**.
 
-## What success looks like
+## What this means for the research plan
 
-| Function | MLP (expected) | HCNN (expected) | Why |
-|----------|---------------|-----------------|-----|
-| Parity (full) | Fails without exponential width | Learns with O(n) parameters | Kernel aligned with parity structure |
-| Parity (k=3) | Needs ~2^3 hidden units | Single layer sufficient | 3-bit interaction = distance-3 pattern |
-| Majority | Moderate — linear separator exists | Easy — threshold on Hamming weight | Convolution sees Hamming shells directly |
-| DNF (k terms) | Moderate | Good — multi-layer feature detection | Subcube corners are local in Hamming distance |
-| Random | Both memorize | Both memorize | No structure to exploit |
+Boolean functions are not the right validation target for HypercubeCNN. The architecture was designed for field classification on hypercubes, not point classification. The correct path forward:
 
-The parity result would be the headline: "HCNN learns full parity on n=10 bits from 50% of the truth table; MLP with equal parameters cannot." That's a clean, reproducible, theoretically grounded result that demonstrates the architecture's core advantage.
+1. **Molecular fingerprints** — the real native test case. Input is a binary vector (activation map). Classification task (e.g., solubility, toxicity). The architecture operates on its natural substrate without encoding gymnastics.
 
-## Why this matters beyond Boolean functions
+2. **MLP baseline for Boolean functions** — if we still want Boolean function results for comparison, an MLP (10 binary inputs -> hidden layers -> output) is the right architecture. It would demonstrate what the hypercube CNN is NOT designed for, contrasting with what it IS designed for (field classification on molecular fingerprints).
 
-If HCNN can learn structured Boolean functions from partial truth tables, it proves the architecture has the right inductive bias for **any data where Hamming-distance relationships carry meaning**. That's the bridge to molecular fingerprints — fingerprint similarity IS Hamming distance, and property prediction IS learning a (noisy) function over those fingerprints.
+## The GAP invariance theorem
 
-Boolean functions are the clean, synthetic version of the molecular fingerprint problem. If the bias works here, we have strong reason to believe it works there.
+One useful theoretical result emerged from this investigation. For any encoding where input vertices are related by XOR-translations (including one-hot and bipolar):
+
+> **Theorem**: Let the input encoding satisfy `encode(v) = T_a(encode(v XOR a))` where T_a is XOR-translation by a. Then for any sequence of hypercube convolution layers followed by global average pooling: `GAP(conv(encode(v))) = GAP(conv(encode(v')))` for all vertices v, v'.
+
+> **Proof**: Hypercube convolution commutes with XOR-translation (the kernel uses XOR-based neighbors). GAP is invariant under vertex permutation. Therefore `GAP(conv(T_a(x))) = GAP(T_a(conv(x))) = GAP(conv(x))`.
+
+This is the hypercube analogue of spatial CNNs' translation invariance: conv+GAP cannot distinguish the same pattern at different positions. For point-classification tasks, this is fatal. For pattern-classification tasks (the intended use), this is a feature — the classification doesn't depend on arbitrary relabeling of the hypercube vertices.

@@ -5,16 +5,20 @@
 #include <cmath>
 #include <random>
 
-HCNNNetwork::HCNNNetwork(int dim, int num_classes, ReadoutType readout_type,
-                         size_t num_threads)
+HCNNNetwork::HCNNNetwork(int dim, int num_classes, int input_channels,
+                         ReadoutType readout_type, size_t num_threads)
     : start_dim(dim), current_dim(dim), num_classes(num_classes),
+      input_channels(input_channels),
       readout_type(readout_type),
       readout(num_classes, 1),
       thread_pool(std::make_unique<ThreadPool>(num_threads)) {
     if (dim < 3) {
         throw std::runtime_error("HCNNNetwork requires start_dim >= 3");
     }
-    channel_counts.push_back(1);
+    if (input_channels < 1) {
+        throw std::runtime_error("HCNNNetwork requires input_channels >= 1");
+    }
+    channel_counts.push_back(input_channels);
 }
 
 HCNNNetwork::~HCNNNetwork() = default;
@@ -59,16 +63,19 @@ void HCNNNetwork::randomize_all_weights(float scale) {
 void HCNNNetwork::embed_input(const float* raw_input, int input_length,
                               float* out) const {
     int N = 1 << start_dim;
-    if (input_length > N) {
-        throw std::runtime_error("Input length exceeds hypercube size N = "
-                                 + std::to_string(N));
+    int total = input_channels * N;
+    if (input_length > total) {
+        throw std::runtime_error("Input length exceeds capacity ("
+                                 + std::to_string(input_channels) + " channels × "
+                                 + std::to_string(N) + " vertices = "
+                                 + std::to_string(total) + ")");
     }
     for (int i = 0; i < input_length; ++i) {
         assert(raw_input[i] >= -1.0f && raw_input[i] <= 1.0f &&
                "Input value out of range [-1.0, 1.0]");
         out[i] = raw_input[i];
     }
-    for (int i = input_length; i < N; ++i) {
+    for (int i = input_length; i < total; ++i) {
         out[i] = 0.0f;
     }
 }
@@ -78,9 +85,9 @@ void HCNNNetwork::forward(const float* first_layer_activations, float* logits) c
         throw std::runtime_error("HCNNNetwork::forward called with no conv layers");
     }
 
-    // Compute max buffer size
+    // Compute max buffer size across all layers (including multi-channel input)
     int cur_N = 1 << start_dim;
-    int max_size = cur_N;
+    int max_size = input_channels * cur_N;
     size_t ci = 0, pi = 0;
     for (size_t i = 0; i < is_conv_layer.size(); ++i) {
         if (is_conv_layer[i]) {
@@ -98,7 +105,8 @@ void HCNNNetwork::forward(const float* first_layer_activations, float* logits) c
     float* next_buf = buf2.data();
 
     cur_N = 1 << start_dim;
-    for (int i = 0; i < cur_N; ++i) current[i] = first_layer_activations[i];
+    int input_size = input_channels * cur_N;
+    for (int i = 0; i < input_size; ++i) current[i] = first_layer_activations[i];
 
     ci = 0; pi = 0;
 
@@ -121,7 +129,8 @@ void HCNNNetwork::train_step(const float* raw_input, int input_length,
                              int target_class, float learning_rate, float momentum,
                              float weight_decay) {
     int N = 1 << start_dim;
-    std::vector<float> embedded(N, 0.0f);
+    int total = input_channels * N;
+    std::vector<float> embedded(total, 0.0f);
     embed_input(raw_input, input_length, embedded.data());
 
     int num_layers = static_cast<int>(is_conv_layer.size());
@@ -139,7 +148,7 @@ void HCNNNetwork::train_step(const float* raw_input, int input_length,
 
     // Cache[0] = embedded input
     cache[0].N = N;
-    cache[0].channels = 1;
+    cache[0].channels = input_channels;
     cache[0].activation.assign(embedded.begin(), embedded.end());
 
     int cur_N = N;
@@ -264,11 +273,13 @@ void HCNNNetwork::train_batch(const float* const* inputs, const int* input_lengt
         a.readout_bias_grad.assign(readout.get_bias_size(), 0.0f);
     }
 
+    int total = input_channels * N;
+
     // Process samples in parallel, each thread accumulates into its own accum
     auto process_sample = [&](size_t tid, int sample_idx) {
         auto& a = accum[tid];
 
-        std::vector<float> embedded(N, 0.0f);
+        std::vector<float> embedded(total, 0.0f);
         embed_input(inputs[sample_idx], input_lengths[sample_idx], embedded.data());
 
         // Per-layer cache
@@ -282,7 +293,7 @@ void HCNNNetwork::train_batch(const float* const* inputs, const int* input_lengt
         std::vector<LayerCache> cache(num_layers + 1);
 
         cache[0].N = N;
-        cache[0].channels = 1;
+        cache[0].channels = input_channels;
         cache[0].activation.assign(embedded.begin(), embedded.end());
 
         int cur_N = N;

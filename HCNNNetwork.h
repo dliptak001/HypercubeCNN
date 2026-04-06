@@ -17,6 +17,7 @@ enum class ReadoutType { GAP, FLATTEN };
 class HCNNNetwork {
 public:
     HCNNNetwork(int start_dim, int num_classes = 10,
+                int input_channels = 1,
                 ReadoutType readout_type = ReadoutType::GAP,
                 size_t num_threads = 0);
     ~HCNNNetwork();
@@ -51,6 +52,7 @@ public:
 
     int get_start_dim() const { return start_dim; }
     int get_start_N() const { return 1 << start_dim; }
+    int get_input_channels() const { return input_channels; }
     int get_num_classes() const { return num_classes; }
 
     HCNN& get_conv(size_t i) { return conv_layers[i]; }
@@ -64,6 +66,7 @@ private:
     int start_dim;
     int current_dim;
     int num_classes;
+    int input_channels;
     ReadoutType readout_type;
     int readout_N{1};          // N passed to readout: 1 for FLATTEN, final_N for GAP
     std::vector<HCNN> conv_layers;
