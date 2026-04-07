@@ -117,7 +117,10 @@ private:
     std::condition_variable cv_done_;
 
     std::function<void(size_t)> for_func_;
-    std::atomic<int> remaining_{0};
     size_t generation_ = 0;
     bool stop_ = false;
+
+    // remaining_ on its own cache line to avoid false sharing with mutex/cv.
+    alignas(64) std::atomic<int> remaining_{0};
+    char pad_[64 - sizeof(std::atomic<int>)] = {};
 };

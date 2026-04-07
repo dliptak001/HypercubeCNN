@@ -10,7 +10,9 @@ public:
 
     void randomize_weights(float scale, std::mt19937& rng);
 
-    void forward(const float* in, float* out, int N) const;
+    // work_buf: optional pre-allocated buffer of at least input_channels floats.
+    void forward(const float* in, float* out, int N,
+                 float* work_buf = nullptr) const;
 
     // Backward: computes grad_in (if non-null) and updates weights via SGD with optional momentum.
     void backward(const float* grad_logits, const float* in, int N,
@@ -18,8 +20,10 @@ public:
                   float weight_decay = 0.0f);
 
     // Compute gradients without applying SGD update.
+    // work_buf: optional pre-allocated buffer of at least input_channels floats.
     void compute_gradients(const float* grad_logits, const float* in, int N,
-                           float* grad_in, float* weight_grad, float* bias_grad) const;
+                           float* grad_in, float* weight_grad, float* bias_grad,
+                           float* work_buf = nullptr) const;
 
     // Apply externally computed (averaged) gradients via momentum SGD.
     void apply_gradients(const float* weight_grad, const float* bias_grad,

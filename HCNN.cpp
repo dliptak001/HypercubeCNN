@@ -184,10 +184,20 @@ void HCNN::backward(const float* grad_out, const float* in, const float* pre_act
 // gradients to caller buffers instead of updating weights.
 // ---------------------------------------------------------------------------
 void HCNN::compute_gradients(const float* grad_out, const float* in, const float* pre_act,
-                             float* grad_in, float* kernel_grad, float* bias_grad) const {
+                             float* grad_in, float* kernel_grad, float* bias_grad,
+                             float* work_buf) const {
     const bool use_threads = thread_pool && DIM >= THREAD_DIM_THRESHOLD;
 
-    std::vector<float> grad_pre(c_out * N);
+    // work_buf must be at least c_out * N floats if provided.
+    // Falls back to heap allocation if nullptr (backward compat).
+    std::vector<float> grad_pre_storage;
+    float* grad_pre;
+    if (work_buf) {
+        grad_pre = work_buf;
+    } else {
+        grad_pre_storage.resize(c_out * N);
+        grad_pre = grad_pre_storage.data();
+    }
     for (int i = 0; i < c_out * N; ++i)
         grad_pre[i] = grad_out[i] * activate_derivative(pre_act[i]);
 
@@ -201,7 +211,7 @@ void HCNN::compute_gradients(const float* grad_out, const float* in, const float
                     size_t t_end = std::min(t + TILE, v_end);
                     for (size_t v = t; v < t_end; ++v) gi[v] = 0.0f;
                     for (int co = 0; co < c_out; ++co) {
-                        const float* gp = grad_pre.data() + co * N;
+                        const float* gp = grad_pre + co * N;
                         for (int k = 0; k < K; ++k) {
                             float w = kernel[kernel_idx(co, ci, k)];
                             uint32_t m = 1u << k;
@@ -223,7 +233,7 @@ void HCNN::compute_gradients(const float* grad_out, const float* in, const float
 
     // Kernel + bias gradient: channel-level, tiled reduction
     auto do_kernel_grad = [&](int co) {
-        const float* gp = grad_pre.data() + co * N;
+        const float* gp = grad_pre + co * N;
         for (int ci = 0; ci < c_in; ++ci) {
             const float* in_ci = in + ci * N;
             float grad_k[32] = {};  // K = DIM <= 32

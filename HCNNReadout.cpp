@@ -21,8 +21,16 @@ void HCNNReadout::randomize_weights(float scale, std::mt19937& rng) {
     std::fill(bias_vel.begin(), bias_vel.end(), 0.0f);
 }
 
-void HCNNReadout::forward(const float* in, float* out, int N) const {
-    std::vector<float> channel_avg(input_channels, 0.0f);
+void HCNNReadout::forward(const float* in, float* out, int N,
+                          float* work_buf) const {
+    std::vector<float> avg_storage;
+    float* channel_avg;
+    if (work_buf) {
+        channel_avg = work_buf;
+    } else {
+        avg_storage.resize(input_channels, 0.0f);
+        channel_avg = avg_storage.data();
+    }
     for (int c = 0; c < input_channels; ++c) {
         const float* chan = in + c * N;
         float sum = 0.0f;
@@ -76,8 +84,17 @@ void HCNNReadout::backward(const float* grad_logits, const float* in, int N,
 }
 
 void HCNNReadout::compute_gradients(const float* grad_logits, const float* in, int N,
-                                    float* grad_in, float* weight_grad, float* bias_grad) const {
-    std::vector<float> channel_avg(input_channels);
+                                    float* grad_in, float* weight_grad, float* bias_grad,
+                                    float* work_buf) const {
+    // work_buf must be at least input_channels floats if provided.
+    std::vector<float> avg_storage;
+    float* channel_avg;
+    if (work_buf) {
+        channel_avg = work_buf;
+    } else {
+        avg_storage.resize(input_channels);
+        channel_avg = avg_storage.data();
+    }
     for (int c = 0; c < input_channels; ++c) {
         float sum = 0.0f;
         for (int v = 0; v < N; ++v) sum += in[c * N + v];

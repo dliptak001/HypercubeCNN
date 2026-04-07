@@ -241,79 +241,58 @@ void HCNNNetwork::train_step(const float* raw_input, int input_length,
 // Mini-batch training: samples are processed in parallel, gradients averaged,
 // then a single weight update is applied.
 // ---------------------------------------------------------------------------
-void HCNNNetwork::train_batch(const float* const* inputs, const int* input_lengths,
-                              const int* targets, int batch_size,
-                              float learning_rate, float momentum,
-                              float weight_decay, const float* class_weights) {
-    if (batch_size <= 0) return;
+// ---------------------------------------------------------------------------
+// Lazily allocate persistent per-thread buffers on first train_batch call.
+// Subsequent calls reuse the same memory — only accumulators are zeroed.
+// ---------------------------------------------------------------------------
+void HCNNNetwork::prepare_batch_buffers() {
+    if (batch_bufs_ready) return;
 
     int N = 1 << start_dim;
     int num_layers = static_cast<int>(is_conv_layer.size());
     size_t num_conv = conv_layers.size();
-
-    // Per-thread gradient accumulators
     size_t nt = thread_pool ? thread_pool->NumThreads() : 1;
 
-    struct ThreadAccum {
-        std::vector<std::vector<float>> conv_kernel_grad; // [conv_idx][kernel_size]
-        std::vector<std::vector<float>> conv_bias_grad;   // [conv_idx][c_out]
-        std::vector<float> readout_weight_grad;
-        std::vector<float> readout_bias_grad;
-    };
-
-    std::vector<ThreadAccum> accum(nt);
-    for (size_t t = 0; t < nt; ++t) {
-        auto& a = accum[t];
-        a.conv_kernel_grad.resize(num_conv);
-        a.conv_bias_grad.resize(num_conv);
-        for (size_t ci = 0; ci < num_conv; ++ci) {
-            a.conv_kernel_grad[ci].assign(conv_layers[ci].get_kernel_size(), 0.0f);
-            a.conv_bias_grad[ci].assign(conv_layers[ci].get_bias_size(), 0.0f);
-        }
-        a.readout_weight_grad.assign(readout.get_weight_size(), 0.0f);
-        a.readout_bias_grad.assign(readout.get_bias_size(), 0.0f);
-    }
-
-    // Pre-compute per-layer sizes (N and channels) so we can pre-allocate.
-    struct LayerInfo { int N; int channels; };
-    std::vector<LayerInfo> layer_info(num_layers + 1);
-    layer_info[0] = {N, input_channels};
+    // Layer info (sizes are architecture-fixed)
+    layer_info_.resize(num_layers + 1);
+    layer_info_[0] = {N, input_channels};
     {
         int cur = N;
         size_t ci2 = 0, pi2 = 0;
         for (int i = 0; i < num_layers; ++i) {
             if (is_conv_layer[i]) {
-                layer_info[i + 1] = {cur, conv_layers[ci2].get_c_out()};
+                layer_info_[i + 1] = {cur, conv_layers[ci2].get_c_out()};
                 ++ci2;
             } else {
                 int out_N = pool_layers[pi2].get_output_N();
-                layer_info[i + 1] = {out_N, layer_info[i].channels};
+                layer_info_[i + 1] = {out_N, layer_info_[i].channels};
                 cur = out_N;
                 ++pi2;
             }
         }
     }
 
-    // Pre-allocated per-thread work buffers (eliminates ~40 heap allocs per sample).
-    struct ThreadBuf {
-        struct LayerCache {
-            std::vector<float> activation;
-            std::vector<float> pre_act;
-            std::vector<int> max_indices;
-        };
-        std::vector<LayerCache> cache;
-        std::vector<float> logits, probs, grad_logits;
-        std::vector<float> grad_a, grad_b;  // ping-pong gradient buffers
-        std::vector<float> rw_grad, rb_grad;
-        std::vector<std::vector<float>> kg, bg;  // per-conv-layer gradient scratch
-    };
-
-    std::vector<ThreadBuf> tbufs(nt);
+    // Gradient accumulators
+    accum_.resize(nt);
     for (size_t t = 0; t < nt; ++t) {
-        auto& b = tbufs[t];
+        auto& a = accum_[t];
+        a.conv_kernel_grad.resize(num_conv);
+        a.conv_bias_grad.resize(num_conv);
+        for (size_t ci = 0; ci < num_conv; ++ci) {
+            a.conv_kernel_grad[ci].resize(conv_layers[ci].get_kernel_size());
+            a.conv_bias_grad[ci].resize(conv_layers[ci].get_bias_size());
+        }
+        a.readout_weight_grad.resize(readout.get_weight_size());
+        a.readout_bias_grad.resize(readout.get_bias_size());
+    }
+
+    // Work buffers
+    tbufs_.resize(nt);
+    for (size_t t = 0; t < nt; ++t) {
+        auto& b = tbufs_[t];
         b.cache.resize(num_layers + 1);
         for (int i = 0; i <= num_layers; ++i) {
-            auto& li = layer_info[i];
+            auto& li = layer_info_[i];
             b.cache[i].activation.resize(li.channels * li.N);
             b.cache[i].pre_act.resize(li.channels * li.N);
             b.cache[i].max_indices.resize(li.channels * li.N);
@@ -321,27 +300,55 @@ void HCNNNetwork::train_batch(const float* const* inputs, const int* input_lengt
         b.logits.resize(num_classes);
         b.probs.resize(num_classes);
         b.grad_logits.resize(num_classes);
-        // grad buffers sized to max layer size
         int max_layer_size = 0;
         for (int i = 0; i <= num_layers; ++i)
             max_layer_size = std::max(max_layer_size,
-                                      layer_info[i].channels * layer_info[i].N);
+                                      layer_info_[i].channels * layer_info_[i].N);
         b.grad_a.resize(max_layer_size);
         b.grad_b.resize(max_layer_size);
         b.rw_grad.resize(readout.get_weight_size());
         b.rb_grad.resize(readout.get_bias_size());
         b.kg.resize(num_conv);
         b.bg.resize(num_conv);
-        for (size_t ci2 = 0; ci2 < num_conv; ++ci2) {
-            b.kg[ci2].resize(conv_layers[ci2].get_kernel_size());
-            b.bg[ci2].resize(conv_layers[ci2].get_bias_size());
+        for (size_t ci = 0; ci < num_conv; ++ci) {
+            b.kg[ci].resize(conv_layers[ci].get_kernel_size());
+            b.bg[ci].resize(conv_layers[ci].get_bias_size());
         }
+        // Work buffers for compute_gradients (avoid per-call heap allocs)
+        b.conv_work.resize(max_layer_size); // HCNN needs c_out*N, max_layer_size >= that
+        int final_ch = layer_info_[num_layers].channels;
+        b.readout_work.resize(final_ch);    // HCNNReadout needs input_channels floats
     }
+
+    batch_bufs_ready = true;
+}
+
+void HCNNNetwork::zero_accumulators() {
+    for (auto& a : accum_) {
+        for (auto& v : a.conv_kernel_grad) std::fill(v.begin(), v.end(), 0.0f);
+        for (auto& v : a.conv_bias_grad)   std::fill(v.begin(), v.end(), 0.0f);
+        std::fill(a.readout_weight_grad.begin(), a.readout_weight_grad.end(), 0.0f);
+        std::fill(a.readout_bias_grad.begin(), a.readout_bias_grad.end(), 0.0f);
+    }
+}
+
+void HCNNNetwork::train_batch(const float* const* inputs, const int* input_lengths,
+                              const int* targets, int batch_size,
+                              float learning_rate, float momentum,
+                              float weight_decay, const float* class_weights) {
+    if (batch_size <= 0) return;
+
+    prepare_batch_buffers();
+    zero_accumulators();
+
+    int num_layers = static_cast<int>(is_conv_layer.size());
+    size_t num_conv = conv_layers.size();
+    size_t nt = accum_.size();
 
     // Process samples in parallel, each thread accumulates into its own accum
     auto process_sample = [&](size_t tid, int sample_idx) {
-        auto& a = accum[tid];
-        auto& b = tbufs[tid];
+        auto& a = accum_[tid];
+        auto& b = tbufs_[tid];
 
         // Embed directly into cache[0]
         auto& c0 = b.cache[0];
@@ -360,7 +367,7 @@ void HCNNNetwork::train_batch(const float* const* inputs, const int* input_lengt
             } else {
                 pool_layers[pi].forward(b.cache[i].activation.data(),
                                         c.activation.data(),
-                                        layer_info[i].channels,
+                                        layer_info_[i].channels,
                                         &c.max_indices);
                 ++pi;
             }
@@ -369,7 +376,8 @@ void HCNNNetwork::train_batch(const float* const* inputs, const int* input_lengt
         // Readout forward
         auto& final_c = b.cache[num_layers];
         std::fill(b.logits.begin(), b.logits.end(), 0.0f);
-        readout.forward(final_c.activation.data(), b.logits.data(), readout_N);
+        readout.forward(final_c.activation.data(), b.logits.data(), readout_N,
+                        b.readout_work.data());
 
         // Softmax + cross-entropy gradient
         float max_logit = b.logits[0];
@@ -388,11 +396,12 @@ void HCNNNetwork::train_batch(const float* const* inputs, const int* input_lengt
             b.grad_logits[i] = cw * (b.probs[i] - (i == targets[sample_idx] ? 1.0f : 0.0f));
 
         // Readout backward
-        int final_size = layer_info[num_layers].channels * layer_info[num_layers].N;
+        int final_size = layer_info_[num_layers].channels * layer_info_[num_layers].N;
         std::fill(b.grad_a.begin(), b.grad_a.begin() + final_size, 0.0f);
         readout.compute_gradients(b.grad_logits.data(), final_c.activation.data(),
                                   readout_N, b.grad_a.data(),
-                                  b.rw_grad.data(), b.rb_grad.data());
+                                  b.rw_grad.data(), b.rb_grad.data(),
+                                  b.readout_work.data());
 
         for (int i = 0; i < readout.get_weight_size(); ++i)
             a.readout_weight_grad[i] += b.rw_grad[i];
@@ -400,12 +409,11 @@ void HCNNNetwork::train_batch(const float* const* inputs, const int* input_lengt
             a.readout_bias_grad[i] += b.rb_grad[i];
 
         // Backward through layers — ping-pong between grad_a and grad_b
-        // grad_a holds the current gradient (from readout backward above)
         ci = conv_layers.size();
         pi = pool_layers.size();
 
         for (int i = num_layers - 1; i >= 0; --i) {
-            int prev_size = layer_info[i].channels * layer_info[i].N;
+            int prev_size = layer_info_[i].channels * layer_info_[i].N;
             std::fill(b.grad_b.begin(), b.grad_b.begin() + prev_size, 0.0f);
 
             if (is_conv_layer[i]) {
@@ -416,7 +424,8 @@ void HCNNNetwork::train_batch(const float* const* inputs, const int* input_lengt
                     b.cache[i + 1].pre_act.data(),
                     (i > 0) ? b.grad_b.data() : nullptr,
                     b.kg[ci].data(),
-                    b.bg[ci].empty() ? nullptr : b.bg[ci].data());
+                    b.bg[ci].empty() ? nullptr : b.bg[ci].data(),
+                    b.conv_work.data());
 
                 for (int j = 0; j < conv_layers[ci].get_kernel_size(); ++j)
                     a.conv_kernel_grad[ci][j] += b.kg[ci][j];
@@ -425,7 +434,7 @@ void HCNNNetwork::train_batch(const float* const* inputs, const int* input_lengt
             } else {
                 --pi;
                 pool_layers[pi].backward(b.grad_a.data(), b.grad_b.data(),
-                                         layer_info[i].channels,
+                                         layer_info_[i].channels,
                                          &b.cache[i + 1].max_indices);
             }
 
@@ -434,8 +443,6 @@ void HCNNNetwork::train_batch(const float* const* inputs, const int* input_lengt
     };
 
     if (thread_pool && batch_size > 1) {
-        // Disable per-layer vertex threading during batch parallelism to
-        // prevent nested ForEach on the same pool (ThreadPool is not reentrant).
         for (auto& layer : conv_layers)
             layer.set_thread_pool(nullptr);
 
@@ -445,7 +452,6 @@ void HCNNNetwork::train_batch(const float* const* inputs, const int* input_lengt
                     process_sample(tid, static_cast<int>(s));
             });
 
-        // Restore per-layer threading for inference
         for (auto& layer : conv_layers)
             layer.set_thread_pool(thread_pool.get());
     } else {
@@ -456,20 +462,17 @@ void HCNNNetwork::train_batch(const float* const* inputs, const int* input_lengt
     // Reduce across threads and average
     float scale = 1.0f / static_cast<float>(batch_size);
 
-    // Conv layers
     for (size_t ci = 0; ci < num_conv; ++ci) {
         int ks = conv_layers[ci].get_kernel_size();
         int bs = conv_layers[ci].get_bias_size();
-        auto& base_kg = accum[0].conv_kernel_grad[ci];
-        auto& base_bg = accum[0].conv_bias_grad[ci];
+        auto& base_kg = accum_[0].conv_kernel_grad[ci];
+        auto& base_bg = accum_[0].conv_bias_grad[ci];
 
-        // Sum thread accumulators into thread 0
         for (size_t t = 1; t < nt; ++t) {
-            for (int j = 0; j < ks; ++j) base_kg[j] += accum[t].conv_kernel_grad[ci][j];
-            for (int j = 0; j < bs; ++j) base_bg[j] += accum[t].conv_bias_grad[ci][j];
+            for (int j = 0; j < ks; ++j) base_kg[j] += accum_[t].conv_kernel_grad[ci][j];
+            for (int j = 0; j < bs; ++j) base_bg[j] += accum_[t].conv_bias_grad[ci][j];
         }
 
-        // Average
         for (int j = 0; j < ks; ++j) base_kg[j] *= scale;
         for (int j = 0; j < bs; ++j) base_bg[j] *= scale;
 
@@ -478,12 +481,11 @@ void HCNNNetwork::train_batch(const float* const* inputs, const int* input_lengt
                                         learning_rate, momentum, weight_decay);
     }
 
-    // Readout
-    auto& base_rw = accum[0].readout_weight_grad;
-    auto& base_rb = accum[0].readout_bias_grad;
+    auto& base_rw = accum_[0].readout_weight_grad;
+    auto& base_rb = accum_[0].readout_bias_grad;
     for (size_t t = 1; t < nt; ++t) {
-        for (size_t j = 0; j < base_rw.size(); ++j) base_rw[j] += accum[t].readout_weight_grad[j];
-        for (size_t j = 0; j < base_rb.size(); ++j) base_rb[j] += accum[t].readout_bias_grad[j];
+        for (size_t j = 0; j < base_rw.size(); ++j) base_rw[j] += accum_[t].readout_weight_grad[j];
+        for (size_t j = 0; j < base_rb.size(); ++j) base_rb[j] += accum_[t].readout_bias_grad[j];
     }
     for (auto& g : base_rw) g *= scale;
     for (auto& g : base_rb) g *= scale;

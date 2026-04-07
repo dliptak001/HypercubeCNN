@@ -78,4 +78,37 @@ private:
     std::vector<int> channel_counts;
     HCNNReadout readout;
     std::unique_ptr<ThreadPool> thread_pool;
+
+    // --- Persistent batch-training buffers (allocated once, reused every train_batch) ---
+    struct LayerInfo { int N; int channels; };
+
+    struct ThreadAccum {
+        std::vector<std::vector<float>> conv_kernel_grad;
+        std::vector<std::vector<float>> conv_bias_grad;
+        std::vector<float> readout_weight_grad;
+        std::vector<float> readout_bias_grad;
+    };
+
+    struct ThreadBuf {
+        struct LayerCache {
+            std::vector<float> activation;
+            std::vector<float> pre_act;
+            std::vector<int> max_indices;
+        };
+        std::vector<LayerCache> cache;
+        std::vector<float> logits, probs, grad_logits;
+        std::vector<float> grad_a, grad_b;
+        std::vector<float> rw_grad, rb_grad;
+        std::vector<std::vector<float>> kg, bg;
+        std::vector<float> conv_work;     // work buf for HCNN::compute_gradients
+        std::vector<float> readout_work;  // work buf for HCNNReadout::compute_gradients
+    };
+
+    bool batch_bufs_ready{false};
+    std::vector<LayerInfo> layer_info_;
+    std::vector<ThreadAccum> accum_;
+    std::vector<ThreadBuf> tbufs_;
+
+    void prepare_batch_buffers();
+    void zero_accumulators();
 };

@@ -125,7 +125,8 @@ public:
      *                         or nullptr if bias is disabled.
      */
     void compute_gradients(const float* grad_out, const float* in, const float* pre_act,
-                           float* grad_in, float* kernel_grad, float* bias_grad) const;
+                           float* grad_in, float* kernel_grad, float* bias_grad,
+                           float* work_buf = nullptr) const;
 
     /**
      * @brief Apply externally computed gradients via momentum SGD.
