@@ -5,7 +5,7 @@
 HCNNReadout::HCNNReadout(int nc, int ic)
     : num_classes(nc), input_channels(ic),
       weights(nc * ic, 0.0f), bias(nc, 0.0f),
-      weight_vel(nc * ic, 0.0f), bias_vel(nc, 0.0f) {}
+      weight_m(nc * ic, 0.0f), bias_m(nc, 0.0f) {}
 
 void HCNNReadout::randomize_weights(float scale, std::mt19937& rng) {
     // Xavier/Glorot uniform for the linear layer.
@@ -17,8 +17,24 @@ void HCNNReadout::randomize_weights(float scale, std::mt19937& rng) {
         w = dist(rng);
     }
     for (auto& b : bias) b = 0.0f;
-    std::fill(weight_vel.begin(), weight_vel.end(), 0.0f);
-    std::fill(bias_vel.begin(), bias_vel.end(), 0.0f);
+    std::fill(weight_m.begin(), weight_m.end(), 0.0f);
+    std::fill(bias_m.begin(), bias_m.end(), 0.0f);
+    std::fill(weight_m2.begin(), weight_m2.end(), 0.0f);
+    std::fill(bias_m2.begin(), bias_m2.end(), 0.0f);
+}
+
+void HCNNReadout::set_optimizer(OptimizerType type, float beta1, float beta2, float eps) {
+    optimizer_type_ = type;
+    adam_beta1_ = beta1;
+    adam_beta2_ = beta2;
+    adam_eps_ = eps;
+    if (type == OptimizerType::ADAM) {
+        weight_m2.assign(weights.size(), 0.0f);
+        bias_m2.assign(bias.size(), 0.0f);
+    } else {
+        weight_m2.clear(); weight_m2.shrink_to_fit();
+        bias_m2.clear(); bias_m2.shrink_to_fit();
+    }
 }
 
 void HCNNReadout::forward(const float* in, float* out, int N,
@@ -49,7 +65,8 @@ void HCNNReadout::forward(const float* in, float* out, int N,
 
 void HCNNReadout::backward(const float* grad_logits, const float* in, int N,
                            float* grad_in, float learning_rate, float momentum,
-                           float weight_decay) {
+                           float weight_decay, int timestep) {
+    const bool use_adam = (optimizer_type_ == OptimizerType::ADAM && timestep > 0);
     std::vector<float> channel_avg(input_channels);
     for (int c = 0; c < input_channels; ++c) {
         float sum = 0.0f;
@@ -70,16 +87,34 @@ void HCNNReadout::backward(const float* grad_logits, const float* in, int N,
         }
     }
 
-    // Weight update with momentum + L2 decay: v = mu*v + (grad + wd*w); w -= lr*v
+    // Weight update
     for (int cls = 0; cls < num_classes; ++cls) {
         for (int c = 0; c < input_channels; ++c) {
             int wi = cls * input_channels + c;
-            float g = grad_logits[cls] * channel_avg[c] + weight_decay * weights[wi];
-            weight_vel[wi] = momentum * weight_vel[wi] + g;
-            weights[wi] -= learning_rate * weight_vel[wi];
+            float g = grad_logits[cls] * channel_avg[c];
+            if (use_adam) {
+                weight_m[wi] = adam_beta1_ * weight_m[wi] + (1.0f - adam_beta1_) * g;
+                weight_m2[wi] = adam_beta2_ * weight_m2[wi] + (1.0f - adam_beta2_) * g * g;
+                float mh = weight_m[wi] / (1.0f - std::pow(adam_beta1_, timestep));
+                float vh = weight_m2[wi] / (1.0f - std::pow(adam_beta2_, timestep));
+                weights[wi] -= learning_rate * (mh / (std::sqrt(vh) + adam_eps_) + weight_decay * weights[wi]);
+            } else {
+                g += weight_decay * weights[wi];
+                weight_m[wi] = momentum * weight_m[wi] + g;
+                weights[wi] -= learning_rate * weight_m[wi];
+            }
         }
-        bias_vel[cls] = momentum * bias_vel[cls] + grad_logits[cls];
-        bias[cls] -= learning_rate * bias_vel[cls];
+        float bg = grad_logits[cls];
+        if (use_adam) {
+            bias_m[cls] = adam_beta1_ * bias_m[cls] + (1.0f - adam_beta1_) * bg;
+            bias_m2[cls] = adam_beta2_ * bias_m2[cls] + (1.0f - adam_beta2_) * bg * bg;
+            float mh = bias_m[cls] / (1.0f - std::pow(adam_beta1_, timestep));
+            float vh = bias_m2[cls] / (1.0f - std::pow(adam_beta2_, timestep));
+            bias[cls] -= learning_rate * mh / (std::sqrt(vh) + adam_eps_);
+        } else {
+            bias_m[cls] = momentum * bias_m[cls] + bg;
+            bias[cls] -= learning_rate * bias_m[cls];
+        }
     }
 }
 
@@ -123,17 +158,41 @@ void HCNNReadout::compute_gradients(const float* grad_logits, const float* in, i
 }
 
 void HCNNReadout::apply_gradients(const float* weight_grad, const float* bias_grad,
-                                  float learning_rate, float momentum, float weight_decay) {
+                                  float learning_rate, float momentum, float weight_decay,
+                                  int timestep) {
+    const bool use_adam = (optimizer_type_ == OptimizerType::ADAM && timestep > 0);
     int total_w = num_classes * input_channels;
-    for (int i = 0; i < total_w; ++i) {
-        float g = weight_grad[i] + weight_decay * weights[i];
-        weight_vel[i] = momentum * weight_vel[i] + g;
-        weights[i] -= learning_rate * weight_vel[i];
+
+    if (use_adam) {
+        for (int i = 0; i < total_w; ++i) {
+            float g = weight_grad[i];
+            weight_m[i] = adam_beta1_ * weight_m[i] + (1.0f - adam_beta1_) * g;
+            weight_m2[i] = adam_beta2_ * weight_m2[i] + (1.0f - adam_beta2_) * g * g;
+            float mh = weight_m[i] / (1.0f - std::pow(adam_beta1_, timestep));
+            float vh = weight_m2[i] / (1.0f - std::pow(adam_beta2_, timestep));
+            weights[i] -= learning_rate * (mh / (std::sqrt(vh) + adam_eps_) + weight_decay * weights[i]);
+        }
+    } else {
+        for (int i = 0; i < total_w; ++i) {
+            float g = weight_grad[i] + weight_decay * weights[i];
+            weight_m[i] = momentum * weight_m[i] + g;
+            weights[i] -= learning_rate * weight_m[i];
+        }
     }
+
     if (bias_grad) {
         for (int cls = 0; cls < num_classes; ++cls) {
-            bias_vel[cls] = momentum * bias_vel[cls] + bias_grad[cls];
-            bias[cls] -= learning_rate * bias_vel[cls];
+            if (use_adam) {
+                float g = bias_grad[cls];
+                bias_m[cls] = adam_beta1_ * bias_m[cls] + (1.0f - adam_beta1_) * g;
+                bias_m2[cls] = adam_beta2_ * bias_m2[cls] + (1.0f - adam_beta2_) * g * g;
+                float mh = bias_m[cls] / (1.0f - std::pow(adam_beta1_, timestep));
+                float vh = bias_m2[cls] / (1.0f - std::pow(adam_beta2_, timestep));
+                bias[cls] -= learning_rate * mh / (std::sqrt(vh) + adam_eps_);
+            } else {
+                bias_m[cls] = momentum * bias_m[cls] + bias_grad[cls];
+                bias[cls] -= learning_rate * bias_m[cls];
+            }
         }
     }
 }

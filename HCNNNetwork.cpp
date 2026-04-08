@@ -36,6 +36,13 @@ void HCNNNetwork::set_training(bool training) const {
     for (const auto& layer : conv_layers) layer.set_training(training);
 }
 
+void HCNNNetwork::set_optimizer(OptimizerType type, float beta1,
+                                float beta2, float eps) {
+    for (auto& layer : conv_layers) layer.set_optimizer(type, beta1, beta2, eps);
+    readout.set_optimizer(type, beta1, beta2, eps);
+    adam_timestep_ = 0;
+}
+
 void HCNNNetwork::add_pool(PoolType type) {
     pool_layers.emplace_back(current_dim, type);
     current_dim -= 1;
@@ -63,6 +70,7 @@ void HCNNNetwork::randomize_all_weights(float scale) {
         layer.randomize_weights(scale, rng);
     }
     readout.randomize_weights(scale, rng);
+    adam_timestep_ = 0;
 }
 
 void HCNNNetwork::embed_input(const float* raw_input, int input_length,
@@ -218,6 +226,7 @@ void HCNNNetwork::train_step(const float* raw_input, int input_length,
     embed_input(raw_input, input_length, embedded.data());
 
     int num_layers = static_cast<int>(is_conv_layer.size());
+    ++adam_timestep_;
 
     set_training(true);
 
@@ -300,7 +309,7 @@ void HCNNNetwork::train_step(const float* raw_input, int input_length,
     std::vector<float> grad_current(final_c.channels * final_c.N);
     readout.backward(grad_logits.data(), final_c.activation.data(),
                      readout_N, grad_current.data(), learning_rate, momentum,
-                     weight_decay);
+                     weight_decay, adam_timestep_);
 
     // Backward through layers in reverse
     ci = conv_layers.size();
@@ -317,7 +326,8 @@ void HCNNNetwork::train_step(const float* raw_input, int input_length,
                                      (i > 0) ? grad_prev.data() : nullptr,
                                      learning_rate, momentum, weight_decay,
                                      cache[i + 1].bn_save.empty() ? nullptr
-                                         : cache[i + 1].bn_save.data());
+                                         : cache[i + 1].bn_save.data(),
+                                     adam_timestep_);
         } else {
             --pi;
             pool_layers[pi].backward(grad_current.data(), grad_prev.data(),
@@ -451,6 +461,7 @@ void HCNNNetwork::train_batch(const float* const* inputs, const int* input_lengt
     prepare_batch_buffers();
     zero_accumulators();
     set_training(true);
+    ++adam_timestep_;
 
     int num_layers = static_cast<int>(is_conv_layer.size());
     size_t num_conv = conv_layers.size();
@@ -616,7 +627,8 @@ void HCNNNetwork::train_batch(const float* const* inputs, const int* input_lengt
                                         base_bg.empty() ? nullptr : base_bg.data(),
                                         learning_rate, momentum, weight_decay,
                                         base_bng.empty() ? nullptr : base_bng.data(),
-                                        base_bnb.empty() ? nullptr : base_bnb.data());
+                                        base_bnb.empty() ? nullptr : base_bnb.data(),
+                                        adam_timestep_);
 
         // Reduce per-sample BN stats and update running mean/var (race-free)
         if (conv_layers[ci].has_batchnorm()) {
@@ -647,5 +659,5 @@ void HCNNNetwork::train_batch(const float* const* inputs, const int* input_lengt
     for (auto& g : base_rw) g *= scale;
     for (auto& g : base_rb) g *= scale;
     readout.apply_gradients(base_rw.data(), base_rb.data(), learning_rate, momentum,
-                            weight_decay);
+                            weight_decay, adam_timestep_);
 }

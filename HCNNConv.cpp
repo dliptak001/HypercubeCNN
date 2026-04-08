@@ -21,14 +21,14 @@ HCNNConv::HCNNConv(int dim, int c_in, int c_out, Activation activation,
       activation(activation), use_bias(use_bias), use_batchnorm(use_batchnorm),
       kernel(c_out * c_in * K, 0.0f),
       bias(use_bias ? c_out : 0, 0.0f),
-      kernel_vel(c_out * c_in * K, 0.0f),
-      bias_vel(use_bias ? c_out : 0, 0.0f),
+      kernel_m(c_out * c_in * K, 0.0f),
+      bias_m(use_bias ? c_out : 0, 0.0f),
       bn_gamma(use_batchnorm ? c_out : 0, 1.0f),
       bn_beta(use_batchnorm ? c_out : 0, 0.0f),
       bn_running_mean(use_batchnorm ? c_out : 0, 0.0f),
       bn_running_var(use_batchnorm ? c_out : 0, 1.0f),
-      bn_gamma_vel(use_batchnorm ? c_out : 0, 0.0f),
-      bn_beta_vel(use_batchnorm ? c_out : 0, 0.0f) {
+      bn_gamma_m(use_batchnorm ? c_out : 0, 0.0f),
+      bn_beta_m(use_batchnorm ? c_out : 0, 0.0f) {
     if (DIM < 3) {
         throw std::runtime_error("HCNNConv requires DIM >= 3");
     }
@@ -54,16 +54,40 @@ void HCNNConv::randomize_weights(float scale, std::mt19937& rng) {
     if (use_bias) {
         for (auto& b : bias) b = 0.0f;
     }
-    std::fill(kernel_vel.begin(), kernel_vel.end(), 0.0f);
-    std::fill(bias_vel.begin(), bias_vel.end(), 0.0f);
+    std::fill(kernel_m.begin(), kernel_m.end(), 0.0f);
+    std::fill(bias_m.begin(), bias_m.end(), 0.0f);
+    std::fill(kernel_m2.begin(), kernel_m2.end(), 0.0f);
+    std::fill(bias_m2.begin(), bias_m2.end(), 0.0f);
 
     if (use_batchnorm) {
         std::fill(bn_gamma.begin(), bn_gamma.end(), 1.0f);
         std::fill(bn_beta.begin(), bn_beta.end(), 0.0f);
         std::fill(bn_running_mean.begin(), bn_running_mean.end(), 0.0f);
         std::fill(bn_running_var.begin(), bn_running_var.end(), 1.0f);
-        std::fill(bn_gamma_vel.begin(), bn_gamma_vel.end(), 0.0f);
-        std::fill(bn_beta_vel.begin(), bn_beta_vel.end(), 0.0f);
+        std::fill(bn_gamma_m.begin(), bn_gamma_m.end(), 0.0f);
+        std::fill(bn_beta_m.begin(), bn_beta_m.end(), 0.0f);
+        std::fill(bn_gamma_m2.begin(), bn_gamma_m2.end(), 0.0f);
+        std::fill(bn_beta_m2.begin(), bn_beta_m2.end(), 0.0f);
+    }
+}
+
+void HCNNConv::set_optimizer(OptimizerType type, float beta1, float beta2, float eps) {
+    optimizer_type_ = type;
+    adam_beta1_ = beta1;
+    adam_beta2_ = beta2;
+    adam_eps_ = eps;
+    if (type == OptimizerType::ADAM) {
+        kernel_m2.assign(kernel.size(), 0.0f);
+        bias_m2.assign(bias.size(), 0.0f);
+        if (use_batchnorm) {
+            bn_gamma_m2.assign(c_out, 0.0f);
+            bn_beta_m2.assign(c_out, 0.0f);
+        }
+    } else {
+        kernel_m2.clear(); kernel_m2.shrink_to_fit();
+        bias_m2.clear(); bias_m2.shrink_to_fit();
+        bn_gamma_m2.clear(); bn_gamma_m2.shrink_to_fit();
+        bn_beta_m2.clear(); bn_beta_m2.shrink_to_fit();
     }
 }
 
@@ -219,7 +243,8 @@ void HCNNConv::forward(const float* in, float* out, float* pre_act,
 // ---------------------------------------------------------------------------
 void HCNNConv::backward(const float* grad_out, const float* in, const float* pre_act,
                     float* grad_in, float learning_rate, float momentum,
-                    float weight_decay, const float* bn_save) {
+                    float weight_decay, const float* bn_save, int timestep) {
+    const bool use_adam = (optimizer_type_ == OptimizerType::ADAM && timestep > 0);
     const bool use_threads = thread_pool && DIM >= THREAD_DIM_THRESHOLD;
 
     // Pre-activation gradients (gradient through activation function)
@@ -259,11 +284,24 @@ void HCNNConv::backward(const float* grad_out, const float* in, const float* pre
                 gp[v] = inv_std * (dx_hat - mean_dx - x_hat * mean_dx_xhat);
             }
 
-            // Update BN parameters via momentum SGD
-            bn_gamma_vel[co] = momentum * bn_gamma_vel[co] + dgamma;
-            bn_gamma[co] -= learning_rate * bn_gamma_vel[co];
-            bn_beta_vel[co] = momentum * bn_beta_vel[co] + dbeta;
-            bn_beta[co] -= learning_rate * bn_beta_vel[co];
+            // Update BN parameters
+            if (use_adam) {
+                bn_gamma_m[co] = adam_beta1_ * bn_gamma_m[co] + (1.0f - adam_beta1_) * dgamma;
+                bn_gamma_m2[co] = adam_beta2_ * bn_gamma_m2[co] + (1.0f - adam_beta2_) * dgamma * dgamma;
+                float mh = bn_gamma_m[co] / (1.0f - std::pow(adam_beta1_, timestep));
+                float vh = bn_gamma_m2[co] / (1.0f - std::pow(adam_beta2_, timestep));
+                bn_gamma[co] -= learning_rate * mh / (std::sqrt(vh) + adam_eps_);
+                bn_beta_m[co] = adam_beta1_ * bn_beta_m[co] + (1.0f - adam_beta1_) * dbeta;
+                bn_beta_m2[co] = adam_beta2_ * bn_beta_m2[co] + (1.0f - adam_beta2_) * dbeta * dbeta;
+                mh = bn_beta_m[co] / (1.0f - std::pow(adam_beta1_, timestep));
+                vh = bn_beta_m2[co] / (1.0f - std::pow(adam_beta2_, timestep));
+                bn_beta[co] -= learning_rate * mh / (std::sqrt(vh) + adam_eps_);
+            } else {
+                bn_gamma_m[co] = momentum * bn_gamma_m[co] + dgamma;
+                bn_gamma[co] -= learning_rate * bn_gamma_m[co];
+                bn_beta_m[co] = momentum * bn_beta_m[co] + dbeta;
+                bn_beta[co] -= learning_rate * bn_beta_m[co];
+            }
         }
     }
 
@@ -314,16 +352,33 @@ void HCNNConv::backward(const float* grad_out, const float* in, const float* pre
             }
             for (int k = 0; k < K; ++k) {
                 int ki = kernel_idx(co, ci, k);
-                float g = grad_k[k] + weight_decay * kernel[ki];
-                kernel_vel[ki] = momentum * kernel_vel[ki] + g;
-                kernel[ki] -= learning_rate * kernel_vel[ki];
+                float g = grad_k[k];
+                if (use_adam) {
+                    kernel_m[ki] = adam_beta1_ * kernel_m[ki] + (1.0f - adam_beta1_) * g;
+                    kernel_m2[ki] = adam_beta2_ * kernel_m2[ki] + (1.0f - adam_beta2_) * g * g;
+                    float mh = kernel_m[ki] / (1.0f - std::pow(adam_beta1_, timestep));
+                    float vh = kernel_m2[ki] / (1.0f - std::pow(adam_beta2_, timestep));
+                    kernel[ki] -= learning_rate * (mh / (std::sqrt(vh) + adam_eps_) + weight_decay * kernel[ki]);
+                } else {
+                    g += weight_decay * kernel[ki];
+                    kernel_m[ki] = momentum * kernel_m[ki] + g;
+                    kernel[ki] -= learning_rate * kernel_m[ki];
+                }
             }
         }
         if (use_bias) {
             float grad_b = 0.0f;
             for (int v = 0; v < N; ++v) grad_b += gp[v];
-            bias_vel[co] = momentum * bias_vel[co] + grad_b;
-            bias[co] -= learning_rate * bias_vel[co];
+            if (use_adam) {
+                bias_m[co] = adam_beta1_ * bias_m[co] + (1.0f - adam_beta1_) * grad_b;
+                bias_m2[co] = adam_beta2_ * bias_m2[co] + (1.0f - adam_beta2_) * grad_b * grad_b;
+                float mh = bias_m[co] / (1.0f - std::pow(adam_beta1_, timestep));
+                float vh = bias_m2[co] / (1.0f - std::pow(adam_beta2_, timestep));
+                bias[co] -= learning_rate * mh / (std::sqrt(vh) + adam_eps_);
+            } else {
+                bias_m[co] = momentum * bias_m[co] + grad_b;
+                bias[co] -= learning_rate * bias_m[co];
+            }
         }
     };
 
@@ -465,25 +520,64 @@ void HCNNConv::compute_gradients(const float* grad_out, const float* in, const f
 // ---------------------------------------------------------------------------
 void HCNNConv::apply_gradients(const float* kernel_grad, const float* bias_grad,
                            float learning_rate, float momentum, float weight_decay,
-                           const float* bn_gamma_grad_in, const float* bn_beta_grad_in) {
+                           const float* bn_gamma_grad_in, const float* bn_beta_grad_in,
+                           int timestep) {
+    const bool use_adam = (optimizer_type_ == OptimizerType::ADAM && timestep > 0);
     int total_k = c_out * c_in * K;
-    for (int i = 0; i < total_k; ++i) {
-        float g = kernel_grad[i] + weight_decay * kernel[i];
-        kernel_vel[i] = momentum * kernel_vel[i] + g;
-        kernel[i] -= learning_rate * kernel_vel[i];
-    }
-    if (use_bias && bias_grad) {
-        for (int co = 0; co < c_out; ++co) {
-            bias_vel[co] = momentum * bias_vel[co] + bias_grad[co];
-            bias[co] -= learning_rate * bias_vel[co];
+
+    if (use_adam) {
+        for (int i = 0; i < total_k; ++i) {
+            float g = kernel_grad[i];
+            kernel_m[i] = adam_beta1_ * kernel_m[i] + (1.0f - adam_beta1_) * g;
+            kernel_m2[i] = adam_beta2_ * kernel_m2[i] + (1.0f - adam_beta2_) * g * g;
+            float mh = kernel_m[i] / (1.0f - std::pow(adam_beta1_, timestep));
+            float vh = kernel_m2[i] / (1.0f - std::pow(adam_beta2_, timestep));
+            kernel[i] -= learning_rate * (mh / (std::sqrt(vh) + adam_eps_) + weight_decay * kernel[i]);
+        }
+    } else {
+        for (int i = 0; i < total_k; ++i) {
+            float g = kernel_grad[i] + weight_decay * kernel[i];
+            kernel_m[i] = momentum * kernel_m[i] + g;
+            kernel[i] -= learning_rate * kernel_m[i];
         }
     }
+
+    if (use_bias && bias_grad) {
+        for (int co = 0; co < c_out; ++co) {
+            if (use_adam) {
+                float g = bias_grad[co];
+                bias_m[co] = adam_beta1_ * bias_m[co] + (1.0f - adam_beta1_) * g;
+                bias_m2[co] = adam_beta2_ * bias_m2[co] + (1.0f - adam_beta2_) * g * g;
+                float mh = bias_m[co] / (1.0f - std::pow(adam_beta1_, timestep));
+                float vh = bias_m2[co] / (1.0f - std::pow(adam_beta2_, timestep));
+                bias[co] -= learning_rate * mh / (std::sqrt(vh) + adam_eps_);
+            } else {
+                bias_m[co] = momentum * bias_m[co] + bias_grad[co];
+                bias[co] -= learning_rate * bias_m[co];
+            }
+        }
+    }
+
     if (use_batchnorm && bn_gamma_grad_in && bn_beta_grad_in) {
         for (int co = 0; co < c_out; ++co) {
-            bn_gamma_vel[co] = momentum * bn_gamma_vel[co] + bn_gamma_grad_in[co];
-            bn_gamma[co] -= learning_rate * bn_gamma_vel[co];
-            bn_beta_vel[co] = momentum * bn_beta_vel[co] + bn_beta_grad_in[co];
-            bn_beta[co] -= learning_rate * bn_beta_vel[co];
+            if (use_adam) {
+                float gg = bn_gamma_grad_in[co], bg = bn_beta_grad_in[co];
+                bn_gamma_m[co] = adam_beta1_ * bn_gamma_m[co] + (1.0f - adam_beta1_) * gg;
+                bn_gamma_m2[co] = adam_beta2_ * bn_gamma_m2[co] + (1.0f - adam_beta2_) * gg * gg;
+                float mh = bn_gamma_m[co] / (1.0f - std::pow(adam_beta1_, timestep));
+                float vh = bn_gamma_m2[co] / (1.0f - std::pow(adam_beta2_, timestep));
+                bn_gamma[co] -= learning_rate * mh / (std::sqrt(vh) + adam_eps_);
+                bn_beta_m[co] = adam_beta1_ * bn_beta_m[co] + (1.0f - adam_beta1_) * bg;
+                bn_beta_m2[co] = adam_beta2_ * bn_beta_m2[co] + (1.0f - adam_beta2_) * bg * bg;
+                mh = bn_beta_m[co] / (1.0f - std::pow(adam_beta1_, timestep));
+                vh = bn_beta_m2[co] / (1.0f - std::pow(adam_beta2_, timestep));
+                bn_beta[co] -= learning_rate * mh / (std::sqrt(vh) + adam_eps_);
+            } else {
+                bn_gamma_m[co] = momentum * bn_gamma_m[co] + bn_gamma_grad_in[co];
+                bn_gamma[co] -= learning_rate * bn_gamma_m[co];
+                bn_beta_m[co] = momentum * bn_beta_m[co] + bn_beta_grad_in[co];
+                bn_beta[co] -= learning_rate * bn_beta_m[co];
+            }
         }
     }
 }

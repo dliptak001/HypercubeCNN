@@ -33,6 +33,9 @@ class ThreadPool;
 /// Activation function applied after convolution (and optional batch normalization).
 enum class Activation { NONE, RELU, LEAKY_RELU };
 
+/// Optimizer for weight updates.
+enum class OptimizerType { SGD, ADAM };
+
 /**
  * @class HCNNConv
  * @brief A single hypercube convolutional layer with configurable activation and bias.
@@ -122,7 +125,8 @@ public:
      */
     void backward(const float* grad_out, const float* in, const float* pre_act,
                   float* grad_in, float learning_rate, float momentum = 0.0f,
-                  float weight_decay = 0.0f, const float* bn_save = nullptr);
+                  float weight_decay = 0.0f, const float* bn_save = nullptr,
+                  int timestep = 0);
 
     /**
      * @brief Compute gradients without applying an SGD update.
@@ -161,7 +165,8 @@ public:
     void apply_gradients(const float* kernel_grad, const float* bias_grad,
                          float learning_rate, float momentum, float weight_decay = 0.0f,
                          const float* bn_gamma_grad = nullptr,
-                         const float* bn_beta_grad = nullptr);
+                         const float* bn_beta_grad = nullptr,
+                         int timestep = 0);
 
     /** @name Accessors */
     ///@{
@@ -180,6 +185,10 @@ public:
 
     /// Skip running-stats EMA updates in forward() (for batch-parallel mode).
     void set_skip_running_stats(bool skip) const { skip_running_stats_ = skip; }
+
+    /// Configure the optimizer. Allocates second-moment buffers for Adam.
+    void set_optimizer(OptimizerType type, float beta1 = 0.9f,
+                       float beta2 = 0.999f, float eps = 1e-8f);
 
     /// Whether this layer has batch normalization enabled.
     bool has_batchnorm() const { return use_batchnorm; }
@@ -218,18 +227,26 @@ private:
 
     std::vector<float> kernel;          ///< Kernel weights, layout [c_out * c_in * K].
     std::vector<float> bias;            ///< Per-output-channel bias, size c_out (empty if bias disabled).
-    std::vector<float> kernel_vel;      ///< Momentum velocity for kernel weights (same layout as kernel).
-    std::vector<float> bias_vel;        ///< Momentum velocity for bias (same layout as bias).
+    std::vector<float> kernel_m;        ///< First moment (SGD velocity / Adam m) for kernel.
+    std::vector<float> bias_m;          ///< First moment for bias.
+    std::vector<float> kernel_m2;       ///< Second moment (Adam only) for kernel.
+    std::vector<float> bias_m2;         ///< Second moment (Adam only) for bias.
 
     // Batch normalization parameters (empty if BN disabled)
     std::vector<float> bn_gamma;          ///< BN scale parameter [c_out].
     std::vector<float> bn_beta;           ///< BN shift parameter [c_out].
     mutable std::vector<float> bn_running_mean; ///< BN running mean [c_out] (mutable: updated in const forward).
     mutable std::vector<float> bn_running_var;  ///< BN running variance [c_out] (mutable: updated in const forward).
-    std::vector<float> bn_gamma_vel;      ///< Momentum velocity for BN gamma [c_out].
-    std::vector<float> bn_beta_vel;       ///< Momentum velocity for BN beta [c_out].
+    std::vector<float> bn_gamma_m;        ///< First moment for BN gamma [c_out].
+    std::vector<float> bn_beta_m;         ///< First moment for BN beta [c_out].
+    std::vector<float> bn_gamma_m2;       ///< Second moment (Adam only) for BN gamma [c_out].
+    std::vector<float> bn_beta_m2;        ///< Second moment (Adam only) for BN beta [c_out].
     static constexpr float bn_momentum_ = 0.1f;  ///< EMA momentum for running stats.
     static constexpr float bn_eps_ = 1e-5f;      ///< Epsilon for numerical stability.
+
+    // Optimizer configuration
+    OptimizerType optimizer_type_ = OptimizerType::SGD;
+    float adam_beta1_ = 0.9f, adam_beta2_ = 0.999f, adam_eps_ = 1e-8f;
 
     ThreadPool* thread_pool = nullptr;  ///< Optional thread pool for parallel execution.
 

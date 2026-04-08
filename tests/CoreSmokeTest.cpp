@@ -484,6 +484,132 @@ static void test_leaky_relu() {
     }
 }
 
+static void test_adam() {
+    std::cout << "\n[Adam optimizer]\n";
+
+    // Test 1: Adam train_step reduces loss
+    {
+        HCNNNetwork net(5, 4);
+        net.add_conv(16);
+        net.randomize_all_weights();
+        net.set_optimizer(OptimizerType::ADAM);
+
+        int N = net.get_start_N();
+        int K = net.get_num_classes();
+        const int num_samples = 20;
+        std::mt19937 rng(42);
+        std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+        std::vector<std::vector<float>> inputs(num_samples, std::vector<float>(N));
+        std::vector<int> targets(num_samples);
+        for (int i = 0; i < num_samples; ++i) {
+            for (auto& v : inputs[i]) v = dist(rng);
+            targets[i] = i % K;
+        }
+
+        auto compute_loss = [&]() {
+            double total = 0.0;
+            for (int i = 0; i < num_samples; ++i) {
+                std::vector<float> emb(N), logits(K);
+                net.embed_input(inputs[i].data(), N, emb.data());
+                net.forward(emb.data(), logits.data());
+                double max_l = logits[0];
+                for (int j = 1; j < K; ++j) if (logits[j] > max_l) max_l = logits[j];
+                double se = 0.0;
+                for (int j = 0; j < K; ++j) se += std::exp(logits[j] - max_l);
+                total += -(logits[targets[i]] - max_l) + std::log(se);
+            }
+            return total / num_samples;
+        };
+
+        double loss_before = compute_loss();
+        for (int step = 0; step < 100; ++step) {
+            int idx = step % num_samples;
+            net.train_step(inputs[idx].data(), N, targets[idx], 0.001f);
+        }
+        double loss_after = compute_loss();
+        check(loss_after < loss_before,
+              "Adam train_step: loss decreased (" + std::to_string(loss_before)
+              + " -> " + std::to_string(loss_after) + ")");
+    }
+
+    // Test 2: Adam train_batch produces finite logits
+    {
+        HCNNNetwork net(5, 4);
+        net.add_conv(16);
+        net.randomize_all_weights();
+        net.set_optimizer(OptimizerType::ADAM);
+
+        int N = net.get_start_N();
+        int K = net.get_num_classes();
+        const int batch_size = 8;
+        std::mt19937 rng(456);
+        std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+        std::vector<std::vector<float>> inputs(batch_size, std::vector<float>(N));
+        std::vector<const float*> input_ptrs(batch_size);
+        std::vector<int> lengths(batch_size, N);
+        std::vector<int> targets(batch_size);
+        for (int i = 0; i < batch_size; ++i) {
+            for (auto& v : inputs[i]) v = dist(rng);
+            input_ptrs[i] = inputs[i].data();
+            targets[i] = i % K;
+        }
+
+        net.train_batch(input_ptrs.data(), lengths.data(), targets.data(),
+                        batch_size, 0.001f);
+
+        std::vector<float> logits(K), emb(N);
+        net.embed_input(inputs[0].data(), N, emb.data());
+        net.forward(emb.data(), logits.data());
+        check(all_finite(logits.data(), K), "Adam train_batch: logits finite");
+    }
+
+    // Test 3: Adam with BN — loss decreases
+    {
+        HCNNNetwork net(5, 4);
+        net.add_conv(16, Activation::RELU, true, true);
+        net.randomize_all_weights();
+        net.set_optimizer(OptimizerType::ADAM);
+
+        int N = net.get_start_N();
+        int K = net.get_num_classes();
+        const int num_samples = 20;
+        std::mt19937 rng(789);
+        std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+        std::vector<std::vector<float>> inputs(num_samples, std::vector<float>(N));
+        std::vector<int> targets(num_samples);
+        for (int i = 0; i < num_samples; ++i) {
+            for (auto& v : inputs[i]) v = dist(rng);
+            targets[i] = i % K;
+        }
+
+        auto compute_loss = [&]() {
+            net.set_training(false);
+            double total = 0.0;
+            for (int i = 0; i < num_samples; ++i) {
+                std::vector<float> emb(N), logits(K);
+                net.embed_input(inputs[i].data(), N, emb.data());
+                net.forward(emb.data(), logits.data());
+                double max_l = logits[0];
+                for (int j = 1; j < K; ++j) if (logits[j] > max_l) max_l = logits[j];
+                double se = 0.0;
+                for (int j = 0; j < K; ++j) se += std::exp(logits[j] - max_l);
+                total += -(logits[targets[i]] - max_l) + std::log(se);
+            }
+            return total / num_samples;
+        };
+
+        double loss_before = compute_loss();
+        for (int step = 0; step < 100; ++step) {
+            int idx = step % num_samples;
+            net.train_step(inputs[idx].data(), N, targets[idx], 0.001f);
+        }
+        double loss_after = compute_loss();
+        check(loss_after < loss_before,
+              "Adam + BN: loss decreased (" + std::to_string(loss_before)
+              + " -> " + std::to_string(loss_after) + ")");
+    }
+}
+
 int main() {
     std::cout << "HypercubeCNN Core Smoke Test\n";
     std::cout << "============================\n";
@@ -497,6 +623,7 @@ int main() {
     test_pool_types();
     test_batchnorm();
     test_leaky_relu();
+    test_adam();
 
     std::cout << "\n============================\n";
     if (failures == 0) {

@@ -34,6 +34,10 @@ public:
     /// Set training mode (true) or eval mode (false) for all layers with BN.
     void set_training(bool training) const;
 
+    /// Configure the optimizer for all layers. Resets timestep.
+    void set_optimizer(OptimizerType type, float beta1 = 0.9f,
+                       float beta2 = 0.999f, float eps = 1e-8f);
+
     /// Initialize all weights.  scale > 0: uniform [-scale, +scale].
     /// scale <= 0 (default): Xavier/Glorot uniform per layer.
     void randomize_all_weights(float scale = 0.0f);
@@ -81,6 +85,7 @@ private:
     int input_channels;
     ReadoutType readout_type;
     int readout_N{1};          // N passed to readout: 1 for FLATTEN, final_N for GAP
+    int adam_timestep_{0};     // Global optimizer timestep (incremented per train_step/train_batch)
     std::vector<HCNNConv> conv_layers;
     std::vector<HCNNPool> pool_layers;
     std::vector<bool> is_conv_layer;
