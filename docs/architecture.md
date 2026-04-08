@@ -131,8 +131,6 @@ The embedding maps external data onto hypercube vertices. Currently uses **Direc
 
 For MNIST (784 pixels → 1024 vertices): pixels land on vertices 0-783, vertices 784-1023 are zero. The mapping is simple and intentionally structure-agnostic — no spatial locality is encoded. The network must learn all useful relationships from the hypercube topology alone.
 
-For Boolean function experiments, the input IS a hypercube vertex: one-hot encoding places 1.0 at the vertex corresponding to the input bit-vector, 0.0 elsewhere. No embedding distortion — the architecture operates on its native substrate.
-
 ## Weight initialization
 
 Xavier/Glorot uniform (default): `scale = sqrt(6 / (fan_in + fan_out))` where `fan_in = c_in * K` and `fan_out = c_out * K`. Computed per-layer since K = DIM varies after pooling.

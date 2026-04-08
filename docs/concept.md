@@ -59,17 +59,14 @@ HypercubeCNN is designed for data that naturally lives on binary hypercubes — 
 **Embedded data** (works, but handicapped):
 - **Image classification** — pixels are mapped onto hypercube vertices via direct linear assignment. The spatial locality of the original image is not preserved. The network must learn all useful relationships from the hypercube topology alone. MNIST reaches ~98% accuracy — respectable but below spatial CNNs (~99.3%) that get 2D locality for free.
 
-The research strategy: prove the architecture on native hypercube data first (where it has a structural advantage), then explore spatial embeddings that could close the gap on image tasks.
+The research direction: native hypercube data is where the architecture has a structural advantage over spatial CNNs. Spatial embeddings (like MNIST) work but sacrifice the locality that grid-based networks get for free.
 
 ## Current results
 
 **MNIST** (no spatial inductive bias):
 - 60K train / 10K test, 4 conv+pool stages, ~200K parameters
 - ~98% test accuracy with Xavier init, cosine LR, L2 weight decay
-- 1.54x faster than the original shell-mask architecture after optimization
-
-**Boolean functions** (abandoned):
-- Point-classification task (predict f(v) for a single vertex) is fundamentally mismatched with CNN architecture, which processes fields over a domain. See [boolean_functions.md](boolean_functions.md) for full analysis.
+- NN-only kernel (K=DIM) outperforms the earlier shell-mask design by +1.8% accuracy and 1.58x speedup
 
 ## Implementation
 

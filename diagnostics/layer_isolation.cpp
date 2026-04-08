@@ -1,5 +1,5 @@
 #include "HCNNNetwork.h"
-#include "dataloader/HCNNMNISTDataset.h"
+#include "dataloader/HCNNDataset.h"
 #include <cmath>
 #include <iostream>
 #include <vector>
@@ -25,11 +25,22 @@ static int argmax(const float* v, int n) {
 static void test_single_conv() {
     std::cout << "\n=== Test 1: Single conv layer + readout (no pool) ===\n";
 
-    HCNNNetwork net(4);  // DIM=4, N=16 — matches toy data exactly
+    HCNNNetwork net(4);  // DIM=4, N=16
     net.add_conv(8, true, true);
     net.randomize_all_weights(0.3f);
 
-    HCNNMNISTDataset dataset = create_toy_mnist_like_dataset();
+    // Synthetic dataset: 40 samples, 10 classes, random patterns in [-1, 1]
+    HCNNDataset dataset;
+    {
+        std::mt19937 gen(42);
+        std::uniform_real_distribution<float> d(-1.0f, 1.0f);
+        dataset.samples.resize(40);
+        for (int i = 0; i < 40; ++i) {
+            dataset.samples[i].input.resize(16);
+            for (auto& v : dataset.samples[i].input) v = d(gen);
+            dataset.samples[i].target_class = i % 10;
+        }
+    }
 
     int K = net.get_num_classes();
     int N = net.get_start_N();
@@ -69,7 +80,18 @@ static void test_readout_only_simple() {
     net.add_conv(32, true, true);
     net.randomize_all_weights(0.5f);
 
-    HCNNMNISTDataset dataset = create_toy_mnist_like_dataset();
+    // Synthetic dataset: 40 samples, 10 classes, random patterns in [-1, 1]
+    HCNNDataset dataset;
+    {
+        std::mt19937 gen(42);
+        std::uniform_real_distribution<float> d(-1.0f, 1.0f);
+        dataset.samples.resize(40);
+        for (int i = 0; i < 40; ++i) {
+            dataset.samples[i].input.resize(16);
+            for (auto& v : dataset.samples[i].input) v = d(gen);
+            dataset.samples[i].target_class = i % 10;
+        }
+    }
 
     int K = net.get_num_classes();
     int N = net.get_start_N();

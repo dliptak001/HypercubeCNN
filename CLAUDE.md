@@ -51,11 +51,13 @@ All executables link against `HypercubeCNNCore` (static library). Sources live i
 | CMake target | Purpose |
 |---|---|
 | `HypercubeCNNCore` | Static library with all core classes |
-| `HypercubeCNN` | Library entry point stub (main.cpp) |
+| `HypercubeCNN` | Quick diagnostic runner (main.cpp) |
 | `MNISTTrain` | MNIST training demo (examples/mnist_train.cpp) |
 | `GradientCheck` | Numerical gradient verification (diagnostics/gradient_check.cpp) |
+| `LayerIsolation` | Layer-by-layer diagnostic (diagnostics/layer_isolation.cpp) |
+| `CoreSmokeTest` | Library smoke test (tests/CoreSmokeTest.cpp) |
 
-`diagnostics/layer_isolation.cpp` exists but has no CMake target (removed; can be re-added if needed). `tests/` is an empty placeholder. New targets follow the same pattern: link `HypercubeCNNCore`, never compile core sources directly.
+New targets follow the same pattern: link `HypercubeCNNCore`, never compile core sources directly.
 
 ### Threading
 
