@@ -101,13 +101,13 @@ int main() {
               << "Test: " << test_data.size() << " samples\n";
 
     HCNNNetwork net(10);               // auto-detect thread count
-    net.add_conv(32, true, true);         // 1->32 ch,   K=10 (DIM=10)
+    net.add_conv(32);         // 1->32 ch,   K=10 (DIM=10)
     net.add_pool(PoolType::MAX);          // DIM 10->9,  N 1024->512
-    net.add_conv(64, true, true);         // 32->64 ch,  K=9  (DIM=9)
+    net.add_conv(64);         // 32->64 ch,  K=9  (DIM=9)
     net.add_pool(PoolType::MAX);          // DIM 9->8,   N 512->256
-    net.add_conv(128, true, true);        // 64->128 ch, K=8  (DIM=8)
+    net.add_conv(128);        // 64->128 ch, K=8  (DIM=8)
     net.add_pool(PoolType::MAX);          // DIM 8->7,   N 256->128
-    net.add_conv(128, true, true);        // 128->128 ch, K=7  (DIM=7)
+    net.add_conv(128);        // 128->128 ch, K=7  (DIM=7)
     net.add_pool(PoolType::MAX);          // DIM 7->6,   N 128->64
     net.randomize_all_weights();          // Xavier/Glorot init
     std::cout << "Threads: " << std::thread::hardware_concurrency() << "\n";

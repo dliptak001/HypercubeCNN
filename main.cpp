@@ -10,9 +10,9 @@ int main() {
 
     // Build a small network: DIM=5, N=32, 4 classes
     HCNNNetwork net(5, 4);
-    net.add_conv(16, true, true);
+    net.add_conv(16);
     net.add_pool(PoolType::MAX);
-    net.add_conv(16, true, true);
+    net.add_conv(16);
     net.randomize_all_weights();
 
     int N = net.get_start_N();

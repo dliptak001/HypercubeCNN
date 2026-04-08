@@ -23,10 +23,10 @@ HCNNNetwork::HCNNNetwork(int dim, int num_classes, int input_channels,
 
 HCNNNetwork::~HCNNNetwork() = default;
 
-void HCNNNetwork::add_conv(int c_out, bool use_relu, bool use_bias,
+void HCNNNetwork::add_conv(int c_out, Activation activation, bool use_bias,
                            bool use_batchnorm) {
     int c_in = channel_counts.back();
-    conv_layers.emplace_back(current_dim, c_in, c_out, use_relu, use_bias, use_batchnorm);
+    conv_layers.emplace_back(current_dim, c_in, c_out, activation, use_bias, use_batchnorm);
     conv_layers.back().set_thread_pool(thread_pool.get());
     channel_counts.push_back(c_out);
     is_conv_layer.push_back(true);

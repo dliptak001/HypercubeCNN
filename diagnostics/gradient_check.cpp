@@ -95,8 +95,8 @@ int main() {
     // Small network for fast gradient checking — no ReLU so gradients flow cleanly.
     // ReLU introduces non-differentiable points at zero which cause spurious failures.
     HCNNNetwork net(4); // DIM=4, N=16
-    net.add_conv(4, false, true);  // no ReLU
-    net.add_conv(4, false, true);  // no ReLU
+    net.add_conv(4, Activation::NONE);  // no ReLU
+    net.add_conv(4, Activation::NONE);  // no ReLU
     net.randomize_all_weights(0.3f);
 
     // Single sample

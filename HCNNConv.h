@@ -30,9 +30,12 @@
 
 class ThreadPool;
 
+/// Activation function applied after convolution (and optional batch normalization).
+enum class Activation { NONE, RELU, LEAKY_RELU };
+
 /**
  * @class HCNNConv
- * @brief A single hypercube convolutional layer with optional ReLU and bias.
+ * @brief A single hypercube convolutional layer with configurable activation and bias.
  *
  * Supports forward inference, backpropagation with SGD+momentum weight
  * updates, and a separated gradient-computation path for numerical
@@ -51,12 +54,13 @@ public:
      * @param dim            Hypercube dimension.  The layer operates on N = 2^dim vertices.
      * @param c_in           Number of input channels.
      * @param c_out          Number of output channels (filters).
-     * @param use_relu       If true, apply ReLU activation after convolution (default: true).
+     * @param activation     Activation function (default: RELU).
      * @param use_bias       If true, add a learnable per-output-channel bias (default: true).
      * @param use_batchnorm  If true, apply batch normalization between conv and activation.
      */
-    HCNNConv(int dim, int c_in, int c_out, bool use_relu = true, bool use_bias = true,
-         bool use_batchnorm = false);
+    HCNNConv(int dim, int c_in, int c_out,
+             Activation activation = Activation::RELU,
+             bool use_bias = true, bool use_batchnorm = false);
 
     /**
      * @brief Initialize kernel weights.
@@ -205,7 +209,7 @@ private:
     int c_in;         ///< Input channel count.
     int c_out;        ///< Output channel count (number of filters).
     int K;            ///< Number of connection masks (= DIM).
-    bool use_relu;       ///< Whether ReLU activation is applied after convolution.
+    Activation activation;  ///< Activation function applied after convolution.
     bool use_bias;       ///< Whether a learnable bias term is added per output channel.
     bool use_batchnorm;  ///< Whether batch normalization is applied between conv and activation.
     mutable bool training_ = true; ///< Training mode (true) or eval mode (false) for BN.
@@ -239,17 +243,8 @@ private:
         return (co * c_in + ci) * K + k;
     }
 
-    /**
-     * @brief Apply the activation function (ReLU or identity).
-     * @param x Pre-activation value.
-     * @return  Activated value.
-     */
-    float activate(float x) const;
+    static constexpr float leaky_alpha_ = 0.01f; ///< LeakyReLU negative slope.
 
-    /**
-     * @brief Derivative of the activation function evaluated at @p x.
-     * @param x Pre-activation value.
-     * @return  1.0 if identity or x > 0; 0.0 otherwise.
-     */
+    float activate(float x) const;
     float activate_derivative(float x) const;
 };

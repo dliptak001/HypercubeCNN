@@ -38,9 +38,9 @@ static void test_construction() {
     check(net.get_num_conv() == 0, "no conv layers initially");
     check(net.get_num_pool() == 0, "no pool layers initially");
 
-    net.add_conv(8, true, true);
+    net.add_conv(8);
     net.add_pool(PoolType::MAX);
-    net.add_conv(16, true, true);
+    net.add_conv(16);
 
     check(net.get_num_conv() == 2, "2 conv layers after add");
     check(net.get_num_pool() == 1, "1 pool layer after add");
@@ -54,9 +54,9 @@ static void test_forward_pass() {
     std::cout << "\n[Forward pass]\n";
 
     HCNNNetwork net(5, 4);
-    net.add_conv(8, true, true);
+    net.add_conv(8);
     net.add_pool(PoolType::MAX);
-    net.add_conv(16, true, true);
+    net.add_conv(16);
     net.randomize_all_weights();
 
     int N = net.get_start_N();
@@ -87,7 +87,7 @@ static void test_training_step() {
     std::cout << "\n[Training step]\n";
 
     HCNNNetwork net(5, 4);
-    net.add_conv(16, true, true);
+    net.add_conv(16);
     net.randomize_all_weights();
 
     int N = net.get_start_N();
@@ -137,7 +137,7 @@ static void test_batch_training() {
     std::cout << "\n[Batch training]\n";
 
     HCNNNetwork net(5, 4);
-    net.add_conv(16, true, true);
+    net.add_conv(16);
     net.randomize_all_weights();
 
     int N = net.get_start_N();
@@ -172,7 +172,7 @@ static void test_batch_inference() {
     std::cout << "\n[Batch inference]\n";
 
     HCNNNetwork net(5, 4);
-    net.add_conv(16, true, true);
+    net.add_conv(16);
     net.add_pool(PoolType::MAX);
     net.randomize_all_weights();
 
@@ -219,7 +219,7 @@ static void test_readout_types() {
     // GAP readout
     {
         HCNNNetwork net(5, 4, 1, ReadoutType::GAP);
-        net.add_conv(8, true, true);
+        net.add_conv(8);
         net.randomize_all_weights();
         std::mt19937 rng(111);
         std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
@@ -234,7 +234,7 @@ static void test_readout_types() {
     // FLATTEN readout
     {
         HCNNNetwork net(5, 4, 1, ReadoutType::FLATTEN);
-        net.add_conv(8, true, true);
+        net.add_conv(8);
         net.randomize_all_weights();
         std::mt19937 rng(222);
         std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
@@ -252,7 +252,7 @@ static void test_pool_types() {
 
     auto test_pool = [](PoolType type, const char* name) {
         HCNNNetwork net(5, 4);
-        net.add_conv(8, true, true);
+        net.add_conv(8);
         net.add_pool(type);
         net.randomize_all_weights();
 
@@ -278,9 +278,9 @@ static void test_batchnorm() {
     // Test 1: Forward pass with BN produces finite output
     {
         HCNNNetwork net(5, 4);
-        net.add_conv(16, true, true, true);  // BN enabled
+        net.add_conv(16, Activation::RELU, true, true);  // BN enabled
         net.add_pool(PoolType::MAX);
-        net.add_conv(16, true, true, true);  // BN enabled
+        net.add_conv(16, Activation::RELU, true, true);  // BN enabled
         net.randomize_all_weights();
 
         int N = net.get_start_N();
@@ -299,7 +299,7 @@ static void test_batchnorm() {
     // Test 2: BN train_step reduces loss
     {
         HCNNNetwork net(5, 4);
-        net.add_conv(16, true, true, true);
+        net.add_conv(16, Activation::RELU, true, true);
         net.randomize_all_weights();
 
         int N = net.get_start_N();
@@ -344,9 +344,9 @@ static void test_batchnorm() {
     // Test 3: BN train_batch produces finite logits
     {
         HCNNNetwork net(5, 4);
-        net.add_conv(16, true, true, true);
+        net.add_conv(16, Activation::RELU, true, true);
         net.add_pool(PoolType::MAX);
-        net.add_conv(16, true, true, true);
+        net.add_conv(16, Activation::RELU, true, true);
         net.randomize_all_weights();
 
         int N = net.get_start_N();
@@ -376,7 +376,7 @@ static void test_batchnorm() {
     // Test 4: BN batch inference matches single-sample inference
     {
         HCNNNetwork net(5, 4);
-        net.add_conv(8, true, true, true);
+        net.add_conv(8, Activation::RELU, true, true);
         net.add_pool(PoolType::MAX);
         net.randomize_all_weights();
 
@@ -417,6 +417,73 @@ static void test_batchnorm() {
     }
 }
 
+static void test_leaky_relu() {
+    std::cout << "\n[LeakyReLU]\n";
+
+    // Forward produces finite output with negative activations surviving
+    {
+        HCNNNetwork net(5, 4);
+        net.add_conv(16, Activation::LEAKY_RELU);
+        net.randomize_all_weights();
+
+        int N = net.get_start_N();
+        int K = net.get_num_classes();
+        std::mt19937 rng(42);
+        std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+        std::vector<float> input(N);
+        for (auto& v : input) v = dist(rng);
+
+        std::vector<float> emb(N), logits(K);
+        net.embed_input(input.data(), N, emb.data());
+        net.forward(emb.data(), logits.data());
+        check(all_finite(logits.data(), K), "LeakyReLU forward produces finite logits");
+    }
+
+    // LeakyReLU train_step reduces loss
+    {
+        HCNNNetwork net(5, 4);
+        net.add_conv(16, Activation::LEAKY_RELU);
+        net.randomize_all_weights();
+
+        int N = net.get_start_N();
+        int K = net.get_num_classes();
+        const int num_samples = 20;
+        std::mt19937 rng(123);
+        std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+        std::vector<std::vector<float>> inputs(num_samples, std::vector<float>(N));
+        std::vector<int> targets(num_samples);
+        for (int i = 0; i < num_samples; ++i) {
+            for (auto& v : inputs[i]) v = dist(rng);
+            targets[i] = i % K;
+        }
+
+        auto compute_loss = [&]() {
+            double total = 0.0;
+            for (int i = 0; i < num_samples; ++i) {
+                std::vector<float> emb(N), logits(K);
+                net.embed_input(inputs[i].data(), N, emb.data());
+                net.forward(emb.data(), logits.data());
+                double max_l = logits[0];
+                for (int j = 1; j < K; ++j) if (logits[j] > max_l) max_l = logits[j];
+                double se = 0.0;
+                for (int j = 0; j < K; ++j) se += std::exp(logits[j] - max_l);
+                total += -(logits[targets[i]] - max_l) + std::log(se);
+            }
+            return total / num_samples;
+        };
+
+        double loss_before = compute_loss();
+        for (int step = 0; step < 100; ++step) {
+            int idx = step % num_samples;
+            net.train_step(inputs[idx].data(), N, targets[idx], 0.01f);
+        }
+        double loss_after = compute_loss();
+        check(loss_after < loss_before,
+              "LeakyReLU loss decreased (" + std::to_string(loss_before)
+              + " -> " + std::to_string(loss_after) + ")");
+    }
+}
+
 int main() {
     std::cout << "HypercubeCNN Core Smoke Test\n";
     std::cout << "============================\n";
@@ -429,6 +496,7 @@ int main() {
     test_readout_types();
     test_pool_types();
     test_batchnorm();
+    test_leaky_relu();
 
     std::cout << "\n============================\n";
     if (failures == 0) {

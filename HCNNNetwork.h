@@ -27,8 +27,8 @@ public:
     HCNNNetwork(HCNNNetwork&&) = delete;
     HCNNNetwork& operator=(HCNNNetwork&&) = delete;
 
-    void add_conv(int c_out, bool use_relu = true, bool use_bias = true,
-                  bool use_batchnorm = false);
+    void add_conv(int c_out, Activation activation = Activation::RELU,
+                  bool use_bias = true, bool use_batchnorm = false);
     void add_pool(PoolType type = PoolType::MAX);
 
     /// Set training mode (true) or eval mode (false) for all layers with BN.

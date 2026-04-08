@@ -14,11 +14,11 @@ static constexpr int THREAD_DIM_THRESHOLD = 12;
 // keeping the working set in L1.
 static constexpr size_t TILE = 64;
 
-HCNNConv::HCNNConv(int dim, int c_in, int c_out, bool use_relu, bool use_bias,
-           bool use_batchnorm)
+HCNNConv::HCNNConv(int dim, int c_in, int c_out, Activation activation,
+                   bool use_bias, bool use_batchnorm)
     : DIM(dim), N(1 << dim), c_in(c_in), c_out(c_out),
       K(dim),
-      use_relu(use_relu), use_bias(use_bias), use_batchnorm(use_batchnorm),
+      activation(activation), use_bias(use_bias), use_batchnorm(use_batchnorm),
       kernel(c_out * c_in * K, 0.0f),
       bias(use_bias ? c_out : 0, 0.0f),
       kernel_vel(c_out * c_in * K, 0.0f),
@@ -493,11 +493,17 @@ void HCNNConv::update_running_stats(const float* mean, const float* var) {
 }
 
 float HCNNConv::activate(float x) const {
-    if (!use_relu) return x;
-    return (x > 0.0f) ? x : 0.0f;
+    switch (activation) {
+        case Activation::RELU:       return (x > 0.0f) ? x : 0.0f;
+        case Activation::LEAKY_RELU: return (x > 0.0f) ? x : leaky_alpha_ * x;
+        default:                     return x;
+    }
 }
 
 float HCNNConv::activate_derivative(float x) const {
-    if (!use_relu) return 1.0f;
-    return (x > 0.0f) ? 1.0f : 0.0f;
+    switch (activation) {
+        case Activation::RELU:       return (x > 0.0f) ? 1.0f : 0.0f;
+        case Activation::LEAKY_RELU: return (x > 0.0f) ? 1.0f : leaky_alpha_;
+        default:                     return 1.0f;
+    }
 }
