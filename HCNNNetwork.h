@@ -155,4 +155,18 @@ private:
             for (auto& layer : layers) layer.set_thread_pool(pool);
         }
     };
+
+    // RAII guard to suppress per-sample running-stats EMA updates during
+    // batch-parallel forward passes, and restore on scope exit (including on exception).
+    struct BNStatsGuard {
+        std::vector<HCNNConv>& layers;
+        BNStatsGuard(std::vector<HCNNConv>& l) : layers(l) {
+            for (auto& layer : layers)
+                if (layer.has_batchnorm()) layer.set_skip_running_stats(true);
+        }
+        ~BNStatsGuard() {
+            for (auto& layer : layers)
+                if (layer.has_batchnorm()) layer.set_skip_running_stats(false);
+        }
+    };
 };

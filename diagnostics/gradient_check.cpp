@@ -254,6 +254,156 @@ int main() {
         }
     }
 
+    // --- Batch normalization gradient check ---
+    // BN uses per-sample statistics (Instance Norm), which are deterministic for
+    // a given input. We must use training mode for both analytical and numerical
+    // gradients so the statistics are consistent. HCNNNetwork::forward() forces
+    // eval mode, so we use a custom forward path.
+    std::cout << "\n--- BN gradient check ---\n";
+
+    HCNNNetwork bn_net(4);
+    bn_net.add_conv(4, Activation::NONE, true, true);  // BN enabled
+    bn_net.add_conv(4, Activation::NONE, true, true);  // BN enabled
+    bn_net.randomize_all_weights(0.3f);
+
+    // Custom loss function using training-mode forward (per-sample BN stats).
+    auto bn_loss_fn = [&]() -> double {
+        bn_net.set_training(true);
+        int bn_N = bn_net.get_start_N();
+        int bn_K = bn_net.get_num_classes();
+        std::vector<float> emb(bn_N);
+        bn_net.embed_input(input.data(), input_len, emb.data());
+
+        // Forward through conv layers
+        std::vector<float> buf_a(bn_net.get_conv(0).get_c_out() * bn_N);
+        std::vector<float> buf_b(bn_net.get_conv(1).get_c_out() * bn_N);
+        bn_net.get_conv(0).forward(emb.data(), buf_a.data());
+        bn_net.get_conv(1).forward(buf_a.data(), buf_b.data());
+
+        // Readout
+        std::vector<float> logits(bn_K, 0.0f);
+        bn_net.get_readout().forward(buf_b.data(), logits.data(), bn_N);
+
+        // Cross-entropy loss
+        double max_l = logits[0];
+        for (int j = 1; j < bn_K; ++j) if (logits[j] > max_l) max_l = logits[j];
+        double se = 0.0;
+        for (int j = 0; j < bn_K; ++j) se += std::exp(static_cast<double>(logits[j]) - max_l);
+        return -(static_cast<double>(logits[target_class]) - max_l) + std::log(se);
+    };
+
+    // Forward through BN network in training mode to get analytical gradients
+    bn_net.set_training(true);
+
+    struct BNLayerCache {
+        std::vector<float> activation;
+        std::vector<float> pre_act;
+        std::vector<float> bn_save;
+        int N;
+        int channels;
+    };
+
+    std::vector<BNLayerCache> bn_cache(3);
+    bn_cache[0].N = N;
+    bn_cache[0].channels = 1;
+    bn_cache[0].activation.assign(embedded.begin(), embedded.end());
+
+    for (int i = 0; i < 2; ++i) {
+        auto& c = bn_cache[i + 1];
+        c.N = N;
+        c.channels = bn_net.get_conv(i).get_c_out();
+        c.activation.resize(c.channels * N);
+        c.pre_act.resize(c.channels * N);
+        c.bn_save.resize(bn_net.get_conv(i).get_bn_save_size());
+        bn_net.get_conv(i).forward(bn_cache[i].activation.data(),
+                                    c.activation.data(), c.pre_act.data(),
+                                    c.bn_save.data());
+    }
+
+    // Readout forward
+    auto& bn_final = bn_cache[2];
+    std::vector<float> bn_logits(K, 0.0f);
+    bn_net.get_readout().forward(bn_final.activation.data(), bn_logits.data(), bn_final.N);
+
+    // Softmax gradient
+    float bn_max_logit = bn_logits[0];
+    for (int i = 1; i < K; ++i)
+        if (bn_logits[i] > bn_max_logit) bn_max_logit = bn_logits[i];
+    std::vector<float> bn_probs(K);
+    float bn_sum_exp = 0.0f;
+    for (int i = 0; i < K; ++i) {
+        bn_probs[i] = std::exp(bn_logits[i] - bn_max_logit);
+        bn_sum_exp += bn_probs[i];
+    }
+    for (int i = 0; i < K; ++i) bn_probs[i] /= bn_sum_exp;
+
+    std::vector<float> bn_grad_logits(K);
+    for (int i = 0; i < K; ++i)
+        bn_grad_logits[i] = bn_probs[i] - (i == target_class ? 1.0f : 0.0f);
+
+    // Backward through readout
+    std::vector<float> bn_rw_grad(bn_net.get_readout().get_weight_size());
+    std::vector<float> bn_rb_grad(bn_net.get_readout().get_bias_size());
+    std::vector<float> bn_grad_current(bn_final.channels * bn_final.N);
+    bn_net.get_readout().compute_gradients(bn_grad_logits.data(), bn_final.activation.data(),
+                                           bn_final.N, bn_grad_current.data(),
+                                           bn_rw_grad.data(), bn_rb_grad.data());
+
+    // Backward through BN conv layers
+    struct BNConvGrads {
+        std::vector<float> kernel_grad;
+        std::vector<float> bias_grad;
+        std::vector<float> gamma_grad;
+        std::vector<float> beta_grad;
+    };
+    std::vector<BNConvGrads> bn_conv_grads(2);
+
+    for (int i = 1; i >= 0; --i) {
+        auto& cg = bn_conv_grads[i];
+        auto& conv = bn_net.get_conv(i);
+        cg.kernel_grad.resize(conv.get_kernel_size());
+        cg.bias_grad.resize(conv.get_bias_size());
+        cg.gamma_grad.resize(conv.get_bn_grad_size());
+        cg.beta_grad.resize(conv.get_bn_grad_size());
+        std::vector<float> grad_prev(bn_cache[i].channels * bn_cache[i].N, 0.0f);
+
+        conv.compute_gradients(
+            bn_grad_current.data(), bn_cache[i].activation.data(),
+            bn_cache[i + 1].pre_act.data(),
+            (i > 0) ? grad_prev.data() : nullptr,
+            cg.kernel_grad.data(), cg.bias_grad.data(),
+            nullptr, bn_cache[i + 1].bn_save.data(),
+            cg.gamma_grad.data(), cg.beta_grad.data());
+
+        bn_grad_current = std::move(grad_prev);
+    }
+
+    std::cout << "BN network initial loss: " << bn_loss_fn() << "\n\n";
+
+    // Check BN conv kernel and bias weights
+    for (size_t li = 0; li < 2; ++li) {
+        auto& conv = bn_net.get_conv(li);
+        std::string name = "BN Conv[" + std::to_string(li) + "] kernel";
+        auto r = check_weights(name.c_str(),
+            conv.get_kernel_size(),
+            [&](int i, float delta) { conv.get_kernel_data()[i] += delta; },
+            [&](int i) { return bn_conv_grads[li].kernel_grad[i]; },
+            bn_loss_fn);
+        total_pass += r.passed;
+        total_fail += r.failed;
+
+        if (conv.get_bias_size() > 0) {
+            name = "BN Conv[" + std::to_string(li) + "] bias";
+            r = check_weights(name.c_str(),
+                conv.get_bias_size(),
+                [&](int i, float delta) { conv.get_bias_data()[i] += delta; },
+                [&](int i) { return bn_conv_grads[li].bias_grad[i]; },
+                bn_loss_fn);
+            total_pass += r.passed;
+            total_fail += r.failed;
+        }
+    }
+
     std::cout << "\n=== SUMMARY: " << total_pass << " passed, "
               << total_fail << " failed out of "
               << (total_pass + total_fail) << " total ===\n";

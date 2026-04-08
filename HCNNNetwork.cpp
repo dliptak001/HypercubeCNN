@@ -220,6 +220,11 @@ void HCNNNetwork::forward_batch(const float* const* raw_inputs,
 void HCNNNetwork::train_step(const float* raw_input, int input_length,
                              int target_class, float learning_rate, float momentum,
                              float weight_decay, const float* class_weights) {
+    if (target_class < 0 || target_class >= num_classes) {
+        throw std::runtime_error("train_step: target_class " + std::to_string(target_class)
+                                 + " out of range [0, " + std::to_string(num_classes) + ")");
+    }
+
     int N = 1 << start_dim;
     int total = input_channels * N;
     std::vector<float> embedded(total, 0.0f);
@@ -432,8 +437,7 @@ void HCNNNetwork::prepare_batch_buffers() {
         }
         // Work buffers for compute_gradients (avoid per-call heap allocs)
         b.conv_work.resize(max_layer_size); // HCNNConv needs c_out*N, max_layer_size >= that
-        int final_ch = layer_info_[num_layers].channels;
-        b.readout_work.resize(final_ch);    // HCNNReadout needs input_channels floats
+        b.readout_work.resize(readout.get_input_channels()); // FLATTEN needs channels*N floats
     }
 
     batch_bufs_ready = true;
@@ -457,6 +461,13 @@ void HCNNNetwork::train_batch(const float* const* inputs, const int* input_lengt
                               float learning_rate, float momentum,
                               float weight_decay, const float* class_weights) {
     if (batch_size <= 0) return;
+    for (int i = 0; i < batch_size; ++i) {
+        if (targets[i] < 0 || targets[i] >= num_classes) {
+            throw std::runtime_error("train_batch: target[" + std::to_string(i) + "] = "
+                                     + std::to_string(targets[i]) + " out of range [0, "
+                                     + std::to_string(num_classes) + ")");
+        }
+    }
 
     prepare_batch_buffers();
     zero_accumulators();
@@ -467,10 +478,9 @@ void HCNNNetwork::train_batch(const float* const* inputs, const int* input_lengt
     size_t num_conv = conv_layers.size();
     size_t nt = accum_.size();
 
-    // Suppress per-sample running-stats updates for BN layers (avoid data race)
-    for (size_t ci = 0; ci < num_conv; ++ci)
-        if (conv_layers[ci].has_batchnorm())
-            conv_layers[ci].set_skip_running_stats(true);
+    // Suppress per-sample running-stats updates for BN layers (avoid data race).
+    // RAII guard restores on scope exit, including on exception.
+    BNStatsGuard bn_guard(conv_layers);
 
     // Process samples in parallel, each thread accumulates into its own accum
     auto process_sample = [&](size_t tid, int sample_idx) {
@@ -646,7 +656,6 @@ void HCNNNetwork::train_batch(const float* const* inputs, const int* input_lengt
                 base_var[j]  *= scale;
             }
             conv_layers[ci].update_running_stats(base_mean.data(), base_var.data());
-            conv_layers[ci].set_skip_running_stats(false);
         }
     }
 

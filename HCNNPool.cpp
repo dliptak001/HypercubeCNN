@@ -1,4 +1,5 @@
 #include "HCNNPool.h"
+#include <cassert>
 
 HCNNPool::HCNNPool(int input_dim, PoolType type)
     : input_dim(input_dim), output_dim(input_dim - 1),
@@ -45,6 +46,7 @@ void HCNNPool::backward(const float* grad_out, float* grad_in, int num_channels,
         float* g_in = grad_in + c * input_N;
 
         if (type == PoolType::MAX) {
+            assert(max_indices && "MAX pool backward requires max_indices from forward pass");
             for (int v = 0; v < output_N; ++v) {
                 int src = (*max_indices)[c * output_N + v];
                 g_in[src] = g_out[v];

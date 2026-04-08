@@ -610,6 +610,179 @@ static void test_adam() {
     }
 }
 
+static void test_flatten_train_batch() {
+    std::cout << "\n[FLATTEN train_batch]\n";
+
+    // This exercises the readout_work buffer sizing fix for FLATTEN mode.
+    HCNNNetwork net(5, 4, 1, ReadoutType::FLATTEN);
+    net.add_conv(8);
+    net.randomize_all_weights();
+
+    int N = net.get_start_N();
+    int K = net.get_num_classes();
+    const int batch_size = 4;
+    std::mt19937 rng(42);
+    std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+    std::vector<std::vector<float>> inputs(batch_size, std::vector<float>(N));
+    std::vector<const float*> input_ptrs(batch_size);
+    std::vector<int> lengths(batch_size, N);
+    std::vector<int> targets(batch_size);
+    for (int i = 0; i < batch_size; ++i) {
+        for (auto& v : inputs[i]) v = dist(rng);
+        input_ptrs[i] = inputs[i].data();
+        targets[i] = i % K;
+    }
+
+    net.train_batch(input_ptrs.data(), lengths.data(), targets.data(),
+                    batch_size, 0.01f);
+
+    std::vector<float> logits(K), emb(N);
+    net.embed_input(inputs[0].data(), N, emb.data());
+    net.forward(emb.data(), logits.data());
+    check(all_finite(logits.data(), K), "FLATTEN train_batch: logits finite");
+}
+
+static void test_avg_pool_training() {
+    std::cout << "\n[AVG pool training]\n";
+
+    HCNNNetwork net(5, 4);
+    net.add_conv(16);
+    net.add_pool(PoolType::AVG);
+    net.add_conv(16);
+    net.randomize_all_weights();
+
+    int N = net.get_start_N();
+    int K = net.get_num_classes();
+    const int num_samples = 20;
+    std::mt19937 rng(42);
+    std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+    std::vector<std::vector<float>> inputs(num_samples, std::vector<float>(N));
+    std::vector<int> targets(num_samples);
+    for (int i = 0; i < num_samples; ++i) {
+        for (auto& v : inputs[i]) v = dist(rng);
+        targets[i] = i % K;
+    }
+
+    auto compute_loss = [&]() {
+        double total = 0.0;
+        for (int i = 0; i < num_samples; ++i) {
+            std::vector<float> emb(N), logits(K);
+            net.embed_input(inputs[i].data(), N, emb.data());
+            net.forward(emb.data(), logits.data());
+            double max_l = logits[0];
+            for (int j = 1; j < K; ++j) if (logits[j] > max_l) max_l = logits[j];
+            double se = 0.0;
+            for (int j = 0; j < K; ++j) se += std::exp(logits[j] - max_l);
+            total += -(logits[targets[i]] - max_l) + std::log(se);
+        }
+        return total / num_samples;
+    };
+
+    double loss_before = compute_loss();
+    for (int step = 0; step < 100; ++step) {
+        int idx = step % num_samples;
+        net.train_step(inputs[idx].data(), N, targets[idx], 0.01f);
+    }
+    double loss_after = compute_loss();
+    check(loss_after < loss_before,
+          "AVG pool: loss decreased (" + std::to_string(loss_before)
+          + " -> " + std::to_string(loss_after) + ")");
+}
+
+static void test_weight_decay() {
+    std::cout << "\n[Weight decay]\n";
+
+    // Train with weight decay — weights should have smaller magnitude than without.
+    HCNNNetwork net_wd(5, 4);
+    net_wd.add_conv(16);
+    net_wd.randomize_all_weights();
+
+    HCNNNetwork net_no_wd(5, 4);
+    net_no_wd.add_conv(16);
+    net_no_wd.randomize_all_weights();  // same seed (42) → same initial weights
+
+    int N = 32;
+    int K = 4;
+    const int num_samples = 20;
+    std::mt19937 rng(123);
+    std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+    std::vector<std::vector<float>> inputs(num_samples, std::vector<float>(N));
+    std::vector<int> targets(num_samples);
+    for (int i = 0; i < num_samples; ++i) {
+        for (auto& v : inputs[i]) v = dist(rng);
+        targets[i] = i % K;
+    }
+
+    for (int step = 0; step < 100; ++step) {
+        int idx = step % num_samples;
+        net_wd.train_step(inputs[idx].data(), N, targets[idx], 0.01f, 0.0f, 0.01f);
+        net_no_wd.train_step(inputs[idx].data(), N, targets[idx], 0.01f, 0.0f, 0.0f);
+    }
+
+    // Compute L2 norm of kernel weights
+    auto l2_norm = [](HCNNNetwork& net) {
+        float sum = 0.0f;
+        auto& conv = net.get_conv(0);
+        for (int i = 0; i < conv.get_kernel_size(); ++i) {
+            float w = conv.get_kernel_data()[i];
+            sum += w * w;
+        }
+        return std::sqrt(sum);
+    };
+
+    float norm_wd = l2_norm(net_wd);
+    float norm_no_wd = l2_norm(net_no_wd);
+    check(norm_wd < norm_no_wd,
+          "weight decay reduces kernel L2 norm (" + std::to_string(norm_wd)
+          + " < " + std::to_string(norm_no_wd) + ")");
+}
+
+static void test_class_weights() {
+    std::cout << "\n[Class weights]\n";
+
+    HCNNNetwork net(5, 4);
+    net.add_conv(16);
+    net.randomize_all_weights();
+
+    int N = net.get_start_N();
+    int K = net.get_num_classes();
+
+    std::mt19937 rng(42);
+    std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+    std::vector<float> input(N);
+    for (auto& v : input) v = dist(rng);
+
+    // Class weights: heavily weight class 0
+    std::vector<float> class_weights = {10.0f, 1.0f, 1.0f, 1.0f};
+
+    // Should not crash, and loss should still be finite
+    net.train_step(input.data(), N, 0, 0.01f, 0.0f, 0.0f, class_weights.data());
+
+    std::vector<float> emb(N), logits(K);
+    net.embed_input(input.data(), N, emb.data());
+    net.forward(emb.data(), logits.data());
+    check(all_finite(logits.data(), K), "class-weighted train_step: logits finite");
+
+    // Also test via train_batch
+    const int batch_size = 4;
+    std::vector<std::vector<float>> inputs(batch_size, std::vector<float>(N));
+    std::vector<const float*> input_ptrs(batch_size);
+    std::vector<int> lengths(batch_size, N);
+    std::vector<int> targets(batch_size);
+    for (int i = 0; i < batch_size; ++i) {
+        for (auto& v : inputs[i]) v = dist(rng);
+        input_ptrs[i] = inputs[i].data();
+        targets[i] = i % K;
+    }
+
+    net.train_batch(input_ptrs.data(), lengths.data(), targets.data(),
+                    batch_size, 0.01f, 0.0f, 0.0f, class_weights.data());
+
+    net.embed_input(inputs[0].data(), N, emb.data());
+    net.forward(emb.data(), logits.data());
+    check(all_finite(logits.data(), K), "class-weighted train_batch: logits finite");
+}
+
 int main() {
     std::cout << "HypercubeCNN Core Smoke Test\n";
     std::cout << "============================\n";
@@ -624,6 +797,10 @@ int main() {
     test_batchnorm();
     test_leaky_relu();
     test_adam();
+    test_flatten_train_batch();
+    test_avg_pool_training();
+    test_weight_decay();
+    test_class_weights();
 
     std::cout << "\n============================\n";
     if (failures == 0) {

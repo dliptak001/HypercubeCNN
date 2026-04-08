@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cstddef>
 #include <condition_variable>
+#include <exception>
 #include <functional>
 #include <mutex>
 #include <thread>
@@ -70,6 +71,7 @@ public:
         // Publish work for background workers
         {
             std::lock_guard lock(mutex_);
+            exception_ = nullptr;
             for_func_ = [&func, chunk, count](size_t tid) {
                 const size_t b = tid * chunk;
                 if (b >= count) return;
@@ -84,9 +86,12 @@ public:
         func(size_t{0}, size_t{0}, std::min(chunk, count));
 
         // Wait for all workers to finish
-        std::unique_lock lock(mutex_);
-        cv_done_.wait(lock, [this] { return remaining_.load() == 0; });
-        for_func_ = nullptr; // release captured references
+        {
+            std::unique_lock lock(mutex_);
+            cv_done_.wait(lock, [this] { return remaining_.load() == 0; });
+            for_func_ = nullptr; // release captured references
+            if (exception_) std::rethrow_exception(exception_);
+        }
     }
 
 private:
@@ -104,7 +109,13 @@ private:
                 fn = for_func_;   // copy under lock to avoid race with ForEach clearing it
             }
 
-            fn(tid);
+            try {
+                fn(tid);
+            } catch (...) {
+                std::lock_guard elock(mutex_);
+                if (!exception_)
+                    exception_ = std::current_exception();
+            }
 
             if (remaining_.fetch_sub(1) == 1)
                 cv_done_.notify_one();
@@ -117,6 +128,7 @@ private:
     std::condition_variable cv_done_;
 
     std::function<void(size_t)> for_func_;
+    std::exception_ptr exception_;
     size_t generation_ = 0;
     bool stop_ = false;
 
