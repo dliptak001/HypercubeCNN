@@ -13,7 +13,7 @@ Static C++ library for convolutional neural networks on Boolean hypercube graphs
 - [API Reference](#api-reference)
   - [Enums](#enums)
   - [HCNNNetwork](#hcnnnetwork)
-  - [HCNN (conv layer)](#hcnn-conv-layer)
+  - [HCNNConv (conv layer)](#hcnnconv-conv-layer)
   - [HCNNPool](#hcnnpool)
   - [HCNNReadout](#hcnnreadout)
 - [Memory layout](#memory-layout)
@@ -28,7 +28,7 @@ After installation, the SDK contains:
 <prefix>/
   include/HypercubeCNN/
     HCNNNetwork.h      -- Primary public API (network orchestrator)
-    HCNN.h             -- Conv layer (included by HCNNNetwork.h)
+    HCNNConv.h         -- Conv layer (included by HCNNNetwork.h)
     HCNNPool.h         -- Pooling layer (included by HCNNNetwork.h)
     HCNNReadout.h      -- Readout layer (included by HCNNNetwork.h)
     ThreadPool.h       -- Internal threading (included by HCNNNetwork.h)
@@ -233,14 +233,14 @@ Process `batch_size` samples in parallel. Each thread runs forward + backward in
 | `get_start_N()` | Initial vertex count (2^start_dim). |
 | `get_input_channels()` | Number of input channels. |
 | `get_num_classes()` | Number of output classes. |
-| `get_conv(i)` | Reference to the i-th conv layer (`HCNN&`). |
+| `get_conv(i)` | Reference to the i-th conv layer (`HCNNConv&`). |
 | `get_readout()` | Reference to the readout layer (`HCNNReadout&`). |
 | `get_num_conv()` | Number of conv layers. |
 | `get_num_pool()` | Number of pool layers. |
 | `get_layer_types()` | Layer ordering: true = conv, false = pool. |
 | `get_channel_counts()` | Channel count after each layer (including input). |
 
-### HCNN (conv layer)
+### HCNNConv (conv layer)
 
 Hypercube convolutional layer. Each output vertex is a weighted sum of K = DIM nearest neighbors (single-bit XOR flips) from each input channel, plus optional bias and ReLU.
 
@@ -249,7 +249,7 @@ Most consumers interact with conv layers only through `HCNNNetwork`. Direct acce
 #### Constructor
 
 ```cpp
-HCNN(int dim, int c_in, int c_out, bool use_relu = true, bool use_bias = true);
+HCNNConv(int dim, int c_in, int c_out, bool use_relu = true, bool use_bias = true);
 ```
 
 Requires `dim >= 3`. Kernel weights are initialized to zero; call `randomize_weights()` or use `HCNNNetwork::randomize_all_weights()`.

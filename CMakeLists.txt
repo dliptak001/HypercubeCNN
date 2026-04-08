@@ -11,7 +11,7 @@ find_package(Threads REQUIRED)
 
 # ——— Static library: core pipeline ———
 add_library(HypercubeCNNCore STATIC
-    HCNN.cpp
+    HCNNConv.cpp
     HCNNPool.cpp
     HCNNNetwork.cpp
     HCNNReadout.cpp
@@ -19,7 +19,7 @@ add_library(HypercubeCNNCore STATIC
 )
 
 set(PUBLIC_HEADERS
-    HCNN.h
+    HCNNConv.h
     HCNNPool.h
     HCNNNetwork.h
     HCNNReadout.h

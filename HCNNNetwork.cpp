@@ -421,7 +421,7 @@ void HCNNNetwork::prepare_batch_buffers() {
             b.bn_save[ci].resize(conv_layers[ci].get_bn_save_size());
         }
         // Work buffers for compute_gradients (avoid per-call heap allocs)
-        b.conv_work.resize(max_layer_size); // HCNN needs c_out*N, max_layer_size >= that
+        b.conv_work.resize(max_layer_size); // HCNNConv needs c_out*N, max_layer_size >= that
         int final_ch = layer_info_[num_layers].channels;
         b.readout_work.resize(final_ch);    // HCNNReadout needs input_channels floats
     }

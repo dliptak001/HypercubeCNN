@@ -41,7 +41,7 @@ Input (flat scalars in [-1, 1])
 Embed onto 2^DIM hypercube vertices (Direct Linear Assignment)
   |
   v
-Conv (HCNN) -- K=DIM XOR masks, one weight per neighbor direction
+Conv (HCNNConv) -- K=DIM XOR masks, one weight per neighbor direction
   |
   v
 Pool (HCNNPool) -- antipodal pairing, DIM -> DIM-1
@@ -83,7 +83,7 @@ Run the smoke test:
 
 ```
 HypercubeCNN/
-  HCNN.h/cpp             Conv layer
+  HCNNConv.h/cpp         Conv layer
   HCNNPool.h/cpp          Antipodal pooling
   HCNNReadout.h/cpp       GAP + linear readout
   HCNNNetwork.h/cpp       Pipeline orchestrator

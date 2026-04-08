@@ -38,7 +38,7 @@ HypercubeCNN performs convolutions on binary hypercubes using Hamming distance i
 `HCNNNetwork` orchestrates the full forward pass:
 
 1. **Input embedding** — maps flat scalar arrays onto `N = 2^DIM` hypercube vertices (Direct Linear Assignment). Values must be in [-1.0, 1.0].
-2. **Conv layers (`HCNN`)** — sparse-vertex convolution using K = DIM fixed XOR masks per vertex. Each mask is a single-bit flip (Hamming distance 1 nearest-neighbor). Each output vertex = weighted sum of DIM specific neighbors. Kernel shape: `[c_out * c_in * K]`.
+2. **Conv layers (`HCNNConv`)** — sparse-vertex convolution using K = DIM fixed XOR masks per vertex. Each mask is a single-bit flip (Hamming distance 1 nearest-neighbor). Each output vertex = weighted sum of DIM specific neighbors. Kernel shape: `[c_out * c_in * K]`.
 3. **Pool layers (`HCNNPool`)** — antipodal pooling: pairs each vertex `v` with its bitwise complement `v ^ (2^DIM - 1)`, the maximally distant vertex. Reduces DIM by 1 per layer. Lower-half vertex survives. MAX or AVG reduction.
 4. **Readout (`HCNNReadout`)** — global average per channel → linear layer → class logits.
 
@@ -67,7 +67,7 @@ Three threading strategies coexist, never nested:
 
 - **Mini-batch training** (`train_batch`): samples in a batch run forward+backward in parallel, gradients accumulate into per-thread buffers, then reduce and apply. Per-thread work buffers are lazily allocated once (`prepare_batch_buffers`) and reused across calls.
 - **Batch inference** (`forward_batch`): samples run forward in parallel using pre-allocated per-thread inference buffers (`prepare_inference_buffers`). Used by `evaluate()` in examples/mnist_train.cpp.
-- **Per-layer vertex threading** (`HCNN::forward`/`backward`): parallelizes the inner vertex loop within each output channel. Only activates at DIM >= 12 (`THREAD_DIM_THRESHOLD` in HCNN.cpp). Used for single-sample inference and `train_step`.
+- **Per-layer vertex threading** (`HCNNConv::forward`/`backward`): parallelizes the inner vertex loop within each output channel. Only activates at DIM >= 12 (`THREAD_DIM_THRESHOLD` in HCNNConv.cpp). Used for single-sample inference and `train_step`.
 
 During batch dispatch (`train_batch`, `forward_batch`), per-layer vertex threading is disabled via `LayerThreadGuard` (RAII) to prevent nested ForEach on the non-reentrant ThreadPool. The guard restores layer thread_pool pointers even on exception.
 

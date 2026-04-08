@@ -1,9 +1,9 @@
 /**
- * @file HCNN.h
+ * @file HCNNConv.h
  * @brief Hypercube convolutional layer — sparse-vertex convolution on a
  *        binary hypercube using fixed XOR masks instead of spatial grids.
  *
- * An HCNN layer maps c_in input channels defined on the vertices of a
+ * An HCNNConv layer maps c_in input channels defined on the vertices of a
  * DIM-dimensional binary hypercube (N = 2^DIM vertices) to c_out output
  * channels on the same hypercube.  For each output vertex v, the layer
  * computes:
@@ -31,14 +31,14 @@
 class ThreadPool;
 
 /**
- * @class HCNN
+ * @class HCNNConv
  * @brief A single hypercube convolutional layer with optional ReLU and bias.
  *
  * Supports forward inference, backpropagation with SGD+momentum weight
  * updates, and a separated gradient-computation path for numerical
  * gradient checking.
  */
-class HCNN {
+class HCNNConv {
 public:
     /**
      * @brief Construct a hypercube convolutional layer.
@@ -55,7 +55,7 @@ public:
      * @param use_bias       If true, add a learnable per-output-channel bias (default: true).
      * @param use_batchnorm  If true, apply batch normalization between conv and activation.
      */
-    HCNN(int dim, int c_in, int c_out, bool use_relu = true, bool use_bias = true,
+    HCNNConv(int dim, int c_in, int c_out, bool use_relu = true, bool use_bias = true,
          bool use_batchnorm = false);
 
     /**

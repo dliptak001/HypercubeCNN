@@ -26,7 +26,7 @@ Example at DIM=10: one channel = 1024 floats. 64 channels = 65,536 floats in one
 
 All data flows through the pipeline as flat `float*` arrays. No tensors, no multidimensional containers. The channel-major convention is universal: conv input, conv output, pool input/output, readout input.
 
-## The convolution (`HCNN`)
+## The convolution (`HCNNConv`)
 
 ### What it computes
 
@@ -182,7 +182,7 @@ All core code is in the `HypercubeCNNCore` static library (pure C++23, no extern
 
 | Class | File | Role |
 |-------|------|------|
-| `HCNN` | HCNN.h/cpp | Single conv layer |
+| `HCNNConv` | HCNNConv.h/cpp | Single conv layer |
 | `HCNNPool` | HCNNPool.h/cpp | Antipodal pooling layer |
 | `HCNNReadout` | HCNNReadout.h/cpp | GAP + linear readout |
 | `HCNNNetwork` | HCNNNetwork.h/cpp | Pipeline orchestrator |

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "HCNN.h"
+#include "HCNNConv.h"
 #include "HCNNPool.h"
 #include "HCNNReadout.h"
 #include <memory>
@@ -67,7 +67,7 @@ public:
     int get_input_channels() const { return input_channels; }
     int get_num_classes() const { return num_classes; }
 
-    HCNN& get_conv(size_t i) { return conv_layers[i]; }
+    HCNNConv& get_conv(size_t i) { return conv_layers[i]; }
     HCNNReadout& get_readout() { return readout; }
     size_t get_num_conv() const { return conv_layers.size(); }
     size_t get_num_pool() const { return pool_layers.size(); }
@@ -81,7 +81,7 @@ private:
     int input_channels;
     ReadoutType readout_type;
     int readout_N{1};          // N passed to readout: 1 for FLATTEN, final_N for GAP
-    std::vector<HCNN> conv_layers;
+    std::vector<HCNNConv> conv_layers;
     std::vector<HCNNPool> pool_layers;
     std::vector<bool> is_conv_layer;
     std::vector<int> channel_counts;
@@ -115,7 +115,7 @@ private:
         std::vector<std::vector<float>> kg, bg;
         std::vector<std::vector<float>> bn_gg, bn_bg;  // per-conv BN gamma/beta grads
         std::vector<std::vector<float>> bn_save;        // per-conv BN inv_std cache
-        std::vector<float> conv_work;     // work buf for HCNN::compute_gradients
+        std::vector<float> conv_work;     // work buf for HCNNConv::compute_gradients
         std::vector<float> readout_work;  // work buf for HCNNReadout::compute_gradients
     };
 
@@ -141,9 +141,9 @@ private:
     // RAII guard to disable per-layer threading during batch dispatch
     // and restore it when the scope exits (including on exception).
     struct LayerThreadGuard {
-        std::vector<HCNN>& layers;
+        std::vector<HCNNConv>& layers;
         ThreadPool* pool;
-        LayerThreadGuard(std::vector<HCNN>& l, ThreadPool* p) : layers(l), pool(p) {
+        LayerThreadGuard(std::vector<HCNNConv>& l, ThreadPool* p) : layers(l), pool(p) {
             for (auto& layer : layers) layer.set_thread_pool(nullptr);
         }
         ~LayerThreadGuard() {

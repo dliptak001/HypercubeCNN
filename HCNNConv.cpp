@@ -1,4 +1,4 @@
-#include "HCNN.h"
+#include "HCNNConv.h"
 #include "ThreadPool.h"
 #include <algorithm>
 #include <cmath>
@@ -14,7 +14,7 @@ static constexpr int THREAD_DIM_THRESHOLD = 12;
 // keeping the working set in L1.
 static constexpr size_t TILE = 64;
 
-HCNN::HCNN(int dim, int c_in, int c_out, bool use_relu, bool use_bias,
+HCNNConv::HCNNConv(int dim, int c_in, int c_out, bool use_relu, bool use_bias,
            bool use_batchnorm)
     : DIM(dim), N(1 << dim), c_in(c_in), c_out(c_out),
       K(dim),
@@ -30,11 +30,11 @@ HCNN::HCNN(int dim, int c_in, int c_out, bool use_relu, bool use_bias,
       bn_gamma_vel(use_batchnorm ? c_out : 0, 0.0f),
       bn_beta_vel(use_batchnorm ? c_out : 0, 0.0f) {
     if (DIM < 3) {
-        throw std::runtime_error("HCNN requires DIM >= 3");
+        throw std::runtime_error("HCNNConv requires DIM >= 3");
     }
 }
 
-void HCNN::randomize_weights(float scale, std::mt19937& rng) {
+void HCNNConv::randomize_weights(float scale, std::mt19937& rng) {
     // Xavier/Glorot uniform: scale = sqrt(6 / (fan_in + fan_out)).
     // fan_in = c_in * K, fan_out = c_out * K.
     if (scale <= 0.0f) {
@@ -69,7 +69,7 @@ void HCNN::randomize_weights(float scale, std::mt19937& rng) {
 // (needs global channel stats), then activation.  When BN is disabled,
 // the original fused tiled accumulation+activation path is used.
 // ---------------------------------------------------------------------------
-void HCNN::forward(const float* in, float* out, float* pre_act,
+void HCNNConv::forward(const float* in, float* out, float* pre_act,
                    float* bn_save) const {
     const bool use_threads = thread_pool && DIM >= THREAD_DIM_THRESHOLD;
 
@@ -210,7 +210,7 @@ void HCNN::forward(const float* in, float* out, float* pre_act,
 // Backward: vertex-level threading for input gradients (tiled).
 // Channel-level threading for weight gradients (tiled reduction).
 // ---------------------------------------------------------------------------
-void HCNN::backward(const float* grad_out, const float* in, const float* pre_act,
+void HCNNConv::backward(const float* grad_out, const float* in, const float* pre_act,
                     float* grad_in, float learning_rate, float momentum,
                     float weight_decay, const float* bn_save) {
     const bool use_threads = thread_pool && DIM >= THREAD_DIM_THRESHOLD;
@@ -334,7 +334,7 @@ void HCNN::backward(const float* grad_out, const float* in, const float* pre_act
 // compute_gradients: same tiling strategy as backward, but writes raw
 // gradients to caller buffers instead of updating weights.
 // ---------------------------------------------------------------------------
-void HCNN::compute_gradients(const float* grad_out, const float* in, const float* pre_act,
+void HCNNConv::compute_gradients(const float* grad_out, const float* in, const float* pre_act,
                              float* grad_in, float* kernel_grad, float* bias_grad,
                              float* work_buf, const float* bn_save,
                              float* bn_gamma_grad, float* bn_beta_grad) const {
@@ -456,7 +456,7 @@ void HCNN::compute_gradients(const float* grad_out, const float* in, const float
 // ---------------------------------------------------------------------------
 // apply_gradients: apply pre-computed (averaged) gradients with momentum SGD.
 // ---------------------------------------------------------------------------
-void HCNN::apply_gradients(const float* kernel_grad, const float* bias_grad,
+void HCNNConv::apply_gradients(const float* kernel_grad, const float* bias_grad,
                            float learning_rate, float momentum, float weight_decay,
                            const float* bn_gamma_grad_in, const float* bn_beta_grad_in) {
     int total_k = c_out * c_in * K;
@@ -481,7 +481,7 @@ void HCNN::apply_gradients(const float* kernel_grad, const float* bias_grad,
     }
 }
 
-void HCNN::update_running_stats(const float* mean, const float* var) {
+void HCNNConv::update_running_stats(const float* mean, const float* var) {
     for (int co = 0; co < c_out; ++co) {
         float unbiased_var = var[co] * static_cast<float>(N)
                            / static_cast<float>(N - 1);
@@ -492,12 +492,12 @@ void HCNN::update_running_stats(const float* mean, const float* var) {
     }
 }
 
-float HCNN::activate(float x) const {
+float HCNNConv::activate(float x) const {
     if (!use_relu) return x;
     return (x > 0.0f) ? x : 0.0f;
 }
 
-float HCNN::activate_derivative(float x) const {
+float HCNNConv::activate_derivative(float x) const {
     if (!use_relu) return 1.0f;
     return (x > 0.0f) ? 1.0f : 0.0f;
 }
