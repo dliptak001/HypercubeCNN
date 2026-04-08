@@ -1,5 +1,5 @@
 #include "HCNNNetwork.h"
-#include "dataloader/HCNNMNISTDataset.h"
+#include "dataloader/HCNNDataset.h"
 #include <cmath>
 #include <functional>
 #include <iostream>

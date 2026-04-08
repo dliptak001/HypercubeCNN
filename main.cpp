@@ -1,5 +1,5 @@
 #include "HCNNNetwork.h"
-#include "dataloader/HCNNMNISTDataset.h"
+#include "dataloader/HCNNDataset.h"
 #include <chrono>
 #include <cmath>
 #include <filesystem>
@@ -22,7 +22,7 @@ static int argmax(const float* v, int n) {
     return best;
 }
 
-static void evaluate(HCNNNetwork& net, const HCNNMNISTDataset& dataset,
+static void evaluate(HCNNNetwork& net, const HCNNDataset& dataset,
                      const char* label) {
     int K = net.get_num_classes();
     int count = static_cast<int>(dataset.size());
@@ -57,8 +57,8 @@ static void evaluate(HCNNNetwork& net, const HCNNMNISTDataset& dataset,
 }
 
 static void train_and_evaluate(const char* name, HCNNNetwork& net,
-                               HCNNMNISTDataset& train_data,
-                               const HCNNMNISTDataset& test_data,
+                               HCNNDataset& train_data,
+                               const HCNNDataset& test_data,
                                float lr = 0.01f, int batch_size = 32,
                                float weight_decay = 0.0f) {
     std::cout << "\n=== " << name << " (lr=" << lr
@@ -80,7 +80,7 @@ static void train_and_evaluate(const char* name, HCNNNetwork& net,
         auto t1 = std::chrono::steady_clock::now();
         double secs = std::chrono::duration<double>(t1 - t0).count();
 
-        std::string label = "Epoch " + std::to_string(epoch + 1);
+        std::string label = "Epoch " + std::to_string(epoch + 1) + "/" + std::to_string(epochs);
         evaluate(net, test_data, label.c_str());
         std::cout << "  (lr=" << current_lr << ", " << secs << "s, "
                   << train_data.size() / secs << " samples/s)\n";

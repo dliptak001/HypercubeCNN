@@ -73,4 +73,4 @@ During batch dispatch (`train_batch`, `forward_batch`), per-layer vertex threadi
 - **No OpenMP.** Threading uses `ThreadPool` (pure C++ `std::thread`).
 - **No CUDA / no GPU.** All computation is CPU-only.
 - **No external dependencies** in core. Everything is flat arrays and standard C++23.
-- The `dataloader/` directory holds the MNIST dataset loader (`HCNNMNISTDataset`). Its include path is exported by the library.
+- The `dataloader/` directory holds the dataset loader (`HCNNDataset`). Its include path is exported by the library.

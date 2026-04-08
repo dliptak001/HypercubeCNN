@@ -15,7 +15,7 @@ add_library(HypercubeCNNCore STATIC
     HCNNPool.cpp
     HCNNNetwork.cpp
     HCNNReadout.cpp
-    dataloader/HCNNMNISTDataset.cpp
+    dataloader/HCNNDataset.cpp
 )
 
 set(PUBLIC_HEADERS
@@ -24,7 +24,7 @@ set(PUBLIC_HEADERS
     HCNNNetwork.h
     HCNNReadout.h
     ThreadPool.h
-    dataloader/HCNNMNISTDataset.h
+    dataloader/HCNNDataset.h
 )
 
 target_include_directories(HypercubeCNNCore
