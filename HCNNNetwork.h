@@ -27,8 +27,12 @@ public:
     HCNNNetwork(HCNNNetwork&&) = delete;
     HCNNNetwork& operator=(HCNNNetwork&&) = delete;
 
-    void add_conv(int c_out, bool use_relu = true, bool use_bias = true);
+    void add_conv(int c_out, bool use_relu = true, bool use_bias = true,
+                  bool use_batchnorm = false);
     void add_pool(PoolType type = PoolType::MAX);
+
+    /// Set training mode (true) or eval mode (false) for all layers with BN.
+    void set_training(bool training) const;
 
     /// Initialize all weights.  scale > 0: uniform [-scale, +scale].
     /// scale <= 0 (default): Xavier/Glorot uniform per layer.
@@ -90,6 +94,10 @@ private:
     struct ThreadAccum {
         std::vector<std::vector<float>> conv_kernel_grad;
         std::vector<std::vector<float>> conv_bias_grad;
+        std::vector<std::vector<float>> conv_bn_gamma_grad;
+        std::vector<std::vector<float>> conv_bn_beta_grad;
+        std::vector<std::vector<float>> conv_bn_mean;   // per-conv BN mean accumulator
+        std::vector<std::vector<float>> conv_bn_var;    // per-conv BN var accumulator
         std::vector<float> readout_weight_grad;
         std::vector<float> readout_bias_grad;
     };
@@ -105,6 +113,8 @@ private:
         std::vector<float> grad_a, grad_b;
         std::vector<float> rw_grad, rb_grad;
         std::vector<std::vector<float>> kg, bg;
+        std::vector<std::vector<float>> bn_gg, bn_bg;  // per-conv BN gamma/beta grads
+        std::vector<std::vector<float>> bn_save;        // per-conv BN inv_std cache
         std::vector<float> conv_work;     // work buf for HCNN::compute_gradients
         std::vector<float> readout_work;  // work buf for HCNNReadout::compute_gradients
     };

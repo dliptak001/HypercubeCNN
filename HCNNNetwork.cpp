@@ -23,12 +23,17 @@ HCNNNetwork::HCNNNetwork(int dim, int num_classes, int input_channels,
 
 HCNNNetwork::~HCNNNetwork() = default;
 
-void HCNNNetwork::add_conv(int c_out, bool use_relu, bool use_bias) {
+void HCNNNetwork::add_conv(int c_out, bool use_relu, bool use_bias,
+                           bool use_batchnorm) {
     int c_in = channel_counts.back();
-    conv_layers.emplace_back(current_dim, c_in, c_out, use_relu, use_bias);
+    conv_layers.emplace_back(current_dim, c_in, c_out, use_relu, use_bias, use_batchnorm);
     conv_layers.back().set_thread_pool(thread_pool.get());
     channel_counts.push_back(c_out);
     is_conv_layer.push_back(true);
+}
+
+void HCNNNetwork::set_training(bool training) const {
+    for (const auto& layer : conv_layers) layer.set_training(training);
 }
 
 void HCNNNetwork::add_pool(PoolType type) {
@@ -84,6 +89,8 @@ void HCNNNetwork::forward(const float* first_layer_activations, float* logits) c
     if (conv_layers.empty()) {
         throw std::runtime_error("HCNNNetwork::forward called with no conv layers");
     }
+    // Use eval mode for BN (running stats)
+    set_training(false);
 
     // Compute max buffer size across all layers (including multi-channel input)
     int cur_N = 1 << start_dim;
@@ -160,6 +167,7 @@ void HCNNNetwork::forward_batch(const float* const* raw_inputs,
                                 int batch_size, float* logits_out) {
     if (batch_size <= 0) return;
     prepare_inference_buffers();
+    set_training(false);
 
     int total = input_channels * (1 << start_dim);
     int K = num_classes;
@@ -211,10 +219,13 @@ void HCNNNetwork::train_step(const float* raw_input, int input_length,
 
     int num_layers = static_cast<int>(is_conv_layer.size());
 
+    set_training(true);
+
     // Per-layer cache for backprop
     struct LayerCache {
         std::vector<float> activation;
         std::vector<float> pre_act;       // conv layers only
+        std::vector<float> bn_save;       // BN inv_std cache (conv layers with BN)
         std::vector<int> max_indices;     // max-pool layers only
         int N;
         int channels;
@@ -238,8 +249,10 @@ void HCNNNetwork::train_step(const float* raw_input, int input_length,
             c.channels = conv_layers[ci].get_c_out();
             c.activation.resize(c.channels * cur_N);
             c.pre_act.resize(c.channels * cur_N);
+            c.bn_save.resize(conv_layers[ci].get_bn_save_size());
             conv_layers[ci].forward(cache[i].activation.data(),
-                                    c.activation.data(), c.pre_act.data());
+                                    c.activation.data(), c.pre_act.data(),
+                                    c.bn_save.empty() ? nullptr : c.bn_save.data());
             ++ci;
         } else {
             c.N = pool_layers[pi].get_output_N();
@@ -302,7 +315,9 @@ void HCNNNetwork::train_step(const float* raw_input, int input_length,
                                      cache[i].activation.data(),
                                      cache[i + 1].pre_act.data(),
                                      (i > 0) ? grad_prev.data() : nullptr,
-                                     learning_rate, momentum, weight_decay);
+                                     learning_rate, momentum, weight_decay,
+                                     cache[i + 1].bn_save.empty() ? nullptr
+                                         : cache[i + 1].bn_save.data());
         } else {
             --pi;
             pool_layers[pi].backward(grad_current.data(), grad_prev.data(),
@@ -354,9 +369,18 @@ void HCNNNetwork::prepare_batch_buffers() {
         auto& a = accum_[t];
         a.conv_kernel_grad.resize(num_conv);
         a.conv_bias_grad.resize(num_conv);
+        a.conv_bn_gamma_grad.resize(num_conv);
+        a.conv_bn_beta_grad.resize(num_conv);
+        a.conv_bn_mean.resize(num_conv);
+        a.conv_bn_var.resize(num_conv);
         for (size_t ci = 0; ci < num_conv; ++ci) {
             a.conv_kernel_grad[ci].resize(conv_layers[ci].get_kernel_size());
             a.conv_bias_grad[ci].resize(conv_layers[ci].get_bias_size());
+            a.conv_bn_gamma_grad[ci].resize(conv_layers[ci].get_bn_grad_size());
+            a.conv_bn_beta_grad[ci].resize(conv_layers[ci].get_bn_grad_size());
+            int bn_c = conv_layers[ci].has_batchnorm() ? conv_layers[ci].get_c_out() : 0;
+            a.conv_bn_mean[ci].resize(bn_c);
+            a.conv_bn_var[ci].resize(bn_c);
         }
         a.readout_weight_grad.resize(readout.get_weight_size());
         a.readout_bias_grad.resize(readout.get_bias_size());
@@ -386,9 +410,15 @@ void HCNNNetwork::prepare_batch_buffers() {
         b.rb_grad.resize(readout.get_bias_size());
         b.kg.resize(num_conv);
         b.bg.resize(num_conv);
+        b.bn_gg.resize(num_conv);
+        b.bn_bg.resize(num_conv);
+        b.bn_save.resize(num_conv);
         for (size_t ci = 0; ci < num_conv; ++ci) {
             b.kg[ci].resize(conv_layers[ci].get_kernel_size());
             b.bg[ci].resize(conv_layers[ci].get_bias_size());
+            b.bn_gg[ci].resize(conv_layers[ci].get_bn_grad_size());
+            b.bn_bg[ci].resize(conv_layers[ci].get_bn_grad_size());
+            b.bn_save[ci].resize(conv_layers[ci].get_bn_save_size());
         }
         // Work buffers for compute_gradients (avoid per-call heap allocs)
         b.conv_work.resize(max_layer_size); // HCNN needs c_out*N, max_layer_size >= that
@@ -403,6 +433,10 @@ void HCNNNetwork::zero_accumulators() {
     for (auto& a : accum_) {
         for (auto& v : a.conv_kernel_grad) std::fill(v.begin(), v.end(), 0.0f);
         for (auto& v : a.conv_bias_grad)   std::fill(v.begin(), v.end(), 0.0f);
+        for (auto& v : a.conv_bn_gamma_grad) std::fill(v.begin(), v.end(), 0.0f);
+        for (auto& v : a.conv_bn_beta_grad)  std::fill(v.begin(), v.end(), 0.0f);
+        for (auto& v : a.conv_bn_mean)       std::fill(v.begin(), v.end(), 0.0f);
+        for (auto& v : a.conv_bn_var)        std::fill(v.begin(), v.end(), 0.0f);
         std::fill(a.readout_weight_grad.begin(), a.readout_weight_grad.end(), 0.0f);
         std::fill(a.readout_bias_grad.begin(), a.readout_bias_grad.end(), 0.0f);
     }
@@ -416,10 +450,16 @@ void HCNNNetwork::train_batch(const float* const* inputs, const int* input_lengt
 
     prepare_batch_buffers();
     zero_accumulators();
+    set_training(true);
 
     int num_layers = static_cast<int>(is_conv_layer.size());
     size_t num_conv = conv_layers.size();
     size_t nt = accum_.size();
+
+    // Suppress per-sample running-stats updates for BN layers (avoid data race)
+    for (size_t ci = 0; ci < num_conv; ++ci)
+        if (conv_layers[ci].has_batchnorm())
+            conv_layers[ci].set_skip_running_stats(true);
 
     // Process samples in parallel, each thread accumulates into its own accum
     auto process_sample = [&](size_t tid, int sample_idx) {
@@ -438,7 +478,17 @@ void HCNNNetwork::train_batch(const float* const* inputs, const int* input_lengt
             auto& c = b.cache[i + 1];
             if (is_conv_layer[i]) {
                 conv_layers[ci].forward(b.cache[i].activation.data(),
-                                        c.activation.data(), c.pre_act.data());
+                                        c.activation.data(), c.pre_act.data(),
+                                        b.bn_save[ci].empty() ? nullptr
+                                            : b.bn_save[ci].data());
+                // Accumulate per-sample BN mean/var for deferred running-stats update
+                if (!a.conv_bn_mean[ci].empty()) {
+                    int c_out = conv_layers[ci].get_c_out();
+                    for (int co = 0; co < c_out; ++co) {
+                        a.conv_bn_mean[ci][co] += b.bn_save[ci][c_out + co];
+                        a.conv_bn_var[ci][co]  += b.bn_save[ci][2 * c_out + co];
+                    }
+                }
                 ++ci;
             } else {
                 pool_layers[pi].forward(b.cache[i].activation.data(),
@@ -501,12 +551,19 @@ void HCNNNetwork::train_batch(const float* const* inputs, const int* input_lengt
                     (i > 0) ? b.grad_b.data() : nullptr,
                     b.kg[ci].data(),
                     b.bg[ci].empty() ? nullptr : b.bg[ci].data(),
-                    b.conv_work.data());
+                    b.conv_work.data(),
+                    b.bn_save[ci].empty() ? nullptr : b.bn_save[ci].data(),
+                    b.bn_gg[ci].empty() ? nullptr : b.bn_gg[ci].data(),
+                    b.bn_bg[ci].empty() ? nullptr : b.bn_bg[ci].data());
 
                 for (int j = 0; j < conv_layers[ci].get_kernel_size(); ++j)
                     a.conv_kernel_grad[ci][j] += b.kg[ci][j];
                 for (int j = 0; j < conv_layers[ci].get_bias_size(); ++j)
                     a.conv_bias_grad[ci][j] += b.bg[ci][j];
+                for (int j = 0; j < conv_layers[ci].get_bn_grad_size(); ++j)
+                    a.conv_bn_gamma_grad[ci][j] += b.bn_gg[ci][j];
+                for (int j = 0; j < conv_layers[ci].get_bn_grad_size(); ++j)
+                    a.conv_bn_beta_grad[ci][j] += b.bn_bg[ci][j];
             } else {
                 --pi;
                 pool_layers[pi].backward(b.grad_a.data(), b.grad_b.data(),
@@ -537,20 +594,48 @@ void HCNNNetwork::train_batch(const float* const* inputs, const int* input_lengt
     for (size_t ci = 0; ci < num_conv; ++ci) {
         int ks = conv_layers[ci].get_kernel_size();
         int bs = conv_layers[ci].get_bias_size();
+        int bns = conv_layers[ci].get_bn_grad_size();
         auto& base_kg = accum_[0].conv_kernel_grad[ci];
         auto& base_bg = accum_[0].conv_bias_grad[ci];
+        auto& base_bng = accum_[0].conv_bn_gamma_grad[ci];
+        auto& base_bnb = accum_[0].conv_bn_beta_grad[ci];
 
         for (size_t t = 1; t < nt; ++t) {
             for (int j = 0; j < ks; ++j) base_kg[j] += accum_[t].conv_kernel_grad[ci][j];
             for (int j = 0; j < bs; ++j) base_bg[j] += accum_[t].conv_bias_grad[ci][j];
+            for (int j = 0; j < bns; ++j) base_bng[j] += accum_[t].conv_bn_gamma_grad[ci][j];
+            for (int j = 0; j < bns; ++j) base_bnb[j] += accum_[t].conv_bn_beta_grad[ci][j];
         }
 
         for (int j = 0; j < ks; ++j) base_kg[j] *= scale;
         for (int j = 0; j < bs; ++j) base_bg[j] *= scale;
+        for (int j = 0; j < bns; ++j) base_bng[j] *= scale;
+        for (int j = 0; j < bns; ++j) base_bnb[j] *= scale;
 
         conv_layers[ci].apply_gradients(base_kg.data(),
                                         base_bg.empty() ? nullptr : base_bg.data(),
-                                        learning_rate, momentum, weight_decay);
+                                        learning_rate, momentum, weight_decay,
+                                        base_bng.empty() ? nullptr : base_bng.data(),
+                                        base_bnb.empty() ? nullptr : base_bnb.data());
+
+        // Reduce per-sample BN stats and update running mean/var (race-free)
+        if (conv_layers[ci].has_batchnorm()) {
+            int c_out = conv_layers[ci].get_c_out();
+            auto& base_mean = accum_[0].conv_bn_mean[ci];
+            auto& base_var  = accum_[0].conv_bn_var[ci];
+            for (size_t t = 1; t < nt; ++t) {
+                for (int j = 0; j < c_out; ++j) {
+                    base_mean[j] += accum_[t].conv_bn_mean[ci][j];
+                    base_var[j]  += accum_[t].conv_bn_var[ci][j];
+                }
+            }
+            for (int j = 0; j < c_out; ++j) {
+                base_mean[j] *= scale;
+                base_var[j]  *= scale;
+            }
+            conv_layers[ci].update_running_stats(base_mean.data(), base_var.data());
+            conv_layers[ci].set_skip_running_stats(false);
+        }
     }
 
     auto& base_rw = accum_[0].readout_weight_grad;

@@ -48,13 +48,15 @@ public:
      *
      * Requires dim >= 3 so that K >= 3.
      *
-     * @param dim      Hypercube dimension.  The layer operates on N = 2^dim vertices.
-     * @param c_in     Number of input channels.
-     * @param c_out    Number of output channels (filters).
-     * @param use_relu If true, apply ReLU activation after convolution (default: true).
-     * @param use_bias If true, add a learnable per-output-channel bias (default: true).
+     * @param dim            Hypercube dimension.  The layer operates on N = 2^dim vertices.
+     * @param c_in           Number of input channels.
+     * @param c_out          Number of output channels (filters).
+     * @param use_relu       If true, apply ReLU activation after convolution (default: true).
+     * @param use_bias       If true, add a learnable per-output-channel bias (default: true).
+     * @param use_batchnorm  If true, apply batch normalization between conv and activation.
      */
-    HCNN(int dim, int c_in, int c_out, bool use_relu = true, bool use_bias = true);
+    HCNN(int dim, int c_in, int c_out, bool use_relu = true, bool use_bias = true,
+         bool use_batchnorm = false);
 
     /**
      * @brief Initialize kernel weights.
@@ -78,12 +80,21 @@ public:
      * via XOR masks, multiplies by the corresponding kernel weight, sums,
      * adds bias, and applies the activation function.
      *
+     * When batch normalization is enabled, normalization is applied between
+     * the weighted sum and activation.  In training mode, per-sample statistics
+     * are used and running statistics are updated.  In eval mode, running
+     * statistics are used.
+     *
      * @param[in]  in       Input activations, channel-major [c_in * N].
      * @param[out] out      Output activations, channel-major [c_out * N].
-     * @param[out] pre_act  If non-null, receives the pre-activation (pre-ReLU)
-     *                      values [c_out * N].  Required by backward().
+     * @param[out] pre_act  If non-null, receives the pre-activation values
+     *                      [c_out * N].  Required by backward().
+     * @param[out] bn_save  If non-null and BN enabled, receives per-channel
+     *                      inv_std values [c_out].  Required by backward() in
+     *                      training mode.
      */
-    void forward(const float* in, float* out, float* pre_act = nullptr) const;
+    void forward(const float* in, float* out, float* pre_act = nullptr,
+                 float* bn_save = nullptr) const;
 
     /**
      * @brief Backward pass: compute input gradients and update weights via SGD.
@@ -106,7 +117,7 @@ public:
      */
     void backward(const float* grad_out, const float* in, const float* pre_act,
                   float* grad_in, float learning_rate, float momentum = 0.0f,
-                  float weight_decay = 0.0f);
+                  float weight_decay = 0.0f, const float* bn_save = nullptr);
 
     /**
      * @brief Compute gradients without applying an SGD update.
@@ -126,7 +137,9 @@ public:
      */
     void compute_gradients(const float* grad_out, const float* in, const float* pre_act,
                            float* grad_in, float* kernel_grad, float* bias_grad,
-                           float* work_buf = nullptr) const;
+                           float* work_buf = nullptr, const float* bn_save = nullptr,
+                           float* bn_gamma_grad = nullptr,
+                           float* bn_beta_grad = nullptr) const;
 
     /**
      * @brief Apply externally computed gradients via momentum SGD.
@@ -141,7 +154,9 @@ public:
      * @param weight_decay  L2 regularization coefficient; default 0.
      */
     void apply_gradients(const float* kernel_grad, const float* bias_grad,
-                         float learning_rate, float momentum, float weight_decay = 0.0f);
+                         float learning_rate, float momentum, float weight_decay = 0.0f,
+                         const float* bn_gamma_grad = nullptr,
+                         const float* bn_beta_grad = nullptr);
 
     /** @name Accessors */
     ///@{
@@ -154,6 +169,27 @@ public:
 
     /// Set the thread pool for parallel execution (nullptr = single-threaded).
     void set_thread_pool(ThreadPool* pool) { thread_pool = pool; }
+
+    /// Set training mode (true) or eval mode (false) for batch normalization.
+    void set_training(bool training) const { training_ = training; }
+
+    /// Skip running-stats EMA updates in forward() (for batch-parallel mode).
+    void set_skip_running_stats(bool skip) const { skip_running_stats_ = skip; }
+
+    /// Whether this layer has batch normalization enabled.
+    bool has_batchnorm() const { return use_batchnorm; }
+
+    /// Size of the bn_save buffer needed by forward/backward.
+    /// Layout: [inv_std(c_out), mean(c_out), var(c_out)] — 3*c_out if BN, else 0.
+    /// backward/compute_gradients only read inv_std (first c_out).
+    int get_bn_save_size() const { return use_batchnorm ? 3 * c_out : 0; }
+
+    /// Size of the BN gamma/beta gradient buffers (c_out if BN, else 0).
+    int get_bn_grad_size() const { return use_batchnorm ? c_out : 0; }
+
+    /// Update running mean/var from externally computed batch statistics.
+    /// Applies Bessel's correction (N/(N-1)) to var before EMA update.
+    void update_running_stats(const float* mean, const float* var);
 
     /** @name Raw weight access (for serialization and gradient checking) */
     ///@{
@@ -169,13 +205,26 @@ private:
     int c_in;         ///< Input channel count.
     int c_out;        ///< Output channel count (number of filters).
     int K;            ///< Number of connection masks (= DIM).
-    bool use_relu;    ///< Whether ReLU activation is applied after convolution.
-    bool use_bias;    ///< Whether a learnable bias term is added per output channel.
+    bool use_relu;       ///< Whether ReLU activation is applied after convolution.
+    bool use_bias;       ///< Whether a learnable bias term is added per output channel.
+    bool use_batchnorm;  ///< Whether batch normalization is applied between conv and activation.
+    mutable bool training_ = true; ///< Training mode (true) or eval mode (false) for BN.
+    mutable bool skip_running_stats_ = false; ///< When true, forward() skips EMA updates (batch-parallel mode).
 
     std::vector<float> kernel;          ///< Kernel weights, layout [c_out * c_in * K].
     std::vector<float> bias;            ///< Per-output-channel bias, size c_out (empty if bias disabled).
     std::vector<float> kernel_vel;      ///< Momentum velocity for kernel weights (same layout as kernel).
     std::vector<float> bias_vel;        ///< Momentum velocity for bias (same layout as bias).
+
+    // Batch normalization parameters (empty if BN disabled)
+    std::vector<float> bn_gamma;          ///< BN scale parameter [c_out].
+    std::vector<float> bn_beta;           ///< BN shift parameter [c_out].
+    mutable std::vector<float> bn_running_mean; ///< BN running mean [c_out] (mutable: updated in const forward).
+    mutable std::vector<float> bn_running_var;  ///< BN running variance [c_out] (mutable: updated in const forward).
+    std::vector<float> bn_gamma_vel;      ///< Momentum velocity for BN gamma [c_out].
+    std::vector<float> bn_beta_vel;       ///< Momentum velocity for BN beta [c_out].
+    static constexpr float bn_momentum_ = 0.1f;  ///< EMA momentum for running stats.
+    static constexpr float bn_eps_ = 1e-5f;      ///< Epsilon for numerical stability.
 
     ThreadPool* thread_pool = nullptr;  ///< Optional thread pool for parallel execution.
 

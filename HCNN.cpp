@@ -14,14 +14,21 @@ static constexpr int THREAD_DIM_THRESHOLD = 12;
 // keeping the working set in L1.
 static constexpr size_t TILE = 64;
 
-HCNN::HCNN(int dim, int c_in, int c_out, bool use_relu, bool use_bias)
+HCNN::HCNN(int dim, int c_in, int c_out, bool use_relu, bool use_bias,
+           bool use_batchnorm)
     : DIM(dim), N(1 << dim), c_in(c_in), c_out(c_out),
       K(dim),
-      use_relu(use_relu), use_bias(use_bias),
+      use_relu(use_relu), use_bias(use_bias), use_batchnorm(use_batchnorm),
       kernel(c_out * c_in * K, 0.0f),
       bias(use_bias ? c_out : 0, 0.0f),
       kernel_vel(c_out * c_in * K, 0.0f),
-      bias_vel(use_bias ? c_out : 0, 0.0f) {
+      bias_vel(use_bias ? c_out : 0, 0.0f),
+      bn_gamma(use_batchnorm ? c_out : 0, 1.0f),
+      bn_beta(use_batchnorm ? c_out : 0, 0.0f),
+      bn_running_mean(use_batchnorm ? c_out : 0, 0.0f),
+      bn_running_var(use_batchnorm ? c_out : 0, 1.0f),
+      bn_gamma_vel(use_batchnorm ? c_out : 0, 0.0f),
+      bn_beta_vel(use_batchnorm ? c_out : 0, 0.0f) {
     if (DIM < 3) {
         throw std::runtime_error("HCNN requires DIM >= 3");
     }
@@ -42,27 +49,40 @@ void HCNN::randomize_weights(float scale, std::mt19937& rng) {
     }
     std::fill(kernel_vel.begin(), kernel_vel.end(), 0.0f);
     std::fill(bias_vel.begin(), bias_vel.end(), 0.0f);
+
+    if (use_batchnorm) {
+        std::fill(bn_gamma.begin(), bn_gamma.end(), 1.0f);
+        std::fill(bn_beta.begin(), bn_beta.end(), 0.0f);
+        std::fill(bn_running_mean.begin(), bn_running_mean.end(), 0.0f);
+        std::fill(bn_running_var.begin(), bn_running_var.end(), 1.0f);
+        std::fill(bn_gamma_vel.begin(), bn_gamma_vel.end(), 0.0f);
+        std::fill(bn_beta_vel.begin(), bn_beta_vel.end(), 0.0f);
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Forward: vertex-level threading within each output channel.
 // Each thread handles a contiguous vertex range — no write conflicts.
 // Tiled: output tile stays in L1 for full ci*K accumulation + activation.
+//
+// When BN is enabled, the loop is split: tiled accumulation, then BN
+// (needs global channel stats), then activation.  When BN is disabled,
+// the original fused tiled accumulation+activation path is used.
 // ---------------------------------------------------------------------------
-void HCNN::forward(const float* in, float* out, float* pre_act) const {
+void HCNN::forward(const float* in, float* out, float* pre_act,
+                   float* bn_save) const {
     const bool use_threads = thread_pool && DIM >= THREAD_DIM_THRESHOLD;
 
     for (int co = 0; co < c_out; ++co) {
         float* out_co = out + co * N;
         float b = use_bias ? bias[co] : 0.0f;
 
-        auto do_vertices = [&](size_t v_begin, size_t v_end) {
+        // Tiled accumulation lambda (shared by both BN and non-BN paths)
+        auto do_accumulate = [&](size_t v_begin, size_t v_end) {
             for (size_t t = v_begin; t < v_end; t += TILE) {
                 size_t t_end = std::min(t + TILE, v_end);
-                // Init tile with bias
                 for (size_t v = t; v < t_end; ++v)
                     out_co[v] = b;
-                // Accumulate all ci*k contributions into this tile
                 for (int ci = 0; ci < c_in; ++ci) {
                     const float* in_ci = in + ci * N;
                     for (int k = 0; k < K; ++k) {
@@ -72,25 +92,116 @@ void HCNN::forward(const float* in, float* out, float* pre_act) const {
                             out_co[v] += w * in_ci[v ^ m];
                     }
                 }
-                // Activate tile
-                if (pre_act) {
-                    float* pa = pre_act + co * N;
-                    for (size_t v = t; v < t_end; ++v) {
-                        pa[v] = out_co[v];
-                        out_co[v] = activate(out_co[v]);
-                    }
-                } else {
-                    for (size_t v = t; v < t_end; ++v)
-                        out_co[v] = activate(out_co[v]);
-                }
             }
         };
 
-        if (use_threads) {
-            thread_pool->ForEach(static_cast<size_t>(N),
-                [&](size_t, size_t begin, size_t end) { do_vertices(begin, end); });
+        if (use_batchnorm) {
+            // Split path: accumulate → BN → activate
+
+            // Phase 1: Tiled weighted sum (no activation yet)
+            if (use_threads) {
+                thread_pool->ForEach(static_cast<size_t>(N),
+                    [&](size_t, size_t begin, size_t end) { do_accumulate(begin, end); });
+            } else {
+                do_accumulate(0, static_cast<size_t>(N));
+            }
+
+            // Phase 2: Batch normalization across all N vertices for this channel
+            if (training_) {
+                // Compute per-channel mean
+                float mean = 0.0f;
+                for (int v = 0; v < N; ++v) mean += out_co[v];
+                mean /= static_cast<float>(N);
+
+                // Compute per-channel variance
+                float var = 0.0f;
+                for (int v = 0; v < N; ++v) {
+                    float d = out_co[v] - mean;
+                    var += d * d;
+                }
+                var /= static_cast<float>(N);
+
+                float inv_std = 1.0f / std::sqrt(var + bn_eps_);
+
+                // Normalize, scale, shift
+                for (int v = 0; v < N; ++v) {
+                    float x_hat = (out_co[v] - mean) * inv_std;
+                    out_co[v] = bn_gamma[co] * x_hat + bn_beta[co];
+                }
+
+                // Save inv_std, mean, var for backward and batch stats accumulation
+                if (bn_save) {
+                    bn_save[co] = inv_std;
+                    bn_save[c_out + co] = mean;
+                    bn_save[2 * c_out + co] = var;
+                }
+
+                // Update running stats (EMA) — skipped during batch-parallel mode
+                if (!skip_running_stats_) {
+                    float unbiased_var = var * static_cast<float>(N)
+                                       / static_cast<float>(N - 1);
+                    bn_running_mean[co] = (1.0f - bn_momentum_) * bn_running_mean[co]
+                                        + bn_momentum_ * mean;
+                    bn_running_var[co] = (1.0f - bn_momentum_) * bn_running_var[co]
+                                       + bn_momentum_ * unbiased_var;
+                }
+            } else {
+                // Eval mode: use running statistics
+                float inv_std = 1.0f / std::sqrt(bn_running_var[co] + bn_eps_);
+                float rm = bn_running_mean[co];
+                for (int v = 0; v < N; ++v) {
+                    float x_hat = (out_co[v] - rm) * inv_std;
+                    out_co[v] = bn_gamma[co] * x_hat + bn_beta[co];
+                }
+            }
+
+            // Phase 3: Activation
+            if (pre_act) {
+                float* pa = pre_act + co * N;
+                for (int v = 0; v < N; ++v) {
+                    pa[v] = out_co[v];
+                    out_co[v] = activate(out_co[v]);
+                }
+            } else {
+                for (int v = 0; v < N; ++v)
+                    out_co[v] = activate(out_co[v]);
+            }
+
         } else {
-            do_vertices(0, static_cast<size_t>(N));
+            // Fused path (no BN): accumulate + activate in one tiled pass
+            auto do_vertices = [&](size_t v_begin, size_t v_end) {
+                for (size_t t = v_begin; t < v_end; t += TILE) {
+                    size_t t_end = std::min(t + TILE, v_end);
+                    for (size_t v = t; v < t_end; ++v)
+                        out_co[v] = b;
+                    for (int ci = 0; ci < c_in; ++ci) {
+                        const float* in_ci = in + ci * N;
+                        for (int k = 0; k < K; ++k) {
+                            float w = kernel[kernel_idx(co, ci, k)];
+                            uint32_t m = 1u << k;
+                            for (size_t v = t; v < t_end; ++v)
+                                out_co[v] += w * in_ci[v ^ m];
+                        }
+                    }
+                    if (pre_act) {
+                        float* pa = pre_act + co * N;
+                        for (size_t v = t; v < t_end; ++v) {
+                            pa[v] = out_co[v];
+                            out_co[v] = activate(out_co[v]);
+                        }
+                    } else {
+                        for (size_t v = t; v < t_end; ++v)
+                            out_co[v] = activate(out_co[v]);
+                    }
+                }
+            };
+
+            if (use_threads) {
+                thread_pool->ForEach(static_cast<size_t>(N),
+                    [&](size_t, size_t begin, size_t end) { do_vertices(begin, end); });
+            } else {
+                do_vertices(0, static_cast<size_t>(N));
+            }
         }
     }
 }
@@ -101,13 +212,53 @@ void HCNN::forward(const float* in, float* out, float* pre_act) const {
 // ---------------------------------------------------------------------------
 void HCNN::backward(const float* grad_out, const float* in, const float* pre_act,
                     float* grad_in, float learning_rate, float momentum,
-                    float weight_decay) {
+                    float weight_decay, const float* bn_save) {
     const bool use_threads = thread_pool && DIM >= THREAD_DIM_THRESHOLD;
 
-    // Pre-activation gradients
+    // Pre-activation gradients (gradient through activation function)
     std::vector<float> grad_pre(c_out * N);
     for (int i = 0; i < c_out * N; ++i)
         grad_pre[i] = grad_out[i] * activate_derivative(pre_act[i]);
+
+    // BN backward: transform grad from "w.r.t. BN output" to "w.r.t. raw sum"
+    if (use_batchnorm && bn_save) {
+        for (int co = 0; co < c_out; ++co) {
+            float* gp = grad_pre.data() + co * N;
+            const float* pa = pre_act + co * N;
+            float inv_std = bn_save[co];
+            float gamma_co = bn_gamma[co];
+            float inv_gamma = (gamma_co != 0.0f) ? (1.0f / gamma_co) : 0.0f;
+            float inv_N = 1.0f / static_cast<float>(N);
+
+            // Pass 1: compute dgamma, dbeta, and intermediate sums
+            float dgamma = 0.0f, dbeta = 0.0f;
+            float sum_dx_hat = 0.0f, sum_dx_hat_xhat = 0.0f;
+            for (int v = 0; v < N; ++v) {
+                float x_hat = (pa[v] - bn_beta[co]) * inv_gamma;
+                float dx_hat = gp[v] * gamma_co;
+                dgamma += gp[v] * x_hat;
+                dbeta += gp[v];
+                sum_dx_hat += dx_hat;
+                sum_dx_hat_xhat += dx_hat * x_hat;
+            }
+
+            float mean_dx = sum_dx_hat * inv_N;
+            float mean_dx_xhat = sum_dx_hat_xhat * inv_N;
+
+            // Pass 2: compute gradient w.r.t. raw weighted sum (replaces grad_pre)
+            for (int v = 0; v < N; ++v) {
+                float x_hat = (pa[v] - bn_beta[co]) * inv_gamma;
+                float dx_hat = gp[v] * gamma_co;
+                gp[v] = inv_std * (dx_hat - mean_dx - x_hat * mean_dx_xhat);
+            }
+
+            // Update BN parameters via momentum SGD
+            bn_gamma_vel[co] = momentum * bn_gamma_vel[co] + dgamma;
+            bn_gamma[co] -= learning_rate * bn_gamma_vel[co];
+            bn_beta_vel[co] = momentum * bn_beta_vel[co] + dbeta;
+            bn_beta[co] -= learning_rate * bn_beta_vel[co];
+        }
+    }
 
     // Input gradient: vertex-level parallelism, tiled
     if (grad_in) {
@@ -185,7 +336,8 @@ void HCNN::backward(const float* grad_out, const float* in, const float* pre_act
 // ---------------------------------------------------------------------------
 void HCNN::compute_gradients(const float* grad_out, const float* in, const float* pre_act,
                              float* grad_in, float* kernel_grad, float* bias_grad,
-                             float* work_buf) const {
+                             float* work_buf, const float* bn_save,
+                             float* bn_gamma_grad, float* bn_beta_grad) const {
     const bool use_threads = thread_pool && DIM >= THREAD_DIM_THRESHOLD;
 
     // work_buf must be at least c_out * N floats if provided.
@@ -200,6 +352,41 @@ void HCNN::compute_gradients(const float* grad_out, const float* in, const float
     }
     for (int i = 0; i < c_out * N; ++i)
         grad_pre[i] = grad_out[i] * activate_derivative(pre_act[i]);
+
+    // BN backward: transform grad from "w.r.t. BN output" to "w.r.t. raw sum"
+    if (use_batchnorm && bn_save) {
+        for (int co = 0; co < c_out; ++co) {
+            float* gp = grad_pre + co * N;
+            const float* pa = pre_act + co * N;
+            float inv_std = bn_save[co];
+            float gamma_co = bn_gamma[co];
+            float inv_gamma = (gamma_co != 0.0f) ? (1.0f / gamma_co) : 0.0f;
+            float inv_N = 1.0f / static_cast<float>(N);
+
+            float dgamma = 0.0f, dbeta = 0.0f;
+            float sum_dx_hat = 0.0f, sum_dx_hat_xhat = 0.0f;
+            for (int v = 0; v < N; ++v) {
+                float x_hat = (pa[v] - bn_beta[co]) * inv_gamma;
+                float dx_hat = gp[v] * gamma_co;
+                dgamma += gp[v] * x_hat;
+                dbeta += gp[v];
+                sum_dx_hat += dx_hat;
+                sum_dx_hat_xhat += dx_hat * x_hat;
+            }
+
+            float mean_dx = sum_dx_hat * inv_N;
+            float mean_dx_xhat = sum_dx_hat_xhat * inv_N;
+
+            for (int v = 0; v < N; ++v) {
+                float x_hat = (pa[v] - bn_beta[co]) * inv_gamma;
+                float dx_hat = gp[v] * gamma_co;
+                gp[v] = inv_std * (dx_hat - mean_dx - x_hat * mean_dx_xhat);
+            }
+
+            if (bn_gamma_grad) bn_gamma_grad[co] = dgamma;
+            if (bn_beta_grad) bn_beta_grad[co] = dbeta;
+        }
+    }
 
     // Input gradient: vertex-level, tiled
     if (grad_in) {
@@ -270,7 +457,8 @@ void HCNN::compute_gradients(const float* grad_out, const float* in, const float
 // apply_gradients: apply pre-computed (averaged) gradients with momentum SGD.
 // ---------------------------------------------------------------------------
 void HCNN::apply_gradients(const float* kernel_grad, const float* bias_grad,
-                           float learning_rate, float momentum, float weight_decay) {
+                           float learning_rate, float momentum, float weight_decay,
+                           const float* bn_gamma_grad_in, const float* bn_beta_grad_in) {
     int total_k = c_out * c_in * K;
     for (int i = 0; i < total_k; ++i) {
         float g = kernel_grad[i] + weight_decay * kernel[i];
@@ -282,6 +470,25 @@ void HCNN::apply_gradients(const float* kernel_grad, const float* bias_grad,
             bias_vel[co] = momentum * bias_vel[co] + bias_grad[co];
             bias[co] -= learning_rate * bias_vel[co];
         }
+    }
+    if (use_batchnorm && bn_gamma_grad_in && bn_beta_grad_in) {
+        for (int co = 0; co < c_out; ++co) {
+            bn_gamma_vel[co] = momentum * bn_gamma_vel[co] + bn_gamma_grad_in[co];
+            bn_gamma[co] -= learning_rate * bn_gamma_vel[co];
+            bn_beta_vel[co] = momentum * bn_beta_vel[co] + bn_beta_grad_in[co];
+            bn_beta[co] -= learning_rate * bn_beta_vel[co];
+        }
+    }
+}
+
+void HCNN::update_running_stats(const float* mean, const float* var) {
+    for (int co = 0; co < c_out; ++co) {
+        float unbiased_var = var[co] * static_cast<float>(N)
+                           / static_cast<float>(N - 1);
+        bn_running_mean[co] = (1.0f - bn_momentum_) * bn_running_mean[co]
+                            + bn_momentum_ * mean[co];
+        bn_running_var[co] = (1.0f - bn_momentum_) * bn_running_var[co]
+                           + bn_momentum_ * unbiased_var;
     }
 }
 

@@ -272,6 +272,151 @@ static void test_pool_types() {
     test_pool(PoolType::AVG, "AVG");
 }
 
+static void test_batchnorm() {
+    std::cout << "\n[Batch normalization]\n";
+
+    // Test 1: Forward pass with BN produces finite output
+    {
+        HCNNNetwork net(5, 4);
+        net.add_conv(16, true, true, true);  // BN enabled
+        net.add_pool(PoolType::MAX);
+        net.add_conv(16, true, true, true);  // BN enabled
+        net.randomize_all_weights();
+
+        int N = net.get_start_N();
+        int K = net.get_num_classes();
+        std::mt19937 rng(42);
+        std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+        std::vector<float> input(N);
+        for (auto& v : input) v = dist(rng);
+
+        std::vector<float> emb(N), logits(K);
+        net.embed_input(input.data(), N, emb.data());
+        net.forward(emb.data(), logits.data());
+        check(all_finite(logits.data(), K), "BN forward produces finite logits");
+    }
+
+    // Test 2: BN train_step reduces loss
+    {
+        HCNNNetwork net(5, 4);
+        net.add_conv(16, true, true, true);
+        net.randomize_all_weights();
+
+        int N = net.get_start_N();
+        int K = net.get_num_classes();
+        const int num_samples = 20;
+        std::mt19937 rng(123);
+        std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+        std::vector<std::vector<float>> inputs(num_samples, std::vector<float>(N));
+        std::vector<int> targets(num_samples);
+        for (int i = 0; i < num_samples; ++i) {
+            for (auto& v : inputs[i]) v = dist(rng);
+            targets[i] = i % K;
+        }
+
+        auto compute_loss = [&]() {
+            net.set_training(false);
+            double total = 0.0;
+            for (int i = 0; i < num_samples; ++i) {
+                std::vector<float> emb(N), logits(K);
+                net.embed_input(inputs[i].data(), N, emb.data());
+                net.forward(emb.data(), logits.data());
+                double max_l = logits[0];
+                for (int j = 1; j < K; ++j) if (logits[j] > max_l) max_l = logits[j];
+                double se = 0.0;
+                for (int j = 0; j < K; ++j) se += std::exp(logits[j] - max_l);
+                total += -(logits[targets[i]] - max_l) + std::log(se);
+            }
+            return total / num_samples;
+        };
+
+        double loss_before = compute_loss();
+        for (int step = 0; step < 100; ++step) {
+            int idx = step % num_samples;
+            net.train_step(inputs[idx].data(), N, targets[idx], 0.01f);
+        }
+        double loss_after = compute_loss();
+        check(loss_after < loss_before,
+              "BN train_step: loss decreased (" + std::to_string(loss_before)
+              + " -> " + std::to_string(loss_after) + ")");
+    }
+
+    // Test 3: BN train_batch produces finite logits
+    {
+        HCNNNetwork net(5, 4);
+        net.add_conv(16, true, true, true);
+        net.add_pool(PoolType::MAX);
+        net.add_conv(16, true, true, true);
+        net.randomize_all_weights();
+
+        int N = net.get_start_N();
+        int K = net.get_num_classes();
+        const int batch_size = 8;
+        std::mt19937 rng(456);
+        std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+        std::vector<std::vector<float>> inputs(batch_size, std::vector<float>(N));
+        std::vector<const float*> input_ptrs(batch_size);
+        std::vector<int> lengths(batch_size, N);
+        std::vector<int> targets(batch_size);
+        for (int i = 0; i < batch_size; ++i) {
+            for (auto& v : inputs[i]) v = dist(rng);
+            input_ptrs[i] = inputs[i].data();
+            targets[i] = i % K;
+        }
+
+        net.train_batch(input_ptrs.data(), lengths.data(), targets.data(),
+                        batch_size, 0.01f);
+
+        std::vector<float> logits(K), emb(N);
+        net.embed_input(inputs[0].data(), N, emb.data());
+        net.forward(emb.data(), logits.data());
+        check(all_finite(logits.data(), K), "BN train_batch: logits finite after batch training");
+    }
+
+    // Test 4: BN batch inference matches single-sample inference
+    {
+        HCNNNetwork net(5, 4);
+        net.add_conv(8, true, true, true);
+        net.add_pool(PoolType::MAX);
+        net.randomize_all_weights();
+
+        // Do a few training steps to get non-trivial running stats
+        int N = net.get_start_N();
+        int K = net.get_num_classes();
+        std::mt19937 rng(789);
+        std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+        const int ns = 10;
+        std::vector<std::vector<float>> inputs(ns, std::vector<float>(N));
+        for (int i = 0; i < ns; ++i) {
+            for (auto& v : inputs[i]) v = dist(rng);
+            net.train_step(inputs[i].data(), N, i % K, 0.01f);
+        }
+
+        // Now compare batch vs single in eval mode
+        const int batch_size = 4;
+        std::vector<const float*> input_ptrs(batch_size);
+        std::vector<int> lengths(batch_size, N);
+        for (int i = 0; i < batch_size; ++i) input_ptrs[i] = inputs[i].data();
+
+        std::vector<float> batch_logits(batch_size * K);
+        net.forward_batch(input_ptrs.data(), lengths.data(), batch_size, batch_logits.data());
+
+        bool match = true;
+        for (int i = 0; i < batch_size; ++i) {
+            std::vector<float> emb(N), single_logits(K);
+            net.embed_input(inputs[i].data(), N, emb.data());
+            net.forward(emb.data(), single_logits.data());
+            for (int j = 0; j < K; ++j) {
+                if (std::fabs(single_logits[j] - batch_logits[i * K + j]) > 1e-4f) {
+                    match = false;
+                    break;
+                }
+            }
+        }
+        check(match, "BN batch inference matches single-sample inference (eval mode)");
+    }
+}
+
 int main() {
     std::cout << "HypercubeCNN Core Smoke Test\n";
     std::cout << "============================\n";
@@ -283,6 +428,7 @@ int main() {
     test_batch_inference();
     test_readout_types();
     test_pool_types();
+    test_batchnorm();
 
     std::cout << "\n============================\n";
     if (failures == 0) {
