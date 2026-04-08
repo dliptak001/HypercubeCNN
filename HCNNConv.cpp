@@ -42,10 +42,14 @@ void HCNNConv::randomize_weights(float scale, std::mt19937& rng) {
     // fan_in = c_in * K, fan_out = c_out * K.
     if (scale <= 0.0f) {
         float fan_in  = static_cast<float>(c_in * K);
-        if (activation == Activation::RELU || activation == Activation::LEAKY_RELU) {
+        float fan_out = static_cast<float>(c_out * K);
+        // He/Kaiming for ReLU layers with c_in > 1 (intermediate layers).
+        // First layer (c_in=1) uses Xavier — its input is raw data, not
+        // post-ReLU activations, so the He variance assumption doesn't hold.
+        if ((activation == Activation::RELU || activation == Activation::LEAKY_RELU)
+            && c_in > 1) {
             scale = std::sqrt(6.0f / fan_in);
         } else {
-            float fan_out = static_cast<float>(c_out * K);
             scale = std::sqrt(6.0f / (fan_in + fan_out));
         }
     }

@@ -69,9 +69,9 @@ public:
      * @brief Initialize kernel weights.
      *
      * When scale > 0, uses uniform random values in [-scale, +scale].
-     * When scale <= 0, auto-selects based on activation:
-     *   ReLU/LeakyReLU: He/Kaiming uniform, s = sqrt(6 / fan_in).
-     *   NONE (linear):  Xavier/Glorot uniform, s = sqrt(6 / (fan_in + fan_out)).
+     * When scale <= 0, auto-selects based on activation and depth:
+     *   ReLU/LeakyReLU with c_in > 1: He/Kaiming uniform, s = sqrt(6 / fan_in).
+     *   First layer (c_in=1) or NONE: Xavier/Glorot uniform, s = sqrt(6 / (fan_in + fan_out)).
      * fan_in = c_in * K, fan_out = c_out * K.
      *
      * Biases are reset to zero.  Momentum velocity buffers are cleared.

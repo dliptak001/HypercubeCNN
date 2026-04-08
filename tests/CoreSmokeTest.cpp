@@ -599,7 +599,7 @@ static void test_adam() {
         };
 
         double loss_before = compute_loss();
-        for (int step = 0; step < 100; ++step) {
+        for (int step = 0; step < 200; ++step) {
             int idx = step % num_samples;
             net.train_step(inputs[idx].data(), N, targets[idx], 0.001f);
         }
