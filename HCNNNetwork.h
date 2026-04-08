@@ -39,6 +39,11 @@ public:
 
     void forward(const float* first_layer_activations, float* logits) const;
 
+    /// Batch inference: embed + forward for multiple samples in parallel.
+    /// logits_out must have batch_size * num_classes floats.
+    void forward_batch(const float* const* raw_inputs, const int* input_lengths,
+                       int batch_size, float* logits_out);
+
     void train_step(const float* raw_input, int input_length,
                     int target_class, float learning_rate, float momentum = 0.0f,
                     float weight_decay = 0.0f,
@@ -111,4 +116,28 @@ private:
 
     void prepare_batch_buffers();
     void zero_accumulators();
+
+    // --- Persistent inference buffers (allocated once, reused every forward_batch) ---
+    struct InferenceBuf {
+        std::vector<float> buf1, buf2;
+        std::vector<float> embedded;
+    };
+    bool infer_bufs_ready{false};
+    std::vector<InferenceBuf> ibufs_;
+    int infer_max_layer_size_{0};
+
+    void prepare_inference_buffers();
+
+    // RAII guard to disable per-layer threading during batch dispatch
+    // and restore it when the scope exits (including on exception).
+    struct LayerThreadGuard {
+        std::vector<HCNN>& layers;
+        ThreadPool* pool;
+        LayerThreadGuard(std::vector<HCNN>& l, ThreadPool* p) : layers(l), pool(p) {
+            for (auto& layer : layers) layer.set_thread_pool(nullptr);
+        }
+        ~LayerThreadGuard() {
+            for (auto& layer : layers) layer.set_thread_pool(pool);
+        }
+    };
 };

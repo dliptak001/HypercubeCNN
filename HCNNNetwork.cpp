@@ -125,6 +125,82 @@ void HCNNNetwork::forward(const float* first_layer_activations, float* logits) c
     readout.forward(current, logits, readout_N);
 }
 
+void HCNNNetwork::prepare_inference_buffers() {
+    if (infer_bufs_ready) return;
+
+    int N = 1 << start_dim;
+    int total = input_channels * N;
+    size_t nt = thread_pool ? thread_pool->NumThreads() : 1;
+
+    int cur_N = N;
+    int max_size = input_channels * cur_N;
+    size_t ci0 = 0, pi0 = 0;
+    for (size_t i = 0; i < is_conv_layer.size(); ++i) {
+        if (is_conv_layer[i]) {
+            max_size = std::max(max_size, conv_layers[ci0].get_c_out() * cur_N);
+            ++ci0;
+        } else {
+            cur_N = pool_layers[pi0].get_output_N();
+            ++pi0;
+        }
+    }
+    infer_max_layer_size_ = max_size;
+
+    ibufs_.resize(nt);
+    for (size_t t = 0; t < nt; ++t) {
+        ibufs_[t].buf1.resize(max_size);
+        ibufs_[t].buf2.resize(max_size);
+        ibufs_[t].embedded.resize(total);
+    }
+    infer_bufs_ready = true;
+}
+
+void HCNNNetwork::forward_batch(const float* const* raw_inputs,
+                                const int* input_lengths,
+                                int batch_size, float* logits_out) {
+    if (batch_size <= 0) return;
+    prepare_inference_buffers();
+
+    int total = input_channels * (1 << start_dim);
+    int K = num_classes;
+
+    auto process_one = [&](size_t tid, int s) {
+        auto& ib = ibufs_[tid];
+        std::fill(ib.embedded.begin(), ib.embedded.end(), 0.0f);
+        embed_input(raw_inputs[s], input_lengths[s], ib.embedded.data());
+
+        float* current = ib.buf1.data();
+        float* next_buf = ib.buf2.data();
+        for (int i = 0; i < total; ++i) current[i] = ib.embedded[i];
+
+        size_t ci = 0, pi = 0;
+        for (size_t i = 0; i < is_conv_layer.size(); ++i) {
+            if (is_conv_layer[i]) {
+                conv_layers[ci].forward(current, next_buf);
+                ++ci;
+            } else {
+                pool_layers[pi].forward(current, next_buf, channel_counts[i]);
+                ++pi;
+            }
+            std::swap(current, next_buf);
+        }
+        readout.forward(current, logits_out + s * K, readout_N);
+    };
+
+    if (thread_pool && batch_size > 1) {
+        LayerThreadGuard guard(conv_layers, thread_pool.get());
+
+        thread_pool->ForEach(static_cast<size_t>(batch_size),
+            [&](size_t tid, size_t begin, size_t end) {
+                for (size_t s = begin; s < end; ++s)
+                    process_one(tid, static_cast<int>(s));
+            });
+    } else {
+        for (int s = 0; s < batch_size; ++s)
+            process_one(0, s);
+    }
+}
+
 void HCNNNetwork::train_step(const float* raw_input, int input_length,
                              int target_class, float learning_rate, float momentum,
                              float weight_decay, const float* class_weights) {
@@ -443,17 +519,13 @@ void HCNNNetwork::train_batch(const float* const* inputs, const int* input_lengt
     };
 
     if (thread_pool && batch_size > 1) {
-        for (auto& layer : conv_layers)
-            layer.set_thread_pool(nullptr);
+        LayerThreadGuard guard(conv_layers, thread_pool.get());
 
         thread_pool->ForEach(static_cast<size_t>(batch_size),
             [&](size_t tid, size_t begin, size_t end) {
                 for (size_t s = begin; s < end; ++s)
                     process_sample(tid, static_cast<int>(s));
             });
-
-        for (auto& layer : conv_layers)
-            layer.set_thread_pool(thread_pool.get());
     } else {
         for (int s = 0; s < batch_size; ++s)
             process_sample(0, s);

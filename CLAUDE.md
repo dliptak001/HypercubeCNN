@@ -51,21 +51,26 @@ All executables link against `HypercubeCNNCore` (static library). Sources live i
 | CMake target | Purpose |
 |---|---|
 | `HypercubeCNNCore` | Static library with all core classes |
-| `HypercubeCNN` | Demo executable (main.cpp) |
+| `HypercubeCNN` | MNIST training demo (main.cpp) |
+| `GradientCheck` | Numerical gradient verification (diagnostics/gradient_check.cpp) |
 
-Diagnostic, example, and test targets (empty placeholders in `diagnostics/`, `examples/`, `tests/`) will follow the same pattern: link `HypercubeCNNCore`, never compile core sources directly.
+`diagnostics/layer_isolation.cpp` exists but has no CMake target (removed; can be re-added if needed). `examples/` and `tests/` are empty placeholders. New targets follow the same pattern: link `HypercubeCNNCore`, never compile core sources directly.
 
 ### Threading
 
 `ThreadPool.h` is a header-only fork-join thread pool (from HypercubeHopfield). `HCNNNetwork` owns a `ThreadPool` instance; thread count is auto-detected or caller-specified.
 
-Two threading strategies coexist:
+Three threading strategies coexist, never nested:
 
-- **Mini-batch parallelism** (`train_batch`): samples in a batch run forward+backward in parallel, gradients accumulate per-thread, then reduce and apply. This is the primary training speedup. Per-layer vertex threading is disabled during batch ForEach to prevent nested reentrancy deadlock.
-- **Per-layer vertex threading** (`HCNN::forward`/`backward`): parallelizes the inner vertex loop within each output channel. Only activates at DIM >= 12 (`THREAD_DIM_THRESHOLD` in HCNN.cpp). Used for inference and single-sample training.
+- **Mini-batch training** (`train_batch`): samples in a batch run forward+backward in parallel, gradients accumulate into per-thread buffers, then reduce and apply. Per-thread work buffers are lazily allocated once (`prepare_batch_buffers`) and reused across calls.
+- **Batch inference** (`forward_batch`): samples run forward in parallel using pre-allocated per-thread inference buffers (`prepare_inference_buffers`). Used by `evaluate()` in main.cpp.
+- **Per-layer vertex threading** (`HCNN::forward`/`backward`): parallelizes the inner vertex loop within each output channel. Only activates at DIM >= 12 (`THREAD_DIM_THRESHOLD` in HCNN.cpp). Used for single-sample inference and `train_step`.
+
+During batch dispatch (`train_batch`, `forward_batch`), per-layer vertex threading is disabled via `LayerThreadGuard` (RAII) to prevent nested ForEach on the non-reentrant ThreadPool. The guard restores layer thread_pool pointers even on exception.
 
 ### Key constraints
 
 - **No OpenMP.** Threading uses `ThreadPool` (pure C++ `std::thread`).
+- **No CUDA / no GPU.** All computation is CPU-only.
 - **No external dependencies** in core. Everything is flat arrays and standard C++23.
-- The `dataloader/` directory holds dataset implementations (currently a toy MNIST stub). Its include path is exported by the library.
+- The `dataloader/` directory holds the MNIST dataset loader (`HCNNMNISTDataset`). Its include path is exported by the library.

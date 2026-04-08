@@ -22,23 +22,31 @@ static int argmax(const float* v, int n) {
     return best;
 }
 
-static void evaluate(const HCNNNetwork& net, const HCNNMNISTDataset& dataset,
+static void evaluate(HCNNNetwork& net, const HCNNMNISTDataset& dataset,
                      const char* label) {
     int K = net.get_num_classes();
-    int N = net.get_start_N();
-    float total_loss = 0.0f;
-    int correct = 0;
     int count = static_cast<int>(dataset.size());
 
-    std::vector<float> embedded(N);
-    std::vector<float> logits(K);
-
+    // Batch-parallel inference
+    std::vector<const float*> inputs(count);
+    std::vector<int> lengths(count);
+    std::vector<int> targets(count);
     for (int i = 0; i < count; ++i) {
         const auto& s = dataset.get(i);
-        net.embed_input(s.input.data(), static_cast<int>(s.input.size()), embedded.data());
-        net.forward(embedded.data(), logits.data());
-        total_loss += cross_entropy_loss(logits.data(), K, s.target_class);
-        if (argmax(logits.data(), K) == s.target_class) ++correct;
+        inputs[i] = s.input.data();
+        lengths[i] = static_cast<int>(s.input.size());
+        targets[i] = s.target_class;
+    }
+
+    std::vector<float> all_logits(count * K);
+    net.forward_batch(inputs.data(), lengths.data(), count, all_logits.data());
+
+    float total_loss = 0.0f;
+    int correct = 0;
+    for (int i = 0; i < count; ++i) {
+        const float* logits = all_logits.data() + i * K;
+        total_loss += cross_entropy_loss(logits, K, targets[i]);
+        if (argmax(logits, K) == targets[i]) ++correct;
     }
 
     float avg_loss = total_loss / count;
@@ -103,7 +111,7 @@ int main() {
     net.add_pool(PoolType::MAX);          // DIM 7->6,   N 128->64
     net.randomize_all_weights();          // Xavier/Glorot init
     std::cout << "Threads: " << std::thread::hardware_concurrency() << "\n";
-    train_and_evaluate("HCNN", net, train_data, test_data, 0.06f, 32, 1e-4f);
+    train_and_evaluate("HCNN", net, train_data, test_data, 0.06f, 256, 1e-4f);
 
     return 0;
 }
