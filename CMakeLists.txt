@@ -58,8 +58,9 @@ endif()
 # ——— Executables: only when building standalone (not via FetchContent) ———
 if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
     add_executable(HypercubeCNN main.cpp)
+    add_executable(MNISTTrain examples/mnist_train.cpp)
     add_executable(GradientCheck diagnostics/gradient_check.cpp)
-    set(EXE_TARGETS HypercubeCNN GradientCheck)
+    set(EXE_TARGETS HypercubeCNN MNISTTrain GradientCheck)
 
     foreach(tgt IN LISTS EXE_TARGETS)
         target_link_libraries(${tgt} PRIVATE HypercubeCNNCore)
