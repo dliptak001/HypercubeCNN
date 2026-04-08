@@ -35,12 +35,19 @@ HCNNConv::HCNNConv(int dim, int c_in, int c_out, Activation activation,
 }
 
 void HCNNConv::randomize_weights(float scale, std::mt19937& rng) {
-    // Xavier/Glorot uniform: scale = sqrt(6 / (fan_in + fan_out)).
+    // Auto-select initialization based on activation:
+    //   ReLU/LeakyReLU: He/Kaiming uniform, scale = sqrt(6 / fan_in)
+    //     (accounts for the variance-halving effect of ReLU)
+    //   NONE (linear): Xavier/Glorot uniform, scale = sqrt(6 / (fan_in + fan_out))
     // fan_in = c_in * K, fan_out = c_out * K.
     if (scale <= 0.0f) {
         float fan_in  = static_cast<float>(c_in * K);
-        float fan_out = static_cast<float>(c_out * K);
-        scale = std::sqrt(6.0f / (fan_in + fan_out));
+        if (activation == Activation::RELU || activation == Activation::LEAKY_RELU) {
+            scale = std::sqrt(6.0f / fan_in);
+        } else {
+            float fan_out = static_cast<float>(c_out * K);
+            scale = std::sqrt(6.0f / (fan_in + fan_out));
+        }
     }
     std::uniform_real_distribution<float> dist(-scale, scale);
     for (auto& w : kernel) w = dist(rng);

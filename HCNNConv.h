@@ -66,13 +66,14 @@ public:
      * @brief Initialize kernel weights.
      *
      * When scale > 0, uses uniform random values in [-scale, +scale].
-     * When scale <= 0, uses Xavier/Glorot uniform initialization:
-     * [-s, +s] where s = sqrt(6 / (fan_in + fan_out)),
+     * When scale <= 0, auto-selects based on activation:
+     *   ReLU/LeakyReLU: He/Kaiming uniform, s = sqrt(6 / fan_in).
+     *   NONE (linear):  Xavier/Glorot uniform, s = sqrt(6 / (fan_in + fan_out)).
      * fan_in = c_in * K, fan_out = c_out * K.
      *
      * Biases are reset to zero.  Momentum velocity buffers are cleared.
      *
-     * @param scale  Half-width of the uniform range, or <= 0 for Xavier init.
+     * @param scale  Half-width of the uniform range, or <= 0 for auto init.
      * @param rng    Mersenne Twister PRNG instance (caller-owned).
      */
     void randomize_weights(float scale, std::mt19937& rng);
