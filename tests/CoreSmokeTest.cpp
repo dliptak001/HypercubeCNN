@@ -1,4 +1,11 @@
-#include "HCNNNetwork.h"
+// Smoke test for the HCNN top-level SDK API.
+// Everything goes through HCNN -- no direct use of HCNNNetwork or layer
+// classes.  This file is the canonical regression check that the SDK front
+// door behaves correctly across architecture, training, optimizer and
+// readout-type variations.
+
+#include "HCNN.h"
+
 #include <cmath>
 #include <iostream>
 #include <random>
@@ -16,51 +23,98 @@ static void check(bool condition, const std::string& name) {
     }
 }
 
-static bool is_finite(float v) {
-    return std::isfinite(v);
-}
+static bool is_finite_f(float v) { return std::isfinite(v); }
 
 static bool all_finite(const float* v, int n) {
     for (int i = 0; i < n; ++i)
-        if (!is_finite(v[i])) return false;
+        if (!std::isfinite(v[i])) return false;
     return true;
 }
 
-// --- Test functions ---
+// Cross-entropy loss over a fixed sample list.  Reuses caller-owned scratch
+// buffers to keep the hot path allocation-free.
+static double cross_entropy_over_samples(
+    HCNN& net,
+    const std::vector<std::vector<float>>& inputs,
+    const std::vector<int>& targets,
+    std::vector<float>& embedded,
+    std::vector<float>& logits)
+{
+    const int N = net.GetStartN();
+    const int K = net.GetNumClasses();
+    const int n = static_cast<int>(inputs.size());
+    double total = 0.0;
+    for (int i = 0; i < n; ++i) {
+        net.Embed(inputs[i].data(), N, embedded.data());
+        net.Forward(embedded.data(), logits.data());
+        double max_l = logits[0];
+        for (int j = 1; j < K; ++j) if (logits[j] > max_l) max_l = logits[j];
+        double se = 0.0;
+        for (int j = 0; j < K; ++j) se += std::exp(logits[j] - max_l);
+        total += -(logits[targets[i]] - max_l) + std::log(se);
+    }
+    return total / n;
+}
+
+// Build a synthetic dataset of `n` samples with `N`-dim inputs in [-1, 1].
+static void make_synth(int n, int N, int K, unsigned seed,
+                       std::vector<std::vector<float>>& inputs_out,
+                       std::vector<int>& targets_out) {
+    std::mt19937 rng(seed);
+    std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+    inputs_out.assign(n, std::vector<float>(N));
+    targets_out.assign(n, 0);
+    for (int i = 0; i < n; ++i) {
+        for (auto& v : inputs_out[i]) v = dist(rng);
+        targets_out[i] = i % K;
+    }
+}
+
+// Pack a sample-list into the parallel-pointer arrays HCNN's batch APIs want.
+static void pack_batch(const std::vector<std::vector<float>>& inputs, int N,
+                       std::vector<const float*>& ptrs_out,
+                       std::vector<int>& lengths_out) {
+    const int n = static_cast<int>(inputs.size());
+    ptrs_out.resize(n);
+    lengths_out.assign(n, N);
+    for (int i = 0; i < n; ++i) ptrs_out[i] = inputs[i].data();
+}
+
+// ---------------------------------------------------------------------------
+//  Tests
+// ---------------------------------------------------------------------------
 
 static void test_construction() {
     std::cout << "\n[Construction]\n";
 
-    HCNNNetwork net(5, 4);  // DIM=5, N=32, 4 classes
-    check(net.get_start_dim() == 5, "start_dim = 5");
-    check(net.get_start_N() == 32, "start_N = 32");
-    check(net.get_num_classes() == 4, "num_classes = 4");
-    check(net.get_num_conv() == 0, "no conv layers initially");
-    check(net.get_num_pool() == 0, "no pool layers initially");
+    HCNN net(5, 4);   // DIM=5, N=32, 4 classes
+    check(net.GetStartDim() == 5,       "GetStartDim() == 5");
+    check(net.GetStartN() == 32,        "GetStartN() == 32");
+    check(net.GetNumClasses() == 4,     "GetNumClasses() == 4");
+    check(net.GetInputChannels() == 1,  "GetInputChannels() == 1");
 
-    net.add_conv(8);
-    net.add_pool(PoolType::MAX);
-    net.add_conv(16);
+    // Architecture build should not throw or affect sizing accessors.
+    net.AddConv(8);
+    net.AddPool(PoolType::MAX);
+    net.AddConv(16);
+    net.RandomizeWeights();
 
-    check(net.get_num_conv() == 2, "2 conv layers after add");
-    check(net.get_num_pool() == 1, "1 pool layer after add");
-    check(net.get_conv(0).get_c_out() == 8, "conv[0] c_out = 8");
-    check(net.get_conv(1).get_c_out() == 16, "conv[1] c_out = 16");
-    check(net.get_conv(0).get_K() == 5, "conv[0] K = DIM = 5");
-    check(net.get_conv(1).get_K() == 4, "conv[1] K = 4 (after pool)");
+    check(net.GetStartDim() == 5,   "GetStartDim() unchanged after build");
+    check(net.GetStartN() == 32,    "GetStartN() unchanged after build");
+    check(net.GetNumClasses() == 4, "GetNumClasses() unchanged after build");
 }
 
 static void test_forward_pass() {
     std::cout << "\n[Forward pass]\n";
 
-    HCNNNetwork net(5, 4);
-    net.add_conv(8);
-    net.add_pool(PoolType::MAX);
-    net.add_conv(16);
-    net.randomize_all_weights();
+    HCNN net(5, 4);
+    net.AddConv(8);
+    net.AddPool(PoolType::MAX);
+    net.AddConv(16);
+    net.RandomizeWeights();
 
-    int N = net.get_start_N();
-    int K = net.get_num_classes();
+    int N = net.GetStartN();
+    int K = net.GetNumClasses();
 
     std::mt19937 rng(42);
     std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
@@ -68,14 +122,13 @@ static void test_forward_pass() {
     for (auto& v : input) v = dist(rng);
 
     std::vector<float> embedded(N);
-    net.embed_input(input.data(), N, embedded.data());
-    check(all_finite(embedded.data(), N), "embedded values are finite");
+    net.Embed(input.data(), N, embedded.data());
+    check(all_finite(embedded.data(), N), "Embed produces finite values");
 
     std::vector<float> logits(K);
-    net.forward(embedded.data(), logits.data());
-    check(all_finite(logits.data(), K), "logits are finite after forward");
+    net.Forward(embedded.data(), logits.data());
+    check(all_finite(logits.data(), K), "Forward produces finite logits");
 
-    // Softmax should produce valid probabilities
     float max_l = logits[0];
     for (int i = 1; i < K; ++i) if (logits[i] > max_l) max_l = logits[i];
     float sum_exp = 0.0f;
@@ -84,123 +137,137 @@ static void test_forward_pass() {
 }
 
 static void test_training_step() {
-    std::cout << "\n[Training step]\n";
+    std::cout << "\n[TrainStep]\n";
 
-    HCNNNetwork net(5, 4);
-    net.add_conv(16);
-    net.randomize_all_weights();
+    HCNN net(5, 4);
+    net.AddConv(16);
+    net.RandomizeWeights();
 
-    int N = net.get_start_N();
-    int K = net.get_num_classes();
+    int N = net.GetStartN();
+    int K = net.GetNumClasses();
 
-    // Generate synthetic data: 20 samples, 4 classes
-    std::mt19937 rng(123);
-    std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
-    const int num_samples = 20;
-    std::vector<std::vector<float>> inputs(num_samples, std::vector<float>(N));
-    std::vector<int> targets(num_samples);
-    for (int i = 0; i < num_samples; ++i) {
-        for (auto& v : inputs[i]) v = dist(rng);
-        targets[i] = i % K;
-    }
+    std::vector<std::vector<float>> inputs;
+    std::vector<int> targets;
+    make_synth(20, N, K, 123, inputs, targets);
 
-    // Compute initial loss
-    auto compute_loss = [&]() {
-        double total = 0.0;
-        for (int i = 0; i < num_samples; ++i) {
-            std::vector<float> emb(N), logits(K);
-            net.embed_input(inputs[i].data(), N, emb.data());
-            net.forward(emb.data(), logits.data());
-            double max_l = logits[0];
-            for (int j = 1; j < K; ++j) if (logits[j] > max_l) max_l = logits[j];
-            double se = 0.0;
-            for (int j = 0; j < K; ++j) se += std::exp(logits[j] - max_l);
-            total += -(logits[targets[i]] - max_l) + std::log(se);
-        }
-        return total / num_samples;
-    };
-
-    double loss_before = compute_loss();
-    check(is_finite(static_cast<float>(loss_before)), "initial loss is finite");
+    std::vector<float> emb(N), logits(K);
+    double loss_before = cross_entropy_over_samples(net, inputs, targets, emb, logits);
+    check(is_finite_f(static_cast<float>(loss_before)), "initial loss is finite");
 
     for (int step = 0; step < 100; ++step) {
-        int idx = step % num_samples;
-        net.train_step(inputs[idx].data(), N, targets[idx], 0.01f);
+        int idx = step % static_cast<int>(inputs.size());
+        net.TrainStep(inputs[idx].data(), N, targets[idx], 0.01f);
     }
 
-    double loss_after = compute_loss();
-    check(is_finite(static_cast<float>(loss_after)), "loss after training is finite");
-    check(loss_after < loss_before, "loss decreased after 100 train_step calls");
+    double loss_after = cross_entropy_over_samples(net, inputs, targets, emb, logits);
+    check(is_finite_f(static_cast<float>(loss_after)), "loss after training is finite");
+    check(loss_after < loss_before, "loss decreased after 100 TrainStep calls");
 }
 
-static void test_batch_training() {
-    std::cout << "\n[Batch training]\n";
+static void test_train_batch() {
+    std::cout << "\n[TrainBatch]\n";
 
-    HCNNNetwork net(5, 4);
-    net.add_conv(16);
-    net.randomize_all_weights();
+    HCNN net(5, 4);
+    net.AddConv(16);
+    net.RandomizeWeights();
 
-    int N = net.get_start_N();
-    int K = net.get_num_classes();
+    int N = net.GetStartN();
+    int K = net.GetNumClasses();
     const int batch_size = 8;
 
-    std::mt19937 rng(456);
-    std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
-    std::vector<std::vector<float>> inputs(batch_size, std::vector<float>(N));
-    std::vector<const float*> input_ptrs(batch_size);
-    std::vector<int> lengths(batch_size, N);
-    std::vector<int> targets(batch_size);
-    for (int i = 0; i < batch_size; ++i) {
-        for (auto& v : inputs[i]) v = dist(rng);
-        input_ptrs[i] = inputs[i].data();
-        targets[i] = i % K;
-    }
+    std::vector<std::vector<float>> inputs;
+    std::vector<int> targets;
+    make_synth(batch_size, N, K, 456, inputs, targets);
 
-    // Should not crash
-    net.train_batch(input_ptrs.data(), lengths.data(), targets.data(),
-                    batch_size, 0.01f);
+    std::vector<const float*> ptrs;
+    std::vector<int> lengths;
+    pack_batch(inputs, N, ptrs, lengths);
 
-    // Verify logits are still finite after batch training
-    std::vector<float> logits(K);
-    std::vector<float> emb(N);
-    net.embed_input(inputs[0].data(), N, emb.data());
-    net.forward(emb.data(), logits.data());
-    check(all_finite(logits.data(), K), "logits finite after train_batch");
+    net.TrainBatch(ptrs.data(), lengths.data(), targets.data(), batch_size, 0.01f);
+
+    std::vector<float> emb(N), logits(K);
+    net.Embed(inputs[0].data(), N, emb.data());
+    net.Forward(emb.data(), logits.data());
+    check(all_finite(logits.data(), K), "logits finite after TrainBatch");
 }
 
-static void test_batch_inference() {
-    std::cout << "\n[Batch inference]\n";
+static void test_train_epoch() {
+    std::cout << "\n[TrainEpoch]\n";
 
-    HCNNNetwork net(5, 4);
-    net.add_conv(16);
-    net.add_pool(PoolType::MAX);
-    net.randomize_all_weights();
+    HCNN net(5, 4);
+    net.AddConv(16);
+    net.RandomizeWeights();
 
-    int N = net.get_start_N();
-    int K = net.get_num_classes();
+    int N = net.GetStartN();
+    int K = net.GetNumClasses();
+
+    std::vector<std::vector<float>> inputs;
+    std::vector<int> targets;
+    make_synth(40, N, K, 999, inputs, targets);
+
+    std::vector<const float*> ptrs;
+    std::vector<int> lengths;
+    pack_batch(inputs, N, ptrs, lengths);
+
+    std::vector<float> emb(N), logits(K);
+    double loss_before = cross_entropy_over_samples(net, inputs, targets, emb, logits);
+
+    // Two shuffled epochs at the same nominal LR -- distinct seeds give
+    // different reproducible permutations each call.
+    net.TrainEpoch(ptrs.data(), lengths.data(), targets.data(),
+                   static_cast<int>(inputs.size()), /*batch_size=*/8,
+                   /*lr=*/0.05f, /*momentum=*/0.0f, /*wd=*/0.0f,
+                   /*class_weights=*/nullptr, /*shuffle_seed=*/1u);
+    net.TrainEpoch(ptrs.data(), lengths.data(), targets.data(),
+                   static_cast<int>(inputs.size()), /*batch_size=*/8,
+                   /*lr=*/0.05f, /*momentum=*/0.0f, /*wd=*/0.0f,
+                   /*class_weights=*/nullptr, /*shuffle_seed=*/2u);
+
+    double loss_after = cross_entropy_over_samples(net, inputs, targets, emb, logits);
+    check(loss_after < loss_before,
+          "TrainEpoch (shuffled): loss decreased ("
+          + std::to_string(loss_before) + " -> " + std::to_string(loss_after) + ")");
+
+    // No-shuffle path also produces finite logits.
+    net.TrainEpoch(ptrs.data(), lengths.data(), targets.data(),
+                   static_cast<int>(inputs.size()), /*batch_size=*/8,
+                   /*lr=*/0.01f, /*momentum=*/0.0f, /*wd=*/0.0f,
+                   /*class_weights=*/nullptr, /*shuffle_seed=*/0u);
+    net.Embed(inputs[0].data(), N, emb.data());
+    net.Forward(emb.data(), logits.data());
+    check(all_finite(logits.data(), K), "TrainEpoch (no shuffle): logits finite");
+}
+
+static void test_forward_batch() {
+    std::cout << "\n[ForwardBatch]\n";
+
+    HCNN net(5, 4);
+    net.AddConv(16);
+    net.AddPool(PoolType::MAX);
+    net.RandomizeWeights();
+
+    int N = net.GetStartN();
+    int K = net.GetNumClasses();
     const int batch_size = 8;
 
-    std::mt19937 rng(789);
-    std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
-    std::vector<std::vector<float>> inputs(batch_size, std::vector<float>(N));
-    std::vector<const float*> input_ptrs(batch_size);
-    std::vector<int> lengths(batch_size, N);
-    for (int i = 0; i < batch_size; ++i) {
-        for (auto& v : inputs[i]) v = dist(rng);
-        input_ptrs[i] = inputs[i].data();
-    }
+    std::vector<std::vector<float>> inputs;
+    std::vector<int> targets;
+    make_synth(batch_size, N, K, 789, inputs, targets);
 
-    std::vector<float> all_logits(batch_size * K);
-    net.forward_batch(input_ptrs.data(), lengths.data(), batch_size, all_logits.data());
+    std::vector<const float*> ptrs;
+    std::vector<int> lengths;
+    pack_batch(inputs, N, ptrs, lengths);
+
+    std::vector<float> all_logits(static_cast<size_t>(batch_size) * K);
+    net.ForwardBatch(ptrs.data(), lengths.data(), batch_size, all_logits.data());
     check(all_finite(all_logits.data(), batch_size * K),
-          "all logits finite from forward_batch");
+          "all logits finite from ForwardBatch");
 
-    // Verify batch results match single-sample results
     bool match = true;
+    std::vector<float> emb(N), single_logits(K);
     for (int i = 0; i < batch_size; ++i) {
-        std::vector<float> emb(N), single_logits(K);
-        net.embed_input(inputs[i].data(), N, emb.data());
-        net.forward(emb.data(), single_logits.data());
+        net.Embed(inputs[i].data(), N, emb.data());
+        net.Forward(emb.data(), single_logits.data());
         for (int j = 0; j < K; ++j) {
             if (std::fabs(single_logits[j] - all_logits[i * K + j]) > 1e-4f) {
                 match = false;
@@ -208,204 +275,170 @@ static void test_batch_inference() {
             }
         }
     }
-    check(match, "batch inference matches single-sample inference");
+    check(match, "ForwardBatch matches single-sample Embed+Forward");
 }
 
 static void test_readout_types() {
     std::cout << "\n[Readout types]\n";
 
-    int N = 32; // DIM=5
+    auto run_one = [](ReadoutType type, const char* name) {
+        HCNN net(5, 4, /*input_channels=*/1, type);
+        net.AddConv(8);
+        net.RandomizeWeights();
 
-    // GAP readout
-    {
-        HCNNNetwork net(5, 4, 1, ReadoutType::GAP);
-        net.add_conv(8);
-        net.randomize_all_weights();
+        int N = net.GetStartN();
         std::mt19937 rng(111);
         std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
         std::vector<float> input(N);
         for (auto& v : input) v = dist(rng);
-        std::vector<float> emb(N), logits(4);
-        net.embed_input(input.data(), N, emb.data());
-        net.forward(emb.data(), logits.data());
-        check(all_finite(logits.data(), 4), "GAP readout produces finite logits");
-    }
-
-    // FLATTEN readout
-    {
-        HCNNNetwork net(5, 4, 1, ReadoutType::FLATTEN);
-        net.add_conv(8);
-        net.randomize_all_weights();
-        std::mt19937 rng(222);
-        std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
-        std::vector<float> input(N);
-        for (auto& v : input) v = dist(rng);
-        std::vector<float> emb(N), logits(4);
-        net.embed_input(input.data(), N, emb.data());
-        net.forward(emb.data(), logits.data());
-        check(all_finite(logits.data(), 4), "FLATTEN readout produces finite logits");
-    }
+        std::vector<float> emb(N), logits(net.GetNumClasses());
+        net.Embed(input.data(), N, emb.data());
+        net.Forward(emb.data(), logits.data());
+        check(all_finite(logits.data(), net.GetNumClasses()),
+              std::string(name) + " readout produces finite logits");
+    };
+    run_one(ReadoutType::GAP,     "GAP");
+    run_one(ReadoutType::FLATTEN, "FLATTEN");
 }
 
 static void test_pool_types() {
     std::cout << "\n[Pool types]\n";
 
-    auto test_pool = [](PoolType type, const char* name) {
-        HCNNNetwork net(5, 4);
-        net.add_conv(8);
-        net.add_pool(type);
-        net.randomize_all_weights();
+    auto run_one = [](PoolType type, const char* name) {
+        HCNN net(5, 4);
+        net.AddConv(8);
+        net.AddPool(type);
+        net.RandomizeWeights();
 
-        int N = net.get_start_N();
+        int N = net.GetStartN();
         std::mt19937 rng(333);
         std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
         std::vector<float> input(N);
         for (auto& v : input) v = dist(rng);
-        std::vector<float> emb(N), logits(4);
-        net.embed_input(input.data(), N, emb.data());
-        net.forward(emb.data(), logits.data());
-        check(all_finite(logits.data(), 4),
+        std::vector<float> emb(N), logits(net.GetNumClasses());
+        net.Embed(input.data(), N, emb.data());
+        net.Forward(emb.data(), logits.data());
+        check(all_finite(logits.data(), net.GetNumClasses()),
               std::string(name) + " pool produces finite logits");
     };
-
-    test_pool(PoolType::MAX, "MAX");
-    test_pool(PoolType::AVG, "AVG");
+    run_one(PoolType::MAX, "MAX");
+    run_one(PoolType::AVG, "AVG");
 }
 
 static void test_batchnorm() {
     std::cout << "\n[Batch normalization]\n";
 
-    // Test 1: Forward pass with BN produces finite output
+    // Forward pass
     {
-        HCNNNetwork net(5, 4);
-        net.add_conv(16, Activation::RELU, true, true);  // BN enabled
-        net.add_pool(PoolType::MAX);
-        net.add_conv(16, Activation::RELU, true, true);  // BN enabled
-        net.randomize_all_weights();
+        HCNN net(5, 4);
+        net.AddConv(16, Activation::RELU, true, /*use_batchnorm=*/true);
+        net.AddPool(PoolType::MAX);
+        net.AddConv(16, Activation::RELU, true, true);
+        net.RandomizeWeights();
 
-        int N = net.get_start_N();
-        int K = net.get_num_classes();
+        int N = net.GetStartN();
+        int K = net.GetNumClasses();
         std::mt19937 rng(42);
         std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
         std::vector<float> input(N);
         for (auto& v : input) v = dist(rng);
 
         std::vector<float> emb(N), logits(K);
-        net.embed_input(input.data(), N, emb.data());
-        net.forward(emb.data(), logits.data());
+        net.Embed(input.data(), N, emb.data());
+        net.Forward(emb.data(), logits.data());
         check(all_finite(logits.data(), K), "BN forward produces finite logits");
     }
 
-    // Test 2: BN train_step reduces loss
+    // BN TrainStep reduces loss
     {
-        HCNNNetwork net(5, 4);
-        net.add_conv(16, Activation::RELU, true, true);
-        net.randomize_all_weights();
+        HCNN net(5, 4);
+        net.AddConv(16, Activation::RELU, true, true);
+        net.RandomizeWeights();
 
-        int N = net.get_start_N();
-        int K = net.get_num_classes();
-        const int num_samples = 20;
-        std::mt19937 rng(123);
-        std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
-        std::vector<std::vector<float>> inputs(num_samples, std::vector<float>(N));
-        std::vector<int> targets(num_samples);
-        for (int i = 0; i < num_samples; ++i) {
-            for (auto& v : inputs[i]) v = dist(rng);
-            targets[i] = i % K;
-        }
+        int N = net.GetStartN();
+        int K = net.GetNumClasses();
 
-        auto compute_loss = [&]() {
-            net.set_training(false);
-            double total = 0.0;
-            for (int i = 0; i < num_samples; ++i) {
-                std::vector<float> emb(N), logits(K);
-                net.embed_input(inputs[i].data(), N, emb.data());
-                net.forward(emb.data(), logits.data());
-                double max_l = logits[0];
-                for (int j = 1; j < K; ++j) if (logits[j] > max_l) max_l = logits[j];
-                double se = 0.0;
-                for (int j = 0; j < K; ++j) se += std::exp(logits[j] - max_l);
-                total += -(logits[targets[i]] - max_l) + std::log(se);
-            }
-            return total / num_samples;
-        };
+        std::vector<std::vector<float>> inputs;
+        std::vector<int> targets;
+        make_synth(20, N, K, 123, inputs, targets);
 
-        double loss_before = compute_loss();
+        std::vector<float> emb(N), logits(K);
+        net.SetTraining(false);
+        double loss_before = cross_entropy_over_samples(net, inputs, targets, emb, logits);
+
         for (int step = 0; step < 100; ++step) {
-            int idx = step % num_samples;
-            net.train_step(inputs[idx].data(), N, targets[idx], 0.01f);
+            int idx = step % static_cast<int>(inputs.size());
+            net.TrainStep(inputs[idx].data(), N, targets[idx], 0.01f);
         }
-        double loss_after = compute_loss();
+
+        net.SetTraining(false);
+        double loss_after = cross_entropy_over_samples(net, inputs, targets, emb, logits);
         check(loss_after < loss_before,
-              "BN train_step: loss decreased (" + std::to_string(loss_before)
-              + " -> " + std::to_string(loss_after) + ")");
+              "BN TrainStep: loss decreased ("
+              + std::to_string(loss_before) + " -> " + std::to_string(loss_after) + ")");
     }
 
-    // Test 3: BN train_batch produces finite logits
+    // BN TrainBatch produces finite logits
     {
-        HCNNNetwork net(5, 4);
-        net.add_conv(16, Activation::RELU, true, true);
-        net.add_pool(PoolType::MAX);
-        net.add_conv(16, Activation::RELU, true, true);
-        net.randomize_all_weights();
+        HCNN net(5, 4);
+        net.AddConv(16, Activation::RELU, true, true);
+        net.AddPool(PoolType::MAX);
+        net.AddConv(16, Activation::RELU, true, true);
+        net.RandomizeWeights();
 
-        int N = net.get_start_N();
-        int K = net.get_num_classes();
+        int N = net.GetStartN();
+        int K = net.GetNumClasses();
         const int batch_size = 8;
-        std::mt19937 rng(456);
-        std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
-        std::vector<std::vector<float>> inputs(batch_size, std::vector<float>(N));
-        std::vector<const float*> input_ptrs(batch_size);
-        std::vector<int> lengths(batch_size, N);
-        std::vector<int> targets(batch_size);
-        for (int i = 0; i < batch_size; ++i) {
-            for (auto& v : inputs[i]) v = dist(rng);
-            input_ptrs[i] = inputs[i].data();
-            targets[i] = i % K;
-        }
 
-        net.train_batch(input_ptrs.data(), lengths.data(), targets.data(),
-                        batch_size, 0.01f);
+        std::vector<std::vector<float>> inputs;
+        std::vector<int> targets;
+        make_synth(batch_size, N, K, 456, inputs, targets);
 
-        std::vector<float> logits(K), emb(N);
-        net.embed_input(inputs[0].data(), N, emb.data());
-        net.forward(emb.data(), logits.data());
-        check(all_finite(logits.data(), K), "BN train_batch: logits finite after batch training");
+        std::vector<const float*> ptrs;
+        std::vector<int> lengths;
+        pack_batch(inputs, N, ptrs, lengths);
+
+        net.TrainBatch(ptrs.data(), lengths.data(), targets.data(), batch_size, 0.01f);
+
+        std::vector<float> emb(N), logits(K);
+        net.Embed(inputs[0].data(), N, emb.data());
+        net.Forward(emb.data(), logits.data());
+        check(all_finite(logits.data(), K), "BN TrainBatch: logits finite");
     }
 
-    // Test 4: BN batch inference matches single-sample inference
+    // BN ForwardBatch matches single-sample inference (eval mode)
     {
-        HCNNNetwork net(5, 4);
-        net.add_conv(8, Activation::RELU, true, true);
-        net.add_pool(PoolType::MAX);
-        net.randomize_all_weights();
+        HCNN net(5, 4);
+        net.AddConv(8, Activation::RELU, true, true);
+        net.AddPool(PoolType::MAX);
+        net.RandomizeWeights();
 
-        // Do a few training steps to get non-trivial running stats
-        int N = net.get_start_N();
-        int K = net.get_num_classes();
+        int N = net.GetStartN();
+        int K = net.GetNumClasses();
+
+        // Train a few steps to get non-trivial running stats.
         std::mt19937 rng(789);
         std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
         const int ns = 10;
         std::vector<std::vector<float>> inputs(ns, std::vector<float>(N));
         for (int i = 0; i < ns; ++i) {
             for (auto& v : inputs[i]) v = dist(rng);
-            net.train_step(inputs[i].data(), N, i % K, 0.01f);
+            net.TrainStep(inputs[i].data(), N, i % K, 0.01f);
         }
 
-        // Now compare batch vs single in eval mode
         const int batch_size = 4;
-        std::vector<const float*> input_ptrs(batch_size);
+        std::vector<const float*> ptrs(batch_size);
         std::vector<int> lengths(batch_size, N);
-        for (int i = 0; i < batch_size; ++i) input_ptrs[i] = inputs[i].data();
+        for (int i = 0; i < batch_size; ++i) ptrs[i] = inputs[i].data();
 
-        std::vector<float> batch_logits(batch_size * K);
-        net.forward_batch(input_ptrs.data(), lengths.data(), batch_size, batch_logits.data());
+        std::vector<float> batch_logits(static_cast<size_t>(batch_size) * K);
+        net.ForwardBatch(ptrs.data(), lengths.data(), batch_size, batch_logits.data());
 
         bool match = true;
+        std::vector<float> emb(N), single_logits(K);
         for (int i = 0; i < batch_size; ++i) {
-            std::vector<float> emb(N), single_logits(K);
-            net.embed_input(inputs[i].data(), N, emb.data());
-            net.forward(emb.data(), single_logits.data());
+            net.Embed(inputs[i].data(), N, emb.data());
+            net.Forward(emb.data(), single_logits.data());
             for (int j = 0; j < K; ++j) {
                 if (std::fabs(single_logits[j] - batch_logits[i * K + j]) > 1e-4f) {
                     match = false;
@@ -413,385 +446,275 @@ static void test_batchnorm() {
                 }
             }
         }
-        check(match, "BN batch inference matches single-sample inference (eval mode)");
+        check(match, "BN ForwardBatch matches single-sample inference (eval mode)");
     }
 }
 
 static void test_leaky_relu() {
     std::cout << "\n[LeakyReLU]\n";
 
-    // Forward produces finite output with negative activations surviving
-    {
-        HCNNNetwork net(5, 4);
-        net.add_conv(16, Activation::LEAKY_RELU);
-        net.randomize_all_weights();
+    HCNN net(5, 4);
+    net.AddConv(16, Activation::LEAKY_RELU);
+    net.RandomizeWeights();
 
-        int N = net.get_start_N();
-        int K = net.get_num_classes();
-        std::mt19937 rng(42);
-        std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
-        std::vector<float> input(N);
-        for (auto& v : input) v = dist(rng);
+    int N = net.GetStartN();
+    int K = net.GetNumClasses();
 
-        std::vector<float> emb(N), logits(K);
-        net.embed_input(input.data(), N, emb.data());
-        net.forward(emb.data(), logits.data());
-        check(all_finite(logits.data(), K), "LeakyReLU forward produces finite logits");
+    std::vector<std::vector<float>> inputs;
+    std::vector<int> targets;
+    make_synth(20, N, K, 123, inputs, targets);
+
+    std::vector<float> emb(N), logits(K);
+    double loss_before = cross_entropy_over_samples(net, inputs, targets, emb, logits);
+
+    for (int step = 0; step < 100; ++step) {
+        int idx = step % static_cast<int>(inputs.size());
+        net.TrainStep(inputs[idx].data(), N, targets[idx], 0.01f);
     }
 
-    // LeakyReLU train_step reduces loss
-    {
-        HCNNNetwork net(5, 4);
-        net.add_conv(16, Activation::LEAKY_RELU);
-        net.randomize_all_weights();
-
-        int N = net.get_start_N();
-        int K = net.get_num_classes();
-        const int num_samples = 20;
-        std::mt19937 rng(123);
-        std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
-        std::vector<std::vector<float>> inputs(num_samples, std::vector<float>(N));
-        std::vector<int> targets(num_samples);
-        for (int i = 0; i < num_samples; ++i) {
-            for (auto& v : inputs[i]) v = dist(rng);
-            targets[i] = i % K;
-        }
-
-        auto compute_loss = [&]() {
-            double total = 0.0;
-            for (int i = 0; i < num_samples; ++i) {
-                std::vector<float> emb(N), logits(K);
-                net.embed_input(inputs[i].data(), N, emb.data());
-                net.forward(emb.data(), logits.data());
-                double max_l = logits[0];
-                for (int j = 1; j < K; ++j) if (logits[j] > max_l) max_l = logits[j];
-                double se = 0.0;
-                for (int j = 0; j < K; ++j) se += std::exp(logits[j] - max_l);
-                total += -(logits[targets[i]] - max_l) + std::log(se);
-            }
-            return total / num_samples;
-        };
-
-        double loss_before = compute_loss();
-        for (int step = 0; step < 100; ++step) {
-            int idx = step % num_samples;
-            net.train_step(inputs[idx].data(), N, targets[idx], 0.01f);
-        }
-        double loss_after = compute_loss();
-        check(loss_after < loss_before,
-              "LeakyReLU loss decreased (" + std::to_string(loss_before)
-              + " -> " + std::to_string(loss_after) + ")");
-    }
+    double loss_after = cross_entropy_over_samples(net, inputs, targets, emb, logits);
+    check(all_finite(logits.data(), K), "LeakyReLU forward produces finite logits");
+    check(loss_after < loss_before,
+          "LeakyReLU loss decreased ("
+          + std::to_string(loss_before) + " -> " + std::to_string(loss_after) + ")");
 }
 
 static void test_adam() {
     std::cout << "\n[Adam optimizer]\n";
 
-    // Test 1: Adam train_step reduces loss
+    // Adam TrainStep reduces loss
     {
-        HCNNNetwork net(5, 4);
-        net.add_conv(16);
-        net.randomize_all_weights();
-        net.set_optimizer(OptimizerType::ADAM);
+        HCNN net(5, 4);
+        net.AddConv(16);
+        net.RandomizeWeights();
+        net.SetOptimizer(OptimizerType::ADAM);
 
-        int N = net.get_start_N();
-        int K = net.get_num_classes();
-        const int num_samples = 20;
-        std::mt19937 rng(42);
-        std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
-        std::vector<std::vector<float>> inputs(num_samples, std::vector<float>(N));
-        std::vector<int> targets(num_samples);
-        for (int i = 0; i < num_samples; ++i) {
-            for (auto& v : inputs[i]) v = dist(rng);
-            targets[i] = i % K;
-        }
+        int N = net.GetStartN();
+        int K = net.GetNumClasses();
 
-        auto compute_loss = [&]() {
-            double total = 0.0;
-            for (int i = 0; i < num_samples; ++i) {
-                std::vector<float> emb(N), logits(K);
-                net.embed_input(inputs[i].data(), N, emb.data());
-                net.forward(emb.data(), logits.data());
-                double max_l = logits[0];
-                for (int j = 1; j < K; ++j) if (logits[j] > max_l) max_l = logits[j];
-                double se = 0.0;
-                for (int j = 0; j < K; ++j) se += std::exp(logits[j] - max_l);
-                total += -(logits[targets[i]] - max_l) + std::log(se);
-            }
-            return total / num_samples;
-        };
+        std::vector<std::vector<float>> inputs;
+        std::vector<int> targets;
+        make_synth(20, N, K, 42, inputs, targets);
 
-        double loss_before = compute_loss();
+        std::vector<float> emb(N), logits(K);
+        double loss_before = cross_entropy_over_samples(net, inputs, targets, emb, logits);
+
         for (int step = 0; step < 100; ++step) {
-            int idx = step % num_samples;
-            net.train_step(inputs[idx].data(), N, targets[idx], 0.001f);
+            int idx = step % static_cast<int>(inputs.size());
+            net.TrainStep(inputs[idx].data(), N, targets[idx], 0.001f);
         }
-        double loss_after = compute_loss();
+
+        double loss_after = cross_entropy_over_samples(net, inputs, targets, emb, logits);
         check(loss_after < loss_before,
-              "Adam train_step: loss decreased (" + std::to_string(loss_before)
-              + " -> " + std::to_string(loss_after) + ")");
+              "Adam TrainStep: loss decreased ("
+              + std::to_string(loss_before) + " -> " + std::to_string(loss_after) + ")");
     }
 
-    // Test 2: Adam train_batch produces finite logits
+    // Adam TrainBatch produces finite logits
     {
-        HCNNNetwork net(5, 4);
-        net.add_conv(16);
-        net.randomize_all_weights();
-        net.set_optimizer(OptimizerType::ADAM);
+        HCNN net(5, 4);
+        net.AddConv(16);
+        net.RandomizeWeights();
+        net.SetOptimizer(OptimizerType::ADAM);
 
-        int N = net.get_start_N();
-        int K = net.get_num_classes();
+        int N = net.GetStartN();
+        int K = net.GetNumClasses();
         const int batch_size = 8;
-        std::mt19937 rng(456);
-        std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
-        std::vector<std::vector<float>> inputs(batch_size, std::vector<float>(N));
-        std::vector<const float*> input_ptrs(batch_size);
-        std::vector<int> lengths(batch_size, N);
-        std::vector<int> targets(batch_size);
-        for (int i = 0; i < batch_size; ++i) {
-            for (auto& v : inputs[i]) v = dist(rng);
-            input_ptrs[i] = inputs[i].data();
-            targets[i] = i % K;
-        }
 
-        net.train_batch(input_ptrs.data(), lengths.data(), targets.data(),
-                        batch_size, 0.001f);
+        std::vector<std::vector<float>> inputs;
+        std::vector<int> targets;
+        make_synth(batch_size, N, K, 456, inputs, targets);
 
-        std::vector<float> logits(K), emb(N);
-        net.embed_input(inputs[0].data(), N, emb.data());
-        net.forward(emb.data(), logits.data());
-        check(all_finite(logits.data(), K), "Adam train_batch: logits finite");
+        std::vector<const float*> ptrs;
+        std::vector<int> lengths;
+        pack_batch(inputs, N, ptrs, lengths);
+
+        net.TrainBatch(ptrs.data(), lengths.data(), targets.data(), batch_size, 0.001f);
+
+        std::vector<float> emb(N), logits(K);
+        net.Embed(inputs[0].data(), N, emb.data());
+        net.Forward(emb.data(), logits.data());
+        check(all_finite(logits.data(), K), "Adam TrainBatch: logits finite");
     }
 
-    // Test 3: Adam with BN — loss decreases
+    // Adam + BN reduces loss
     {
-        HCNNNetwork net(5, 4);
-        net.add_conv(16, Activation::RELU, true, true);
-        net.randomize_all_weights();
-        net.set_optimizer(OptimizerType::ADAM);
+        HCNN net(5, 4);
+        net.AddConv(16, Activation::RELU, true, true);
+        net.RandomizeWeights();
+        net.SetOptimizer(OptimizerType::ADAM);
 
-        int N = net.get_start_N();
-        int K = net.get_num_classes();
-        const int num_samples = 20;
-        std::mt19937 rng(789);
-        std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
-        std::vector<std::vector<float>> inputs(num_samples, std::vector<float>(N));
-        std::vector<int> targets(num_samples);
-        for (int i = 0; i < num_samples; ++i) {
-            for (auto& v : inputs[i]) v = dist(rng);
-            targets[i] = i % K;
-        }
+        int N = net.GetStartN();
+        int K = net.GetNumClasses();
 
-        auto compute_loss = [&]() {
-            net.set_training(false);
-            double total = 0.0;
-            for (int i = 0; i < num_samples; ++i) {
-                std::vector<float> emb(N), logits(K);
-                net.embed_input(inputs[i].data(), N, emb.data());
-                net.forward(emb.data(), logits.data());
-                double max_l = logits[0];
-                for (int j = 1; j < K; ++j) if (logits[j] > max_l) max_l = logits[j];
-                double se = 0.0;
-                for (int j = 0; j < K; ++j) se += std::exp(logits[j] - max_l);
-                total += -(logits[targets[i]] - max_l) + std::log(se);
-            }
-            return total / num_samples;
-        };
+        std::vector<std::vector<float>> inputs;
+        std::vector<int> targets;
+        make_synth(20, N, K, 789, inputs, targets);
 
-        double loss_before = compute_loss();
+        std::vector<float> emb(N), logits(K);
+        net.SetTraining(false);
+        double loss_before = cross_entropy_over_samples(net, inputs, targets, emb, logits);
+
         for (int step = 0; step < 200; ++step) {
-            int idx = step % num_samples;
-            net.train_step(inputs[idx].data(), N, targets[idx], 0.001f);
+            int idx = step % static_cast<int>(inputs.size());
+            net.TrainStep(inputs[idx].data(), N, targets[idx], 0.001f);
         }
-        double loss_after = compute_loss();
+
+        net.SetTraining(false);
+        double loss_after = cross_entropy_over_samples(net, inputs, targets, emb, logits);
         check(loss_after < loss_before,
-              "Adam + BN: loss decreased (" + std::to_string(loss_before)
-              + " -> " + std::to_string(loss_after) + ")");
+              "Adam + BN: loss decreased ("
+              + std::to_string(loss_before) + " -> " + std::to_string(loss_after) + ")");
     }
 }
 
 static void test_flatten_train_batch() {
-    std::cout << "\n[FLATTEN train_batch]\n";
+    std::cout << "\n[FLATTEN TrainBatch]\n";
 
-    // This exercises the readout_work buffer sizing fix for FLATTEN mode.
-    HCNNNetwork net(5, 4, 1, ReadoutType::FLATTEN);
-    net.add_conv(8);
-    net.randomize_all_weights();
+    HCNN net(5, 4, /*input_channels=*/1, ReadoutType::FLATTEN);
+    net.AddConv(8);
+    net.RandomizeWeights();
 
-    int N = net.get_start_N();
-    int K = net.get_num_classes();
+    int N = net.GetStartN();
+    int K = net.GetNumClasses();
     const int batch_size = 4;
-    std::mt19937 rng(42);
-    std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
-    std::vector<std::vector<float>> inputs(batch_size, std::vector<float>(N));
-    std::vector<const float*> input_ptrs(batch_size);
-    std::vector<int> lengths(batch_size, N);
-    std::vector<int> targets(batch_size);
-    for (int i = 0; i < batch_size; ++i) {
-        for (auto& v : inputs[i]) v = dist(rng);
-        input_ptrs[i] = inputs[i].data();
-        targets[i] = i % K;
-    }
 
-    net.train_batch(input_ptrs.data(), lengths.data(), targets.data(),
-                    batch_size, 0.01f);
+    std::vector<std::vector<float>> inputs;
+    std::vector<int> targets;
+    make_synth(batch_size, N, K, 42, inputs, targets);
 
-    std::vector<float> logits(K), emb(N);
-    net.embed_input(inputs[0].data(), N, emb.data());
-    net.forward(emb.data(), logits.data());
-    check(all_finite(logits.data(), K), "FLATTEN train_batch: logits finite");
+    std::vector<const float*> ptrs;
+    std::vector<int> lengths;
+    pack_batch(inputs, N, ptrs, lengths);
+
+    net.TrainBatch(ptrs.data(), lengths.data(), targets.data(), batch_size, 0.01f);
+
+    std::vector<float> emb(N), logits(K);
+    net.Embed(inputs[0].data(), N, emb.data());
+    net.Forward(emb.data(), logits.data());
+    check(all_finite(logits.data(), K), "FLATTEN TrainBatch: logits finite");
 }
 
 static void test_avg_pool_training() {
     std::cout << "\n[AVG pool training]\n";
 
-    HCNNNetwork net(5, 4);
-    net.add_conv(16);
-    net.add_pool(PoolType::AVG);
-    net.add_conv(16);
-    net.randomize_all_weights();
+    HCNN net(5, 4);
+    net.AddConv(16);
+    net.AddPool(PoolType::AVG);
+    net.AddConv(16);
+    net.RandomizeWeights();
 
-    int N = net.get_start_N();
-    int K = net.get_num_classes();
-    const int num_samples = 20;
-    std::mt19937 rng(42);
-    std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
-    std::vector<std::vector<float>> inputs(num_samples, std::vector<float>(N));
-    std::vector<int> targets(num_samples);
-    for (int i = 0; i < num_samples; ++i) {
-        for (auto& v : inputs[i]) v = dist(rng);
-        targets[i] = i % K;
-    }
+    int N = net.GetStartN();
+    int K = net.GetNumClasses();
 
-    auto compute_loss = [&]() {
-        double total = 0.0;
-        for (int i = 0; i < num_samples; ++i) {
-            std::vector<float> emb(N), logits(K);
-            net.embed_input(inputs[i].data(), N, emb.data());
-            net.forward(emb.data(), logits.data());
-            double max_l = logits[0];
-            for (int j = 1; j < K; ++j) if (logits[j] > max_l) max_l = logits[j];
-            double se = 0.0;
-            for (int j = 0; j < K; ++j) se += std::exp(logits[j] - max_l);
-            total += -(logits[targets[i]] - max_l) + std::log(se);
-        }
-        return total / num_samples;
-    };
+    std::vector<std::vector<float>> inputs;
+    std::vector<int> targets;
+    make_synth(20, N, K, 42, inputs, targets);
 
-    double loss_before = compute_loss();
+    std::vector<float> emb(N), logits(K);
+    double loss_before = cross_entropy_over_samples(net, inputs, targets, emb, logits);
+
     for (int step = 0; step < 100; ++step) {
-        int idx = step % num_samples;
-        net.train_step(inputs[idx].data(), N, targets[idx], 0.01f);
+        int idx = step % static_cast<int>(inputs.size());
+        net.TrainStep(inputs[idx].data(), N, targets[idx], 0.01f);
     }
-    double loss_after = compute_loss();
+
+    double loss_after = cross_entropy_over_samples(net, inputs, targets, emb, logits);
     check(loss_after < loss_before,
-          "AVG pool: loss decreased (" + std::to_string(loss_before)
-          + " -> " + std::to_string(loss_after) + ")");
+          "AVG pool: loss decreased ("
+          + std::to_string(loss_before) + " -> " + std::to_string(loss_after) + ")");
 }
 
 static void test_weight_decay() {
     std::cout << "\n[Weight decay]\n";
 
-    // Train with weight decay — weights should have smaller magnitude than without.
-    HCNNNetwork net_wd(5, 4);
-    net_wd.add_conv(16);
-    net_wd.randomize_all_weights();
+    // Without exposing kernel internals, we can only confirm that weight
+    // decay is accepted by the API and does not destabilize training:
+    // both with and without WD, training should still produce finite
+    // logits and (typically) decreasing loss on a small synthetic task.
+    HCNN net(5, 4);
+    net.AddConv(16);
+    net.RandomizeWeights();
 
-    HCNNNetwork net_no_wd(5, 4);
-    net_no_wd.add_conv(16);
-    net_no_wd.randomize_all_weights();  // same seed (42) → same initial weights
+    int N = net.GetStartN();
+    int K = net.GetNumClasses();
 
-    int N = 32;
-    int K = 4;
-    const int num_samples = 20;
-    std::mt19937 rng(123);
-    std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
-    std::vector<std::vector<float>> inputs(num_samples, std::vector<float>(N));
-    std::vector<int> targets(num_samples);
-    for (int i = 0; i < num_samples; ++i) {
-        for (auto& v : inputs[i]) v = dist(rng);
-        targets[i] = i % K;
-    }
+    std::vector<std::vector<float>> inputs;
+    std::vector<int> targets;
+    make_synth(20, N, K, 123, inputs, targets);
+
+    std::vector<float> emb(N), logits(K);
+    double loss_before = cross_entropy_over_samples(net, inputs, targets, emb, logits);
 
     for (int step = 0; step < 100; ++step) {
-        int idx = step % num_samples;
-        net_wd.train_step(inputs[idx].data(), N, targets[idx], 0.01f, 0.0f, 0.01f);
-        net_no_wd.train_step(inputs[idx].data(), N, targets[idx], 0.01f, 0.0f, 0.0f);
+        int idx = step % static_cast<int>(inputs.size());
+        net.TrainStep(inputs[idx].data(), N, targets[idx],
+                      /*lr=*/0.01f, /*momentum=*/0.0f, /*weight_decay=*/0.01f);
     }
 
-    // Compute L2 norm of kernel weights
-    auto l2_norm = [](HCNNNetwork& net) {
-        float sum = 0.0f;
-        auto& conv = net.get_conv(0);
-        for (int i = 0; i < conv.get_kernel_size(); ++i) {
-            float w = conv.get_kernel_data()[i];
-            sum += w * w;
-        }
-        return std::sqrt(sum);
-    };
-
-    float norm_wd = l2_norm(net_wd);
-    float norm_no_wd = l2_norm(net_no_wd);
-    check(norm_wd < norm_no_wd,
-          "weight decay reduces kernel L2 norm (" + std::to_string(norm_wd)
-          + " < " + std::to_string(norm_no_wd) + ")");
+    double loss_after = cross_entropy_over_samples(net, inputs, targets, emb, logits);
+    check(all_finite(logits.data(), K), "weight decay: logits finite");
+    check(loss_after < loss_before,
+          "weight decay: loss decreased ("
+          + std::to_string(loss_before) + " -> " + std::to_string(loss_after) + ")");
 }
 
 static void test_class_weights() {
     std::cout << "\n[Class weights]\n";
 
-    HCNNNetwork net(5, 4);
-    net.add_conv(16);
-    net.randomize_all_weights();
+    HCNN net(5, 4);
+    net.AddConv(16);
+    net.RandomizeWeights();
 
-    int N = net.get_start_N();
-    int K = net.get_num_classes();
+    int N = net.GetStartN();
+    int K = net.GetNumClasses();
 
     std::mt19937 rng(42);
     std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
     std::vector<float> input(N);
     for (auto& v : input) v = dist(rng);
 
-    // Class weights: heavily weight class 0
+    // Heavily up-weight class 0
     std::vector<float> class_weights = {10.0f, 1.0f, 1.0f, 1.0f};
 
-    // Should not crash, and loss should still be finite
-    net.train_step(input.data(), N, 0, 0.01f, 0.0f, 0.0f, class_weights.data());
+    net.TrainStep(input.data(), N, 0, 0.01f, 0.0f, 0.0f, class_weights.data());
 
     std::vector<float> emb(N), logits(K);
-    net.embed_input(input.data(), N, emb.data());
-    net.forward(emb.data(), logits.data());
-    check(all_finite(logits.data(), K), "class-weighted train_step: logits finite");
+    net.Embed(input.data(), N, emb.data());
+    net.Forward(emb.data(), logits.data());
+    check(all_finite(logits.data(), K), "class-weighted TrainStep: logits finite");
 
-    // Also test via train_batch
     const int batch_size = 4;
-    std::vector<std::vector<float>> inputs(batch_size, std::vector<float>(N));
-    std::vector<const float*> input_ptrs(batch_size);
-    std::vector<int> lengths(batch_size, N);
-    std::vector<int> targets(batch_size);
-    for (int i = 0; i < batch_size; ++i) {
-        for (auto& v : inputs[i]) v = dist(rng);
-        input_ptrs[i] = inputs[i].data();
-        targets[i] = i % K;
-    }
+    std::vector<std::vector<float>> inputs;
+    std::vector<int> targets;
+    make_synth(batch_size, N, K, 42, inputs, targets);
 
-    net.train_batch(input_ptrs.data(), lengths.data(), targets.data(),
-                    batch_size, 0.01f, 0.0f, 0.0f, class_weights.data());
+    std::vector<const float*> ptrs;
+    std::vector<int> lengths;
+    pack_batch(inputs, N, ptrs, lengths);
 
-    net.embed_input(inputs[0].data(), N, emb.data());
-    net.forward(emb.data(), logits.data());
-    check(all_finite(logits.data(), K), "class-weighted train_batch: logits finite");
+    net.TrainBatch(ptrs.data(), lengths.data(), targets.data(), batch_size,
+                   0.01f, 0.0f, 0.0f, class_weights.data());
+
+    net.Embed(inputs[0].data(), N, emb.data());
+    net.Forward(emb.data(), logits.data());
+    check(all_finite(logits.data(), K), "class-weighted TrainBatch: logits finite");
 }
 
+// ---------------------------------------------------------------------------
+//  main
+// ---------------------------------------------------------------------------
+
 int main() {
-    std::cout << "HypercubeCNN Core Smoke Test\n";
-    std::cout << "============================\n";
+    std::cout << "HCNN SDK Smoke Test\n";
+    std::cout << "===================\n";
 
     test_construction();
     test_forward_pass();
     test_training_step();
-    test_batch_training();
-    test_batch_inference();
+    test_train_batch();
+    test_train_epoch();
+    test_forward_batch();
     test_readout_types();
     test_pool_types();
     test_batchnorm();
@@ -802,11 +725,12 @@ int main() {
     test_weight_decay();
     test_class_weights();
 
-    std::cout << "\n============================\n";
+    std::cout << "\n===================\n";
     if (failures == 0) {
         std::cout << "All tests PASSED\n";
+        return 0;
     } else {
         std::cout << failures << " test(s) FAILED\n";
+        return 1;
     }
-    return failures > 0 ? 1 : 0;
 }

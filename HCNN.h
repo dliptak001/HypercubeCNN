@@ -1,0 +1,151 @@
+#pragma once
+
+#include "HCNNNetwork.h"   // re-exports HCNNConv, HCNNPool, HCNNReadout, all enums
+#include <memory>
+#include <vector>
+
+/// @brief Top-level HypercubeCNN pipeline wrapper.
+///
+/// HCNN owns the full pipeline: input embedding -> conv/pool stack -> readout.
+/// This is the canonical SDK front door; consumers should rarely need to
+/// reach for the underlying layer classes directly.
+///
+/// Build the architecture incrementally with AddConv()/AddPool(), then call
+/// RandomizeWeights() before training:
+///
+///     HCNN net(10, /*num_classes=*/10);   // DIM=10, N=1024
+///     net.AddConv(32);
+///     net.AddPool(PoolType::MAX);
+///     net.AddConv(64);
+///     net.AddPool(PoolType::MAX);
+///     net.RandomizeWeights();
+///
+///     // Single-sample inference: caller owns and reuses both buffers.
+///     std::vector<float> embedded(net.GetStartN());
+///     std::vector<float> logits(net.GetNumClasses());
+///     net.Embed(raw, raw_len, embedded.data());
+///     net.Forward(embedded.data(), logits.data());
+///
+/// All methods that take raw inputs avoid hidden per-call allocations:
+/// inference and training paths reuse pre-allocated internal buffers.
+///
+/// Non-copyable, non-movable.
+class HCNN {
+public:
+    explicit HCNN(int start_dim, int num_classes = 10,
+                  int input_channels = 1,
+                  ReadoutType readout_type = ReadoutType::GAP,
+                  size_t num_threads = 0);
+    ~HCNN();
+
+    HCNN(const HCNN&) = delete;
+    HCNN& operator=(const HCNN&) = delete;
+    HCNN(HCNN&&) = delete;
+    HCNN& operator=(HCNN&&) = delete;
+
+    // -----------------------------------------------------------------
+    //  Architecture (incremental builder)
+    // -----------------------------------------------------------------
+
+    /// Append a convolutional layer with `c_out` output channels.
+    void AddConv(int c_out, Activation activation = Activation::RELU,
+                 bool use_bias = true, bool use_batchnorm = false);
+
+    /// Append an antipodal pooling layer.  Reduces DIM by 1.
+    void AddPool(PoolType type = PoolType::MAX);
+
+    /// Initialize all weights.  scale > 0: uniform [-scale, +scale].
+    /// scale <= 0 (default): per-layer Xavier/He init based on activation.
+    void RandomizeWeights(float scale = 0.0f, unsigned seed = 42);
+
+    // -----------------------------------------------------------------
+    //  Mode / optimizer
+    // -----------------------------------------------------------------
+
+    /// Switch all batch-norm layers between training and eval mode.
+    void SetTraining(bool training);
+
+    /// Configure the optimizer for all layers.  Resets the timestep.
+    void SetOptimizer(OptimizerType type, float beta1 = 0.9f,
+                      float beta2 = 0.999f, float eps = 1e-8f);
+
+    // -----------------------------------------------------------------
+    //  Inference
+    // -----------------------------------------------------------------
+
+    /// Map a raw scalar array onto N = 2^start_dim hypercube vertices via
+    /// Direct Linear Assignment.  Values must be in [-1.0, 1.0].
+    /// `embedded_out` must hold GetStartN() floats.  Caller-owned buffer
+    /// (designed for reuse across calls -- no hidden allocation).
+    void Embed(const float* raw_input, int input_length,
+               float* embedded_out) const;
+
+    /// Run conv/pool/readout from already-embedded activations.
+    /// `embedded` is GetStartN() floats; `logits` is GetNumClasses() floats.
+    /// No allocation.
+    void Forward(const float* embedded, float* logits) const;
+
+    /// Batch inference (parallel via internal thread pool).  Embeds and
+    /// forwards multiple samples.  Per-thread buffers are lazily allocated
+    /// on first call and reused thereafter.
+    /// `logits_out` must hold batch_size * GetNumClasses() floats.
+    void ForwardBatch(const float* const* raw_inputs, const int* input_lengths,
+                      int batch_size, float* logits_out);
+
+    // -----------------------------------------------------------------
+    //  Training
+    // -----------------------------------------------------------------
+
+    /// Single-sample SGD step (forward + backward + weight update).
+    /// `class_weights` (optional, length GetNumClasses()) scales the
+    /// per-class loss; pass nullptr for uniform weighting.
+    void TrainStep(const float* raw_input, int input_length, int target_class,
+                   float learning_rate, float momentum = 0.0f,
+                   float weight_decay = 0.0f,
+                   const float* class_weights = nullptr);
+
+    /// Mini-batch parallel SGD step.  Forward+backward run in parallel for
+    /// each sample, gradients are reduced (averaged), then a single weight
+    /// update is applied.  Per-thread buffers are lazily allocated and reused.
+    void TrainBatch(const float* const* inputs, const int* input_lengths,
+                    const int* targets, int batch_size,
+                    float learning_rate, float momentum = 0.0f,
+                    float weight_decay = 0.0f,
+                    const float* class_weights = nullptr);
+
+    /// Iterate `sample_count` samples and dispatch TrainBatch in chunks of
+    /// `batch_size` (the final chunk may be smaller).
+    ///
+    /// `shuffle_seed`:
+    ///   - 0 (default): no shuffle, samples are processed in input order.
+    ///   - nonzero: deterministic shuffle for this call, seeded by this value.
+    ///     Pass a different seed each epoch (e.g. epoch index) for a fresh
+    ///     reproducible permutation.  HCNN owns persistent gather buffers
+    ///     used by the shuffle path -- after the first shuffled epoch, no
+    ///     further allocations occur as long as `sample_count` does not grow.
+    void TrainEpoch(const float* const* inputs, const int* input_lengths,
+                    const int* targets, int sample_count, int batch_size,
+                    float learning_rate, float momentum = 0.0f,
+                    float weight_decay = 0.0f,
+                    const float* class_weights = nullptr,
+                    unsigned shuffle_seed = 0);
+
+    // -----------------------------------------------------------------
+    //  Sizing accessors (everything a consumer needs to size buffers)
+    // -----------------------------------------------------------------
+    int GetStartDim() const;
+    int GetStartN() const;
+    int GetInputChannels() const;
+    int GetNumClasses() const;
+
+private:
+    std::unique_ptr<HCNNNetwork> net_;
+
+    // Persistent gather buffers used by TrainEpoch's shuffle path.
+    // Allocated lazily and grown as `sample_count` increases; reused
+    // across epochs so the steady-state shuffle is allocation-free.
+    std::vector<const float*> shuffle_inputs_;
+    std::vector<int>          shuffle_lengths_;
+    std::vector<int>          shuffle_targets_;
+    std::vector<int>          shuffle_idx_;
+};

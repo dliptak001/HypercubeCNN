@@ -33,9 +33,13 @@ Prefer Release mode for tests and diagnostics (Debug has different float behavio
 
 HypercubeCNN performs convolutions on binary hypercubes using Hamming distance instead of spatial grids. All geometry is bitwise — no adjacency lists, no padding.
 
+### Public API
+
+`HCNN` (HCNN.h/cpp) is the canonical SDK front door — a thin wrapper around `HCNNNetwork` that exposes the entire pipeline through a single class. **All examples, tests, main.cpp, and any new code must drive the network through `HCNN`, not its subordinates.** The layer headers (`HCNNNetwork`, `HCNNConv`, `HCNNPool`, `HCNNReadout`) are still re-exported transitively via `HCNN.h` for power users, but the in-tree code is no longer allowed to use them directly.
+
 ### Core pipeline
 
-`HCNNNetwork` orchestrates the full forward pass:
+`HCNNNetwork` (the internal orchestrator wrapped by `HCNN`) implements the full forward pass:
 
 1. **Input embedding** — maps flat scalar arrays onto `N = 2^DIM` hypercube vertices (Direct Linear Assignment). Values must be in [-1.0, 1.0].
 2. **Conv layers (`HCNNConv`)** — sparse-vertex convolution using K = DIM fixed XOR masks per vertex. Each mask is a single-bit flip (Hamming distance 1 nearest-neighbor). Each output vertex = weighted sum of DIM specific neighbors. Kernel shape: `[c_out * c_in * K]`.
@@ -50,12 +54,10 @@ All executables link against `HypercubeCNNCore` (static library). Sources live i
 
 | CMake target | Purpose |
 |---|---|
-| `HypercubeCNNCore` | Static library with all core classes |
-| `HypercubeCNN` | Quick diagnostic runner (main.cpp) |
+| `HypercubeCNNCore` | Static library: `HCNN` front door + internal layer classes |
+| `HypercubeCNN` | Quick check runner (main.cpp) |
 | `MNISTTrain` | MNIST training demo (examples/mnist_train.cpp) |
-| `GradientCheck` | Numerical gradient verification (diagnostics/gradient_check.cpp) |
-| `LayerIsolation` | Layer-by-layer diagnostic (diagnostics/layer_isolation.cpp) |
-| `CoreSmokeTest` | Library smoke test (tests/CoreSmokeTest.cpp) |
+| `CoreSmokeTest` | HCNN SDK smoke test (tests/CoreSmokeTest.cpp) |
 
 New targets follow the same pattern: link `HypercubeCNNCore`, never compile core sources directly.
 
@@ -76,4 +78,4 @@ During batch dispatch (`train_batch`, `forward_batch`), per-layer vertex threadi
 - **No OpenMP.** Threading uses `ThreadPool` (pure C++ `std::thread`).
 - **No CUDA / no GPU.** All computation is CPU-only.
 - **No external dependencies** in core. Everything is flat arrays and standard C++23.
-- The `dataloader/` directory holds the dataset loader (`HCNNDataset`). Its include path is exported by the library.
+- The `dataloader/` directory holds `HCNNDataset`, a pure data container used as an in-tree example utility (not part of the SDK surface; not coupled to `HCNN`/`HCNNNetwork`). Targets that need it (`MNISTTrain`) compile `HCNNDataset.cpp` directly into their own executable.

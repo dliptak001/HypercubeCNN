@@ -12,10 +12,8 @@ Static C++ library for convolutional neural networks on Boolean hypercube graphs
 - [Minimal example](#minimal-example)
 - [API Reference](#api-reference)
   - [Enums](#enums)
-  - [HCNNNetwork](#hcnnnetwork)
-  - [HCNNConv (conv layer)](#hcnnconv-conv-layer)
-  - [HCNNPool](#hcnnpool)
-  - [HCNNReadout](#hcnnreadout)
+  - [HCNN](#hcnn)
+  - [Internals (re-exported)](#internals-re-exported)
 - [Memory layout](#memory-layout)
 - [Threading](#threading)
 - [Dependencies](#dependencies)
@@ -27,12 +25,12 @@ After installation, the SDK contains:
 ```
 <prefix>/
   include/HypercubeCNN/
-    HCNNNetwork.h      -- Primary public API (network orchestrator)
-    HCNNConv.h         -- Conv layer (included by HCNNNetwork.h)
-    HCNNPool.h         -- Pooling layer (included by HCNNNetwork.h)
-    HCNNReadout.h      -- Readout layer (included by HCNNNetwork.h)
-    ThreadPool.h       -- Internal threading (included by HCNNNetwork.h)
-    HCNNDataset.h      -- MNIST dataloader (example utility, not core API)
+    HCNN.h             -- Primary public API (top-level pipeline wrapper)
+    HCNNNetwork.h      -- Internal orchestrator (re-exported via HCNN.h)
+    HCNNConv.h         -- Conv layer (re-exported via HCNNNetwork.h)
+    HCNNPool.h         -- Pooling layer (re-exported via HCNNNetwork.h)
+    HCNNReadout.h      -- Readout layer (re-exported via HCNNNetwork.h)
+    ThreadPool.h       -- Internal threading (re-exported via HCNNNetwork.h)
   lib/
     libHypercubeCNNCore.a
   lib/cmake/HypercubeCNN/
@@ -41,7 +39,7 @@ After installation, the SDK contains:
     HypercubeCNNConfigVersion.cmake
 ```
 
-Consumers include `"HCNNNetwork.h"` and link against `HypercubeCNNCore`. The remaining headers are pulled in transitively -- most consumers only interact with `HCNNNetwork` directly.
+Consumers include `"HCNN.h"` and link against `HypercubeCNNCore`. `HCNN` is the canonical front door for the entire pipeline; the underlying layer headers are re-exported transitively for power users who need direct weight access or custom training loops.
 
 ## Building from source
 
@@ -95,37 +93,35 @@ target_link_libraries(my_app PRIVATE HypercubeCNN::HypercubeCNNCore)
 A self-contained forward pass on synthetic data (no MNIST required):
 
 ```cpp
-#include "HCNNNetwork.h"
+#include "HCNN.h"
 #include <iostream>
 #include <vector>
 #include <random>
 
 int main() {
     // Build a small network: DIM=6, N=64 vertices, 4 classes
-    HCNNNetwork net(6, /*num_classes=*/4);
-    net.add_conv(16, /*use_relu=*/true, /*use_bias=*/true);
-    net.add_pool(PoolType::MAX);   // DIM 6->5, N 64->32
-    net.add_conv(32, true, true);
-    net.add_pool(PoolType::MAX);   // DIM 5->4, N 32->16
-    net.randomize_all_weights();   // Xavier/Glorot init
+    HCNN net(6, /*num_classes=*/4);
+    net.AddConv(16);
+    net.AddPool(PoolType::MAX);   // DIM 6->5, N 64->32
+    net.AddConv(32);
+    net.AddPool(PoolType::MAX);   // DIM 5->4, N 32->16
+    net.RandomizeWeights();       // Xavier/He init per layer
 
     // Generate random input in [-1, 1]
-    const int N = net.get_start_N();  // 64
+    const int N = net.GetStartN();  // 64
     std::mt19937 rng(42);
     std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
     std::vector<float> input(N);
     for (auto& v : input) v = dist(rng);
 
-    // Forward pass
+    // Forward pass -- both buffers caller-owned, designed for reuse.
     std::vector<float> embedded(N);
-    net.embed_input(input.data(), N, embedded.data());
-
-    int K = net.get_num_classes();  // 4
-    std::vector<float> logits(K);
-    net.forward(embedded.data(), logits.data());
+    std::vector<float> logits(net.GetNumClasses());
+    net.Embed(input.data(), N, embedded.data());
+    net.Forward(embedded.data(), logits.data());
 
     std::cout << "Logits:";
-    for (int i = 0; i < K; ++i) std::cout << " " << logits[i];
+    for (float v : logits) std::cout << " " << v;
     std::cout << "\n";
 
     return 0;
@@ -141,19 +137,19 @@ int main() {
 | `ReadoutType` | `GAP`, `FLATTEN` | HCNNNetwork.h | Readout strategy. GAP: global average pooling per channel (translation-invariant). FLATTEN: concatenate all channel x vertex activations (position-sensitive). |
 | `PoolType` | `MAX`, `AVG` | HCNNPool.h | Antipodal pooling reduction. MAX: keep the larger value. AVG: average the pair. |
 
-### HCNNNetwork
+### HCNN
 
-The primary public API. Orchestrates the full pipeline: input embedding, conv layers, pool layers, and readout.
+The canonical SDK front door. Owns the full pipeline: input embedding → conv/pool stack → readout. Non-copyable, non-movable.
 
-Non-copyable, non-movable.
+All methods that take raw inputs avoid hidden per-call allocations: training and batch-inference paths use pre-allocated internal buffers; single-sample inference takes caller-owned scratch buffers designed for reuse.
 
 #### Constructor
 
 ```cpp
-HCNNNetwork(int start_dim, int num_classes = 10,
-            int input_channels = 1,
-            ReadoutType readout_type = ReadoutType::GAP,
-            size_t num_threads = 0);
+explicit HCNN(int start_dim, int num_classes = 10,
+              int input_channels = 1,
+              ReadoutType readout_type = ReadoutType::GAP,
+              size_t num_threads = 0);
 ```
 
 | Parameter | Description |
@@ -164,182 +160,98 @@ HCNNNetwork(int start_dim, int num_classes = 10,
 | `readout_type` | `GAP` (default) or `FLATTEN`. See [Enums](#enums). |
 | `num_threads` | Thread pool size. 0 (default) = auto-detect from hardware. |
 
-#### Network construction
+#### Architecture (incremental builder)
 
 ```cpp
-void add_conv(int c_out, bool use_relu = true, bool use_bias = true);
-void add_pool(PoolType type = PoolType::MAX);
-void randomize_all_weights(float scale = 0.0f);
+void AddConv(int c_out, Activation activation = Activation::RELU,
+             bool use_bias = true, bool use_batchnorm = false);
+void AddPool(PoolType type = PoolType::MAX);
+void RandomizeWeights(float scale = 0.0f, unsigned seed = 42);
 ```
 
 | Method | Description |
 |--------|-------------|
-| `add_conv` | Append a convolutional layer with `c_out` output channels. K = current DIM (one weight per Hamming-distance-1 neighbor). |
-| `add_pool` | Append an antipodal pooling layer. Reduces DIM by 1. |
-| `randomize_all_weights` | Initialize all weights. `scale > 0`: uniform [-scale, +scale]. `scale <= 0` (default): Xavier/Glorot uniform per layer. |
+| `AddConv` | Append a convolutional layer with `c_out` output channels. K = current DIM (one weight per Hamming-distance-1 neighbor). Optional batch normalization. |
+| `AddPool` | Append an antipodal pooling layer. Reduces DIM by 1. |
+| `RandomizeWeights` | Initialize all weights. `scale > 0`: uniform [-scale, +scale]. `scale <= 0` (default): Xavier/He init per layer based on activation. |
 
-Call `add_conv` and `add_pool` to build the architecture, then `randomize_all_weights` before training.
+Call `AddConv` and `AddPool` to build the architecture, then `RandomizeWeights` before training.
 
-#### Single-sample inference
+#### Mode / optimizer
 
 ```cpp
-void embed_input(const float* raw_input, int input_length,
-                 float* first_layer_activations) const;
-void forward(const float* first_layer_activations, float* logits) const;
+void SetTraining(bool training);
+void SetOptimizer(OptimizerType type, float beta1 = 0.9f,
+                  float beta2 = 0.999f, float eps = 1e-8f);
+```
+
+`SetTraining` flips all batch-norm layers between training (running-stat updates) and eval mode. `SetOptimizer` reconfigures all layers' optimizer (`SGD` or `ADAM`) and resets the timestep.
+
+#### Inference
+
+```cpp
+void Embed(const float* raw_input, int input_length, float* embedded_out) const;
+void Forward(const float* embedded, float* logits) const;
+void ForwardBatch(const float* const* raw_inputs, const int* input_lengths,
+                  int batch_size, float* logits_out);
 ```
 
 | Method | Description |
 |--------|-------------|
-| `embed_input` | Map a flat scalar array onto N = 2^DIM hypercube vertices via Direct Linear Assignment. Values must be in [-1.0, 1.0]. Output buffer must hold N floats. |
-| `forward` | Run all conv/pool/readout layers. Input: embedded activations (N floats). Output: raw logits (num_classes floats). |
+| `Embed` | Map a flat scalar array onto N = 2^DIM hypercube vertices via Direct Linear Assignment. Values must be in [-1.0, 1.0]. `embedded_out` must hold `GetStartN()` floats. Caller-owned buffer (designed for reuse). |
+| `Forward` | Run all conv/pool/readout layers from already-embedded activations. Input: `GetStartN()` floats. Output: `GetNumClasses()` floats. No allocation. |
+| `ForwardBatch` | Embed + forward for multiple samples in parallel using the internal thread pool. `logits_out` must hold `batch_size * GetNumClasses()` floats. Per-thread buffers are lazily allocated and reused. |
 
-#### Batch inference (parallel)
+For single-sample inference, allocate two scratch vectors once and reuse them across calls — see the [Minimal example](#minimal-example).
 
-```cpp
-void forward_batch(const float* const* raw_inputs, const int* input_lengths,
-                   int batch_size, float* logits_out);
-```
-
-Embed + forward for multiple samples in parallel using the thread pool. `logits_out` must hold `batch_size * num_classes` floats. Per-thread buffers are lazily allocated on first call and reused.
-
-#### Single-sample training
+#### Training
 
 ```cpp
-void train_step(const float* raw_input, int input_length,
-                int target_class, float learning_rate, float momentum = 0.0f,
+void TrainStep(const float* raw_input, int input_length, int target_class,
+               float learning_rate, float momentum = 0.0f,
+               float weight_decay = 0.0f,
+               const float* class_weights = nullptr);
+
+void TrainBatch(const float* const* inputs, const int* input_lengths,
+                const int* targets, int batch_size,
+                float learning_rate, float momentum = 0.0f,
                 float weight_decay = 0.0f,
                 const float* class_weights = nullptr);
+
+void TrainEpoch(const float* const* inputs, const int* input_lengths,
+                const int* targets, int sample_count, int batch_size,
+                float learning_rate, float momentum = 0.0f,
+                float weight_decay = 0.0f,
+                const float* class_weights = nullptr,
+                unsigned shuffle_seed = 0);
 ```
 
-Full forward + backward + SGD update for one sample. `class_weights` is an optional array of length `num_classes` for per-class loss scaling (nullptr = uniform).
+| Method | Description |
+|--------|-------------|
+| `TrainStep` | Single-sample SGD step: forward + backward + weight update. |
+| `TrainBatch` | Mini-batch parallel SGD step. Forward+backward run in parallel for each sample, gradients are reduced (averaged), then a single weight update is applied. Per-thread buffers are lazily allocated and reused. |
+| `TrainEpoch` | Iterate `sample_count` samples and dispatch `TrainBatch` in chunks of `batch_size`. With `shuffle_seed = 0`, samples are processed in input order. With nonzero `shuffle_seed`, the epoch is permuted deterministically (pass a different seed each epoch — e.g. epoch index — for a fresh reproducible shuffle). HCNN owns persistent gather buffers for the shuffle path; after the first shuffled epoch no further allocations occur unless `sample_count` grows. |
 
-#### Mini-batch training (parallel)
+`class_weights` (optional, length `GetNumClasses()`) scales the per-class loss; pass `nullptr` for uniform weighting.
 
-```cpp
-void train_batch(const float* const* inputs, const int* input_lengths,
-                 const int* targets, int batch_size,
-                 float learning_rate, float momentum = 0.0f,
-                 float weight_decay = 0.0f,
-                 const float* class_weights = nullptr);
-```
-
-Process `batch_size` samples in parallel. Each thread runs forward + backward independently; gradients are reduced (averaged) then applied in a single weight update. Per-thread buffers are lazily allocated and reused.
-
-#### Accessors
+#### Sizing accessors
 
 | Method | Returns |
 |--------|---------|
-| `get_start_dim()` | Initial hypercube dimension. |
-| `get_start_N()` | Initial vertex count (2^start_dim). |
-| `get_input_channels()` | Number of input channels. |
-| `get_num_classes()` | Number of output classes. |
-| `get_conv(i)` | Reference to the i-th conv layer (`HCNNConv&`). |
-| `get_readout()` | Reference to the readout layer (`HCNNReadout&`). |
-| `get_num_conv()` | Number of conv layers. |
-| `get_num_pool()` | Number of pool layers. |
-| `get_layer_types()` | Layer ordering: true = conv, false = pool. |
-| `get_channel_counts()` | Channel count after each layer (including input). |
+| `GetStartDim()` | Initial hypercube dimension. |
+| `GetStartN()` | Initial vertex count (2^start_dim). Use to size embed/input buffers. |
+| `GetInputChannels()` | Number of input channels. |
+| `GetNumClasses()` | Number of output classes. Use to size logits buffers. |
 
-### HCNNConv (conv layer)
+### Internals (re-exported)
 
-Hypercube convolutional layer. Each output vertex is a weighted sum of K = DIM nearest neighbors (single-bit XOR flips) from each input channel, plus optional bias and ReLU.
+`HCNN.h` transitively re-exports `HCNNNetwork.h`, which in turn re-exports `HCNNConv.h`, `HCNNPool.h`, `HCNNReadout.h`, and `ThreadPool.h`. These remain reachable for power users who need:
 
-Most consumers interact with conv layers only through `HCNNNetwork`. Direct access via `get_conv(i)` is available for weight inspection, serialization, or custom training loops.
+- Direct kernel/bias inspection (`HCNNConv::get_kernel_data()`, etc.)
+- Custom gradient pipelines (`HCNNConv::compute_gradients` / `apply_gradients`)
+- Layer-by-layer diagnostics (e.g. gradient checking)
 
-#### Constructor
-
-```cpp
-HCNNConv(int dim, int c_in, int c_out, bool use_relu = true, bool use_bias = true);
-```
-
-Requires `dim >= 3`. Kernel weights are initialized to zero; call `randomize_weights()` or use `HCNNNetwork::randomize_all_weights()`.
-
-#### Forward / backward
-
-```cpp
-void forward(const float* in, float* out, float* pre_act = nullptr) const;
-void backward(const float* grad_out, const float* in, const float* pre_act,
-              float* grad_in, float learning_rate, float momentum = 0.0f,
-              float weight_decay = 0.0f);
-```
-
-`forward`: input [c_in * N], output [c_out * N], optional pre_act [c_out * N] (needed by backward).
-
-`backward`: computes grad_in (if non-null) and updates weights via momentum SGD in one call.
-
-#### Gradient computation (for custom training)
-
-```cpp
-void compute_gradients(const float* grad_out, const float* in, const float* pre_act,
-                       float* grad_in, float* kernel_grad, float* bias_grad,
-                       float* work_buf = nullptr) const;
-void apply_gradients(const float* kernel_grad, const float* bias_grad,
-                     float learning_rate, float momentum, float weight_decay = 0.0f);
-```
-
-`compute_gradients`: writes raw gradients to caller buffers without modifying weights. Used by mini-batch training (gradients averaged across samples before applying).
-
-`apply_gradients`: apply externally computed gradients via momentum SGD.
-
-#### Accessors
-
-| Method | Returns |
-|--------|---------|
-| `get_dim()` | Hypercube dimension. |
-| `get_N()` | Vertex count (2^DIM). |
-| `get_c_in()` | Input channels. |
-| `get_c_out()` | Output channels. |
-| `get_K()` | Number of connection masks (= DIM). |
-| `get_kernel_data()` | Raw pointer to kernel weights [c_out * c_in * K]. |
-| `get_kernel_size()` | Total kernel weight count. |
-| `get_bias_data()` | Raw pointer to bias [c_out] (or empty if bias disabled). |
-| `get_bias_size()` | Bias element count (0 if disabled). |
-
-### HCNNPool
-
-Antipodal pooling layer. Pairs each vertex v with its bitwise complement `v ^ (2^DIM - 1)`, reducing DIM by 1.
-
-```cpp
-HCNNPool(int input_dim, PoolType type = PoolType::MAX);
-void forward(const float* in, float* out, int num_channels,
-             std::vector<int>* max_indices = nullptr) const;
-void backward(const float* grad_out, float* grad_in, int num_channels,
-              const std::vector<int>* max_indices) const;
-```
-
-| Method | Returns |
-|--------|---------|
-| `get_input_dim()` | Input dimension. |
-| `get_output_dim()` | Output dimension (input_dim - 1). |
-| `get_input_N()` | Input vertex count. |
-| `get_output_N()` | Output vertex count (input_N / 2). |
-
-### HCNNReadout
-
-Global average pooling per channel followed by a linear layer to class logits.
-
-```cpp
-HCNNReadout(int num_classes, int input_channels);
-void forward(const float* in, float* out, int N,
-             float* work_buf = nullptr) const;
-void backward(const float* grad_logits, const float* in, int N,
-              float* grad_in, float learning_rate, float momentum = 0.0f,
-              float weight_decay = 0.0f);
-void compute_gradients(const float* grad_logits, const float* in, int N,
-                       float* grad_in, float* weight_grad, float* bias_grad,
-                       float* work_buf = nullptr) const;
-void apply_gradients(const float* weight_grad, const float* bias_grad,
-                     float learning_rate, float momentum, float weight_decay = 0.0f);
-```
-
-| Method | Returns |
-|--------|---------|
-| `get_num_classes()` | Number of output classes. |
-| `get_input_channels()` | Number of input channels. |
-| `get_weight_data()` | Raw pointer to weights [num_classes * input_channels]. |
-| `get_weight_size()` | Total weight count. |
-| `get_bias_data()` | Raw pointer to bias [num_classes]. |
-| `get_bias_size()` | Bias element count. |
+Typical SDK consumers should not need to touch them. The full inventory of these classes is defined in their respective headers and is not duplicated here — read the header you need.
 
 ## Memory layout
 

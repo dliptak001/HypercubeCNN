@@ -1,4 +1,4 @@
-#include "HCNNNetwork.h"
+#include "HCNN.h"
 #include <cmath>
 #include <iostream>
 #include <random>
@@ -9,14 +9,14 @@ int main() {
     int failures = 0;
 
     // Build a small network: DIM=5, N=32, 4 classes
-    HCNNNetwork net(5, 4);
-    net.add_conv(16);
-    net.add_pool(PoolType::MAX);
-    net.add_conv(16);
-    net.randomize_all_weights();
+    HCNN net(5, 4);
+    net.AddConv(16);
+    net.AddPool(PoolType::MAX);
+    net.AddConv(16);
+    net.RandomizeWeights();
 
-    int N = net.get_start_N();
-    int K = net.get_num_classes();
+    int N = net.GetStartN();
+    int K = net.GetNumClasses();
 
     // Generate synthetic data
     const int num_samples = 16;
@@ -29,13 +29,15 @@ int main() {
         targets[i] = i % K;
     }
 
-    // Check 1: loss decreases after training
+    // Reusable scratch buffers (no per-call allocation in the loss loop).
+    std::vector<float> embedded(N);
+    std::vector<float> logits(K);
+
     auto compute_loss = [&]() {
         double total = 0.0;
         for (int i = 0; i < num_samples; ++i) {
-            std::vector<float> emb(N), logits(K);
-            net.embed_input(inputs[i].data(), N, emb.data());
-            net.forward(emb.data(), logits.data());
+            net.Embed(inputs[i].data(), N, embedded.data());
+            net.Forward(embedded.data(), logits.data());
             double mx = logits[0];
             for (int j = 1; j < K; ++j) if (logits[j] > mx) mx = logits[j];
             double se = 0.0;
@@ -45,10 +47,11 @@ int main() {
         return total / num_samples;
     };
 
+    // Check 1: loss decreases after training
     double loss_before = compute_loss();
     for (int step = 0; step < 50; ++step) {
         int idx = step % num_samples;
-        net.train_step(inputs[idx].data(), N, targets[idx], 0.01f);
+        net.TrainStep(inputs[idx].data(), N, targets[idx], 0.01f);
     }
     double loss_after = compute_loss();
 
@@ -65,7 +68,7 @@ int main() {
     for (int i = 0; i < num_samples; ++i) ptrs[i] = inputs[i].data();
 
     std::vector<float> all_logits(num_samples * K);
-    net.forward_batch(ptrs.data(), lengths.data(), num_samples, all_logits.data());
+    net.ForwardBatch(ptrs.data(), lengths.data(), num_samples, all_logits.data());
 
     bool all_ok = true;
     for (int i = 0; i < num_samples * K; ++i)

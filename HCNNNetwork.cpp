@@ -36,10 +36,6 @@ void HCNNNetwork::set_training(bool training) const {
     for (const auto& layer : conv_layers) layer.set_training(training);
 }
 
-void HCNNNetwork::freeze_conv_layers(bool frozen) {
-    for (auto& layer : conv_layers) layer.set_frozen(frozen);
-}
-
 void HCNNNetwork::set_optimizer(OptimizerType type, float beta1,
                                 float beta2, float eps) {
     for (auto& layer : conv_layers) layer.set_optimizer(type, beta1, beta2, eps);

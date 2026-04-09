@@ -1,4 +1,4 @@
-#include "HCNNNetwork.h"
+#include "HCNN.h"
 #include "dataloader/HCNNDataset.h"
 #include <chrono>
 #include <cmath>
@@ -22,31 +22,42 @@ static int argmax(const float* v, int n) {
     return best;
 }
 
-static void evaluate(HCNNNetwork& net, const HCNNDataset& dataset,
-                     const char* label) {
-    int K = net.get_num_classes();
-    int count = static_cast<int>(dataset.size());
+// Flat-array view of a dataset, suitable for HCNN's raw-pointer training
+// and inference APIs.  Built once per dataset and reused across epochs.
+struct DatasetView {
+    std::vector<const float*> inputs;
+    std::vector<int>          lengths;
+    std::vector<int>          targets;
 
-    // Batch-parallel inference
-    std::vector<const float*> inputs(count);
-    std::vector<int> lengths(count);
-    std::vector<int> targets(count);
-    for (int i = 0; i < count; ++i) {
-        const auto& s = dataset.get(i);
-        inputs[i] = s.input.data();
-        lengths[i] = static_cast<int>(s.input.size());
-        targets[i] = s.target_class;
+    explicit DatasetView(const HCNNDataset& ds) {
+        const int n = static_cast<int>(ds.size());
+        inputs.resize(n);
+        lengths.resize(n);
+        targets.resize(n);
+        for (int i = 0; i < n; ++i) {
+            const auto& s = ds.get(i);
+            inputs[i]  = s.input.data();
+            lengths[i] = static_cast<int>(s.input.size());
+            targets[i] = s.target_class;
+        }
     }
 
-    std::vector<float> all_logits(count * K);
-    net.forward_batch(inputs.data(), lengths.data(), count, all_logits.data());
+    int size() const { return static_cast<int>(inputs.size()); }
+};
+
+static void evaluate(HCNN& net, const DatasetView& view, const char* label) {
+    int K = net.GetNumClasses();
+    int count = view.size();
+
+    std::vector<float> all_logits(static_cast<size_t>(count) * K);
+    net.ForwardBatch(view.inputs.data(), view.lengths.data(), count, all_logits.data());
 
     float total_loss = 0.0f;
     int correct = 0;
     for (int i = 0; i < count; ++i) {
         const float* logits = all_logits.data() + i * K;
-        total_loss += cross_entropy_loss(logits, K, targets[i]);
-        if (argmax(logits, K) == targets[i]) ++correct;
+        total_loss += cross_entropy_loss(logits, K, view.targets[i]);
+        if (argmax(logits, K) == view.targets[i]) ++correct;
     }
 
     float avg_loss = total_loss / count;
@@ -56,15 +67,15 @@ static void evaluate(HCNNNetwork& net, const HCNNDataset& dataset,
               << " (" << accuracy << "%)\n";
 }
 
-static void train_and_evaluate(const char* name, HCNNNetwork& net,
-                               HCNNDataset& train_data,
-                               const HCNNDataset& test_data,
+static void train_and_evaluate(const char* name, HCNN& net,
+                               const DatasetView& train_view,
+                               const DatasetView& test_view,
                                float lr = 0.01f, int batch_size = 32,
                                float weight_decay = 0.0f) {
     std::cout << "\n=== " << name << " (lr=" << lr
               << ", batch=" << batch_size
               << ", wd=" << weight_decay << ") ===\n";
-    evaluate(net, test_data, "Initial test");
+    evaluate(net, test_view, "Initial test");
 
     const int epochs = 40;
     const float momentum = 0.9f;
@@ -76,14 +87,20 @@ static void train_and_evaluate(const char* name, HCNNNetwork& net,
                            * (1.0f + std::cos(static_cast<float>(std::numbers::pi) * progress));
 
         auto t0 = std::chrono::steady_clock::now();
-        train_data.train_epoch(net, current_lr, momentum, batch_size, weight_decay);
+        // Pass `epoch + 1` as the shuffle seed -- nonzero, distinct per epoch,
+        // and reproducible across runs.
+        net.TrainEpoch(train_view.inputs.data(), train_view.lengths.data(),
+                       train_view.targets.data(), train_view.size(), batch_size,
+                       current_lr, momentum, weight_decay,
+                       /*class_weights=*/nullptr,
+                       /*shuffle_seed=*/static_cast<unsigned>(epoch + 1));
         auto t1 = std::chrono::steady_clock::now();
         double secs = std::chrono::duration<double>(t1 - t0).count();
 
         std::string label = "Epoch " + std::to_string(epoch + 1) + "/" + std::to_string(epochs);
-        evaluate(net, test_data, label.c_str());
+        evaluate(net, test_view, label.c_str());
         std::cout << "  (lr=" << current_lr << ", " << secs << "s, "
-                  << train_data.size() / secs << " samples/s)\n";
+                  << train_view.size() / secs << " samples/s)\n";
     }
 }
 
@@ -95,43 +112,27 @@ int main() {
     std::cout << "Loading MNIST from " << data_dir << "...\n";
     auto train_data = load_mnist((data_dir / "train-images-idx3-ubyte").string(),
                                  (data_dir / "train-labels-idx1-ubyte").string(), 60000);
-    auto test_data = load_mnist((data_dir / "t10k-images-idx3-ubyte").string(),
-                                (data_dir / "t10k-labels-idx1-ubyte").string(), 10000);
+    auto test_data  = load_mnist((data_dir / "t10k-images-idx3-ubyte").string(),
+                                 (data_dir / "t10k-labels-idx1-ubyte").string(), 10000);
     std::cout << "Train: " << train_data.size() << " samples, "
               << "Test: " << test_data.size() << " samples\n";
-
     std::cout << "Threads: " << std::thread::hardware_concurrency() << "\n";
 
-    // --- Full training ---
-    {
-        HCNNNetwork net(10);
-        net.add_conv(32);         // 1->32 ch,   K=10 (DIM=10)
-        net.add_pool(PoolType::MAX);          // DIM 10->9,  N 1024->512
-        net.add_conv(64);         // 32->64 ch,  K=9  (DIM=9)
-        net.add_pool(PoolType::MAX);          // DIM 9->8,   N 512->256
-        net.add_conv(128);        // 64->128 ch, K=8  (DIM=8)
-        net.add_pool(PoolType::MAX);          // DIM 8->7,   N 256->128
-        net.add_conv(128);        // 128->128 ch, K=7  (DIM=7)
-        net.add_pool(PoolType::MAX);          // DIM 7->6,   N 128->64
-        net.randomize_all_weights();
-        train_and_evaluate("HCNN", net, train_data, test_data, 0.06f, 256, 1e-4f);
-    }
+    DatasetView train_view(train_data);
+    DatasetView test_view(test_data);
 
-    // --- Reservoir mode (frozen random conv, only readout trains) ---
-    {
-        HCNNNetwork net(10);
-        net.add_conv(32);
-        net.add_pool(PoolType::MAX);
-        net.add_conv(64);
-        net.add_pool(PoolType::MAX);
-        net.add_conv(128);
-        net.add_pool(PoolType::MAX);
-        net.add_conv(128);
-        net.add_pool(PoolType::MAX);
-        net.randomize_all_weights();
-        net.freeze_conv_layers();
-        train_and_evaluate("HCNN Reservoir (frozen conv)", net, train_data, test_data, 0.06f, 256, 1e-4f);
-    }
+    HCNN net(10);
+    net.AddConv(32);                  // 1->32 ch,    K=10 (DIM=10)
+    net.AddPool(PoolType::MAX);       // DIM 10->9,   N 1024->512
+    net.AddConv(64);                  // 32->64 ch,   K=9  (DIM=9)
+    net.AddPool(PoolType::MAX);       // DIM 9->8,    N 512->256
+    net.AddConv(128);                 // 64->128 ch,  K=8  (DIM=8)
+    net.AddPool(PoolType::MAX);       // DIM 8->7,    N 256->128
+    net.AddConv(128);                 // 128->128 ch, K=7  (DIM=7)
+    net.AddPool(PoolType::MAX);       // DIM 7->6,    N 128->64
+    net.RandomizeWeights();
+
+    train_and_evaluate("HCNN", net, train_view, test_view, 0.06f, 256, 1e-4f);
 
     return 0;
 }

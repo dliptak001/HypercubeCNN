@@ -1,9 +1,7 @@
 #include "HCNNDataset.h"
 
-#include <algorithm>
+#include <cstdint>
 #include <fstream>
-#include <numeric>
-#include <random>
 #include <stdexcept>
 
 // Read a 32-bit big-endian integer from a stream.
@@ -87,41 +85,4 @@ HCNNDataset load_mnist(const std::string& images_path,
     }
 
     return ds;
-}
-
-void HCNNDataset::train_epoch(HCNNNetwork& net, float learning_rate,
-                              float momentum, int batch_size,
-                              float weight_decay, const float* class_weights) {
-    std::vector<size_t> order(samples.size());
-    std::iota(order.begin(), order.end(), 0);
-    std::shuffle(order.begin(), order.end(), rng);
-
-    if (batch_size <= 1) {
-        // Pure SGD — one sample at a time
-        for (size_t i : order) {
-            const auto& s = samples[i];
-            net.train_step(s.input.data(), static_cast<int>(s.input.size()),
-                           s.target_class, learning_rate, momentum, weight_decay,
-                           class_weights);
-        }
-    } else {
-        // Mini-batch SGD — process batch_size samples in parallel
-        int n = static_cast<int>(order.size());
-        std::vector<const float*> batch_inputs(batch_size);
-        std::vector<int> batch_lengths(batch_size);
-        std::vector<int> batch_targets(batch_size);
-
-        for (int start = 0; start < n; start += batch_size) {
-            int actual = std::min(batch_size, n - start);
-            for (int j = 0; j < actual; ++j) {
-                const auto& s = samples[order[start + j]];
-                batch_inputs[j] = s.input.data();
-                batch_lengths[j] = static_cast<int>(s.input.size());
-                batch_targets[j] = s.target_class;
-            }
-            net.train_batch(batch_inputs.data(), batch_lengths.data(),
-                            batch_targets.data(), actual,
-                            learning_rate, momentum, weight_decay, class_weights);
-        }
-    }
 }

@@ -15,22 +15,23 @@ Pooling pairs each vertex with its bitwise complement -- the maximally distant p
 ## Quick start (C++)
 
 ```cpp
-#include "HCNNNetwork.h"
+#include "HCNN.h"
 
-HCNNNetwork net(10);               // DIM=10, N=1024
-net.add_conv(32, true, true);      // 1->32 channels, K=10
-net.add_pool(PoolType::MAX);       // DIM 10->9, N 1024->512
-net.add_conv(64, true, true);      // 32->64 channels, K=9
-net.add_pool(PoolType::MAX);       // DIM 9->8, N 512->256
-net.randomize_all_weights();       // Xavier/Glorot init
+HCNN net(10);                       // DIM=10, N=1024
+net.AddConv(32);                    // 1->32 channels, K=10
+net.AddPool(PoolType::MAX);         // DIM 10->9, N 1024->512
+net.AddConv(64);                    // 32->64 channels, K=9
+net.AddPool(PoolType::MAX);         // DIM 9->8, N 512->256
+net.RandomizeWeights();             // Xavier/He init
 
-// Forward pass
-std::vector<float> embedded(1024), logits(10);
-net.embed_input(input_data, input_len, embedded.data());
-net.forward(embedded.data(), logits.data());
+// Forward pass -- caller-owned scratch buffers, designed for reuse.
+std::vector<float> embedded(net.GetStartN());
+std::vector<float> logits(net.GetNumClasses());
+net.Embed(input_data, input_len, embedded.data());
+net.Forward(embedded.data(), logits.data());
 ```
 
-Available as a CMake static library via FetchContent or find_package. See [docs/CPP_SDK.md](docs/CPP_SDK.md) for full API reference and integration guide.
+`HCNN` is the canonical SDK front door — a single class that wraps the entire pipeline (embed → conv/pool → readout). Available as a CMake static library via FetchContent or find_package. See [docs/CPP_SDK.md](docs/CPP_SDK.md) for full API reference and integration guide.
 
 ## Pipeline
 
@@ -57,13 +58,10 @@ Readout (HCNNReadout) -- global average per channel -> linear -> logits
 
 | Target | Purpose |
 |--------|---------|
-| `HypercubeCNNCore` | Static library (all core classes) |
-| `HypercubeCNN` | Quick diagnostic runner (main.cpp) |
+| `HypercubeCNNCore` | Static library (HCNN front door + core layers) |
+| `HypercubeCNN` | Quick check runner (main.cpp) |
 | `MNISTTrain` | MNIST training demo (examples/mnist_train.cpp) |
-| `GradientCheck` | Numerical gradient verification (diagnostics/gradient_check.cpp) |
-| `LayerIsolation` | Layer-by-layer diagnostic (diagnostics/layer_isolation.cpp) |
-| `FashionMNISTTrain` | Fashion-MNIST training + reservoir comparison (examples/fashion_mnist_train.cpp) |
-| `CoreSmokeTest` | Library smoke test (tests/CoreSmokeTest.cpp) |
+| `CoreSmokeTest` | HCNN SDK smoke test (tests/CoreSmokeTest.cpp) |
 
 ## Building from source
 
@@ -84,16 +82,16 @@ Run the smoke test:
 
 ```
 HypercubeCNN/
-  HCNNConv.h/cpp         Conv layer
+  HCNN.h/cpp              Top-level pipeline wrapper (canonical SDK API)
+  HCNNNetwork.h/cpp       Internal orchestrator (re-exported via HCNN.h)
+  HCNNConv.h/cpp          Conv layer
   HCNNPool.h/cpp          Antipodal pooling
   HCNNReadout.h/cpp       GAP + linear readout
-  HCNNNetwork.h/cpp       Pipeline orchestrator
   ThreadPool.h            Header-only fork-join pool
-  main.cpp                Quick diagnostic runner
-  dataloader/             MNIST dataset loader
+  main.cpp                Quick check runner
+  dataloader/             MNIST dataset loader (in-tree example utility)
   examples/               Training demos
-  diagnostics/            Gradient check, layer isolation
-  tests/                  Smoke test
+  tests/                  HCNN SDK smoke test
   docs/                   Architecture, SDK reference, concept
   cmake/                  Package config template
 ```
@@ -115,9 +113,7 @@ MNIST is used as a validation benchmark, not a leaderboard target -- the goal is
 
 **MNIST** (no spatial inductive bias): **98.10%** test accuracy with ~200K parameters, 4 conv+pool stages, SGD with momentum, cosine LR annealing. The network learns digit features from hypercube topology alone -- no 2D spatial locality is encoded.
 
-**Fashion-MNIST**: **80.88%** after 10 epochs on 20K samples (still climbing). A reservoir baseline (frozen random conv weights, only readout trained) plateaus at ~48% -- confirming the conv layers learn meaningful features from the hypercube topology rather than acting as a random projection.
-
-See [docs/mnist.md](docs/mnist.md) for full results, reservoir comparison, and analysis.
+See [docs/mnist.md](docs/mnist.md) for full results and analysis.
 
 ## License
 

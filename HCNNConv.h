@@ -186,10 +186,6 @@ public:
     /// Skip running-stats EMA updates in forward() (for batch-parallel mode).
     void set_skip_running_stats(bool skip) const { skip_running_stats_ = skip; }
 
-    /// Freeze weights: backward() still computes grad_in but skips weight updates.
-    void set_frozen(bool frozen) { frozen_ = frozen; }
-    bool is_frozen() const { return frozen_; }
-
     /// Configure the optimizer. Allocates second-moment buffers for Adam.
     void set_optimizer(OptimizerType type, float beta1 = 0.9f,
                        float beta2 = 0.999f, float eps = 1e-8f);
@@ -228,7 +224,6 @@ private:
     bool use_batchnorm;  ///< Whether batch normalization is applied between conv and activation.
     mutable bool training_ = true; ///< Training mode (true) or eval mode (false) for BN.
     mutable bool skip_running_stats_ = false; ///< When true, forward() skips EMA updates (batch-parallel mode).
-    bool frozen_ = false; ///< When true, backward()/apply_gradients() skip weight updates.
 
     std::vector<float> kernel;          ///< Kernel weights, layout [c_out * c_in * K].
     std::vector<float> bias;            ///< Per-output-channel bias, size c_out (empty if bias disabled).

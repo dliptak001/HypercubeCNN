@@ -10,27 +10,29 @@ set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
 
 # ——— Static library: core pipeline ———
+# HCNN.{h,cpp} is the canonical SDK front door.  The underlying layer
+# headers are re-exported transitively for power users who need direct
+# access to HCNNNetwork / HCNNConv / HCNNPool / HCNNReadout.
 add_library(HypercubeCNNCore STATIC
     HCNNConv.cpp
     HCNNPool.cpp
     HCNNNetwork.cpp
     HCNNReadout.cpp
-    dataloader/HCNNDataset.cpp
+    HCNN.cpp
 )
 
 set(PUBLIC_HEADERS
+    HCNN.h
+    HCNNNetwork.h
     HCNNConv.h
     HCNNPool.h
-    HCNNNetwork.h
     HCNNReadout.h
     ThreadPool.h
-    dataloader/HCNNDataset.h
 )
 
 target_include_directories(HypercubeCNNCore
     PUBLIC
         $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}>
-        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/dataloader>
         $<INSTALL_INTERFACE:include/HypercubeCNN>
 )
 
@@ -58,12 +60,12 @@ endif()
 # ——— Executables: only when building standalone (not via FetchContent) ———
 if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
     add_executable(HypercubeCNN main.cpp)
-    add_executable(MNISTTrain examples/mnist_train.cpp)
-    add_executable(FashionMNISTTrain examples/fashion_mnist_train.cpp)
-    add_executable(GradientCheck diagnostics/gradient_check.cpp)
-    add_executable(LayerIsolation diagnostics/layer_isolation.cpp)
+    # MNISTTrain pulls HCNNDataset directly as a private source -- the
+    # dataloader is no longer part of the SDK surface, just an in-tree
+    # example utility for this target.
+    add_executable(MNISTTrain examples/mnist_train.cpp dataloader/HCNNDataset.cpp)
     add_executable(CoreSmokeTest tests/CoreSmokeTest.cpp)
-    set(EXE_TARGETS HypercubeCNN MNISTTrain FashionMNISTTrain GradientCheck LayerIsolation CoreSmokeTest)
+    set(EXE_TARGETS HypercubeCNN MNISTTrain CoreSmokeTest)
 
     foreach(tgt IN LISTS EXE_TARGETS)
         target_link_libraries(${tgt} PRIVATE HypercubeCNNCore)

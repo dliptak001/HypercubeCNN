@@ -102,22 +102,24 @@ On a binary hypercube, the antipodal vertex is the most information-rich pairing
 
 This is identical to the GAP + FC readout used in modern spatial CNNs (ResNet, etc.).
 
-## Network assembly (`HCNNNetwork`)
+## Network assembly (`HCNN`)
 
-The network is built by stacking conv and pool layers sequentially:
+`HCNN` is the canonical SDK front door — a single class wrapping the entire pipeline. The network is built by stacking conv and pool layers sequentially:
 
 ```cpp
-HCNNNetwork net(10);              // DIM=10, N=1024
-net.add_conv(32);                 // 1→32 channels,   K=10 (DIM=10)
-net.add_pool(PoolType::MAX);      // DIM 10→9,        N 1024→512
-net.add_conv(64);                 // 32→64 channels,  K=9  (DIM=9)
-net.add_pool(PoolType::MAX);      // DIM 9→8,         N 512→256
-net.add_conv(128);                // 64→128 channels, K=8  (DIM=8)
-net.add_pool(PoolType::MAX);      // DIM 8→7,         N 256→128
-net.add_conv(128);                // 128→128 channels, K=7  (DIM=7)
-net.add_pool(PoolType::MAX);      // DIM 7→6,         N 128→64
-net.randomize_all_weights();      // Xavier/Glorot init
+HCNN net(10);                     // DIM=10, N=1024
+net.AddConv(32);                  // 1→32 channels,   K=10 (DIM=10)
+net.AddPool(PoolType::MAX);       // DIM 10→9,        N 1024→512
+net.AddConv(64);                  // 32→64 channels,  K=9  (DIM=9)
+net.AddPool(PoolType::MAX);       // DIM 9→8,         N 512→256
+net.AddConv(128);                 // 64→128 channels, K=8  (DIM=8)
+net.AddPool(PoolType::MAX);       // DIM 8→7,         N 256→128
+net.AddConv(128);                 // 128→128 channels, K=7  (DIM=7)
+net.AddPool(PoolType::MAX);       // DIM 7→6,         N 128→64
+net.RandomizeWeights();           // Xavier/He init
 ```
+
+Internally `HCNN` owns an `HCNNNetwork` and forwards every call. The layer headers (`HCNNNetwork`, `HCNNConv`, `HCNNPool`, `HCNNReadout`) are re-exported transitively for power users who need direct weight access, but ordinary consumers should never need to reach for them.
 
 Key properties:
 - DIM shrinks only at pool layers. Conv layers preserve dimensionality.
@@ -182,10 +184,11 @@ All core code is in the `HypercubeCNNCore` static library (pure C++23, no extern
 
 | Class | File | Role |
 |-------|------|------|
-| `HCNNConv` | HCNNConv.h/cpp | Single conv layer |
-| `HCNNPool` | HCNNPool.h/cpp | Antipodal pooling layer |
-| `HCNNReadout` | HCNNReadout.h/cpp | GAP + linear readout |
-| `HCNNNetwork` | HCNNNetwork.h/cpp | Pipeline orchestrator |
-| `ThreadPool` | ThreadPool.h | Header-only fork-join pool |
+| `HCNN` | HCNN.h/cpp | **Top-level SDK API** — wraps the entire pipeline |
+| `HCNNNetwork` | HCNNNetwork.h/cpp | Internal pipeline orchestrator (re-exported via `HCNN.h`) |
+| `HCNNConv` | HCNNConv.h/cpp | Single conv layer (re-exported) |
+| `HCNNPool` | HCNNPool.h/cpp | Antipodal pooling layer (re-exported) |
+| `HCNNReadout` | HCNNReadout.h/cpp | GAP + linear readout (re-exported) |
+| `ThreadPool` | ThreadPool.h | Header-only fork-join pool (re-exported) |
 
 Executables are thin wrappers that link the library. This separation is intentional — the library is the future C++ SDK surface.
