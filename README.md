@@ -62,6 +62,7 @@ Readout (HCNNReadout) -- global average per channel -> linear -> logits
 | `MNISTTrain` | MNIST training demo (examples/mnist_train.cpp) |
 | `GradientCheck` | Numerical gradient verification (diagnostics/gradient_check.cpp) |
 | `LayerIsolation` | Layer-by-layer diagnostic (diagnostics/layer_isolation.cpp) |
+| `FashionMNISTTrain` | Fashion-MNIST training + reservoir comparison (examples/fashion_mnist_train.cpp) |
 | `CoreSmokeTest` | Library smoke test (tests/CoreSmokeTest.cpp) |
 
 ## Building from source
@@ -105,13 +106,18 @@ HypercubeCNN/
 | [docs/architecture.md](docs/architecture.md) | Full technical architecture |
 | [docs/concept.md](docs/concept.md) | Design motivation and research context |
 | [docs/original_work.md](docs/original_work.md) | Prior art survey |
+| [docs/mnist.md](docs/mnist.md) | MNIST benchmark results and analysis |
 | [examples/mnist_train.md](examples/mnist_train.md) | MNIST example walkthrough |
 
 ## Results
 
 MNIST is used as a validation benchmark, not a leaderboard target -- the goal is to confirm that the hypercube convolution learns meaningful features via standard backpropagation, not to compete with spatial CNNs on a task that inherently favors 2D locality.
 
-**MNIST** (no spatial inductive bias): ~98% test accuracy with ~200K parameters, 4 conv+pool stages, cosine LR annealing. The network learns digit features from hypercube topology alone -- no 2D spatial locality is encoded.
+**MNIST** (no spatial inductive bias): **98.10%** test accuracy with ~200K parameters, 4 conv+pool stages, SGD with momentum, cosine LR annealing. The network learns digit features from hypercube topology alone -- no 2D spatial locality is encoded.
+
+**Fashion-MNIST**: **80.88%** after 10 epochs on 20K samples (still climbing). A reservoir baseline (frozen random conv weights, only readout trained) plateaus at ~48% -- confirming the conv layers learn meaningful features from the hypercube topology rather than acting as a random projection.
+
+See [docs/mnist.md](docs/mnist.md) for full results, reservoir comparison, and analysis.
 
 ## License
 

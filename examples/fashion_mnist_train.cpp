@@ -4,6 +4,7 @@
 #include <cmath>
 #include <filesystem>
 #include <iostream>
+#include <memory>
 #include <numbers>
 #include <thread>
 #include <vector>
@@ -27,7 +28,6 @@ static void evaluate(HCNNNetwork& net, const HCNNDataset& dataset,
     int K = net.get_num_classes();
     int count = static_cast<int>(dataset.size());
 
-    // Batch-parallel inference
     std::vector<const float*> inputs(count);
     std::vector<int> lengths(count);
     std::vector<int> targets(count);
@@ -59,18 +59,18 @@ static void evaluate(HCNNNetwork& net, const HCNNDataset& dataset,
 static void train_and_evaluate(const char* name, HCNNNetwork& net,
                                HCNNDataset& train_data,
                                const HCNNDataset& test_data,
-                               float lr = 0.01f, int batch_size = 32,
+                               int epochs, float lr = 0.01f,
+                               int batch_size = 32,
                                float weight_decay = 0.0f) {
     std::cout << "\n=== " << name << " (lr=" << lr
               << ", batch=" << batch_size
-              << ", wd=" << weight_decay << ") ===\n";
+              << ", wd=" << weight_decay
+              << ", epochs=" << epochs << ") ===\n";
     evaluate(net, test_data, "Initial test");
 
-    const int epochs = 40;
     const float momentum = 0.9f;
     const float lr_min = 1e-5f;
     for (int epoch = 0; epoch < epochs; ++epoch) {
-        // Cosine annealing: lr decays smoothly from lr to lr_min
         float progress = static_cast<float>(epoch) / static_cast<float>(epochs);
         float current_lr = lr_min + 0.5f * (lr - lr_min)
                            * (1.0f + std::cos(static_cast<float>(std::numbers::pi) * progress));
@@ -87,50 +87,48 @@ static void train_and_evaluate(const char* name, HCNNNetwork& net,
     }
 }
 
-int main() {
-    // Resolve data path relative to source file location
-    auto src_dir = std::filesystem::path(__FILE__).parent_path().parent_path();
-    auto data_dir = src_dir / "data";
+static std::unique_ptr<HCNNNetwork> make_network(unsigned seed, bool frozen) {
+    auto net = std::make_unique<HCNNNetwork>(10);
+    net->add_conv(32);
+    net->add_pool(PoolType::MAX);
+    net->add_conv(64);
+    net->add_pool(PoolType::MAX);
+    net->add_conv(128);
+    net->add_pool(PoolType::MAX);
+    net->add_conv(128);
+    net->add_pool(PoolType::MAX);
+    net->randomize_all_weights(0.0f, seed);
+    if (frozen) net->freeze_conv_layers();
+    return net;
+}
 
-    std::cout << "Loading MNIST from " << data_dir << "...\n";
+int main() {
+    auto src_dir = std::filesystem::path(__FILE__).parent_path().parent_path();
+    auto data_dir = src_dir / "data" / "fashion-mnist";
+
+    std::cout << "Loading Fashion-MNIST from " << data_dir << "...\n";
     auto train_data = load_mnist((data_dir / "train-images-idx3-ubyte").string(),
-                                 (data_dir / "train-labels-idx1-ubyte").string(), 60000);
+                                 (data_dir / "train-labels-idx1-ubyte").string(), 20000);
     auto test_data = load_mnist((data_dir / "t10k-images-idx3-ubyte").string(),
                                 (data_dir / "t10k-labels-idx1-ubyte").string(), 10000);
     std::cout << "Train: " << train_data.size() << " samples, "
               << "Test: " << test_data.size() << " samples\n";
-
     std::cout << "Threads: " << std::thread::hardware_concurrency() << "\n";
 
-    // --- Full training ---
+    constexpr unsigned seed = 123;
+
+    // Full training (all layers learn)
     {
-        HCNNNetwork net(10);
-        net.add_conv(32);         // 1->32 ch,   K=10 (DIM=10)
-        net.add_pool(PoolType::MAX);          // DIM 10->9,  N 1024->512
-        net.add_conv(64);         // 32->64 ch,  K=9  (DIM=9)
-        net.add_pool(PoolType::MAX);          // DIM 9->8,   N 512->256
-        net.add_conv(128);        // 64->128 ch, K=8  (DIM=8)
-        net.add_pool(PoolType::MAX);          // DIM 8->7,   N 256->128
-        net.add_conv(128);        // 128->128 ch, K=7  (DIM=7)
-        net.add_pool(PoolType::MAX);          // DIM 7->6,   N 128->64
-        net.randomize_all_weights();
-        train_and_evaluate("HCNN", net, train_data, test_data, 0.06f, 256, 1e-4f);
+        auto net = make_network(seed, false);
+        train_and_evaluate("Full training", *net, train_data, test_data,
+                           10, 0.06f, 256, 1e-4f);
     }
 
-    // --- Reservoir mode (frozen random conv, only readout trains) ---
+    // Reservoir mode (frozen random conv, only readout trains)
     {
-        HCNNNetwork net(10);
-        net.add_conv(32);
-        net.add_pool(PoolType::MAX);
-        net.add_conv(64);
-        net.add_pool(PoolType::MAX);
-        net.add_conv(128);
-        net.add_pool(PoolType::MAX);
-        net.add_conv(128);
-        net.add_pool(PoolType::MAX);
-        net.randomize_all_weights();
-        net.freeze_conv_layers();
-        train_and_evaluate("HCNN Reservoir (frozen conv)", net, train_data, test_data, 0.06f, 256, 1e-4f);
+        auto net = make_network(seed, true);
+        train_and_evaluate("Reservoir (frozen conv)", *net, train_data, test_data,
+                           5, 0.06f, 256, 1e-4f);
     }
 
     return 0;

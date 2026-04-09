@@ -34,13 +34,18 @@ public:
     /// Set training mode (true) or eval mode (false) for all layers with BN.
     void set_training(bool training) const;
 
+    /// Freeze/unfreeze all conv layer weights. Frozen layers still compute
+    /// grad_in for backprop but skip weight updates (reservoir mode).
+    void freeze_conv_layers(bool frozen = true);
+
+
     /// Configure the optimizer for all layers. Resets timestep.
     void set_optimizer(OptimizerType type, float beta1 = 0.9f,
                        float beta2 = 0.999f, float eps = 1e-8f);
 
     /// Initialize all weights.  scale > 0: uniform [-scale, +scale].
     /// scale <= 0 (default): Xavier/Glorot uniform per layer.
-    void randomize_all_weights(float scale = 0.0f);
+    void randomize_all_weights(float scale = 0.0f, unsigned seed = 42);
 
     void embed_input(const float* raw_input, int input_length,
                      float* first_layer_activations) const;

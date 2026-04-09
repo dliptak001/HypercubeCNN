@@ -36,6 +36,10 @@ void HCNNNetwork::set_training(bool training) const {
     for (const auto& layer : conv_layers) layer.set_training(training);
 }
 
+void HCNNNetwork::freeze_conv_layers(bool frozen) {
+    for (auto& layer : conv_layers) layer.set_frozen(frozen);
+}
+
 void HCNNNetwork::set_optimizer(OptimizerType type, float beta1,
                                 float beta2, float eps) {
     for (auto& layer : conv_layers) layer.set_optimizer(type, beta1, beta2, eps);
@@ -50,7 +54,7 @@ void HCNNNetwork::add_pool(PoolType type) {
     is_conv_layer.push_back(false);
 }
 
-void HCNNNetwork::randomize_all_weights(float scale) {
+void HCNNNetwork::randomize_all_weights(float scale, unsigned seed) {
     int final_channels = channel_counts.back();
     int final_N = 1 << current_dim;
 
@@ -65,7 +69,7 @@ void HCNNNetwork::randomize_all_weights(float scale) {
         readout_N = final_N;
     }
 
-    std::mt19937 rng(42);
+    std::mt19937 rng(seed);
     for (auto& layer : conv_layers) {
         layer.randomize_weights(scale, rng);
     }
