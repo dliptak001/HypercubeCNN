@@ -4,7 +4,7 @@ Survey conducted 2026-04-04. Searched Google Scholar, arXiv, and general web for
 
 ## Conclusion
 
-No prior work combines all elements of this architecture: data embedded onto 2^DIM hypercube vertices, convolution with K=DIM nearest-neighbor XOR masks (one learned weight per Hamming-distance-1 neighbor), antipodal pooling by dimension reduction, and global average readout. The mathematical ingredients exist separately in the literature, but nobody has assembled them into a CNN architecture.
+No prior work combines all elements of this architecture: data embedded onto 2^DIM hypercube vertices, convolution with K=DIM nearest-neighbor XOR masks (one learned weight per Hamming-distance-1 neighbor), antipodal pooling by dimension reduction, and a GAP-or-FLATTEN linear readout to class logits. The mathematical ingredients exist separately in the literature, but nobody has assembled them into a CNN architecture trained end-to-end with backpropagation.
 
 ---
 
@@ -99,9 +99,10 @@ No prior work combines all elements of this architecture: data embedded onto 2^D
 
 The specific combination of the following elements appears in no prior work:
 
-1. **Embedding data onto Boolean hypercube vertices** (input mapped to 2^DIM nodes)
-2. **Convolution with K=DIM nearest-neighbor XOR masks** -- each mask is a single-bit flip (Hamming distance 1), one learned weight per neighbor direction
-3. **Bitwise geometry via XOR** -- neighbor lookup is a single XOR per mask, no adjacency lists or spatial indexing
-4. **Multi-channel convolution** with independent kernels per output channel
-5. **Antipodal pooling by dimension reduction** (pairing each vertex with its bitwise complement, preserving hypercube geometry)
-6. **Global average readout** per channel to class logits
+1. **Embedding data onto Boolean hypercube vertices** (input mapped to 2^DIM nodes via Direct Linear Assignment)
+2. **Convolution with K=DIM nearest-neighbor XOR masks** -- each mask is a single-bit flip (Hamming distance 1), one learned weight per neighbor direction, shared across all vertices
+3. **Bitwise geometry via XOR** -- neighbor lookup is a single XOR per mask, no adjacency lists, no spatial indexing, no padding, no border handling
+4. **Multi-channel convolution** with independent kernels per output channel, optional per-channel batch normalization, and configurable activation (NONE / ReLU / LeakyReLU)
+5. **Antipodal pooling by dimension reduction** (pairing each vertex with its bitwise complement, preserving exact hypercube geometry; MAX or AVG)
+6. **Two readout strategies**: global average pooling per channel (translation-invariant) or full-flatten (position-sensitive), each followed by a linear layer to class logits
+7. **End-to-end backpropagation** with SGD-momentum or Adam (decoupled weight decay), per-network configurable

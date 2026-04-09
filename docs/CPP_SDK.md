@@ -185,11 +185,11 @@ void RandomizeWeights(float scale = 0.0f, unsigned seed = 42);
 
 | Method | Description |
 |--------|-------------|
-| `AddConv` | Append a convolutional layer with `c_out` output channels. K = current DIM (one weight per Hamming-distance-1 neighbor). Optional batch normalization. |
+| `AddConv` | Append a convolutional layer with `c_out` output channels. K = current DIM (one weight per Hamming-distance-1 neighbor). Optional per-channel bias and batch normalization. Activation is `RELU` by default; pass `Activation::LEAKY_RELU` for LeakyReLU (slope 0.01) or `Activation::NONE` for a linear layer. |
 | `AddPool` | Append an antipodal pooling layer. Reduces DIM by 1. |
-| `RandomizeWeights` | Initialize all weights. `scale > 0`: uniform [-scale, +scale]. `scale <= 0` (default): Xavier/He init per layer based on activation. |
+| `RandomizeWeights` | Initialize all weights. `scale > 0`: uniform `[-scale, +scale]` (deterministic, primarily for testing). `scale <= 0` (default): per-layer auto-init — He/Kaiming uniform for ReLU/LeakyReLU layers with `c_in > 1`, Xavier/Glorot uniform otherwise. Resets biases to zero, optimizer state to zero, and BN parameters to (γ=1, β=0). |
 
-Call `AddConv` and `AddPool` to build the architecture, then `RandomizeWeights` before training.
+Call `AddConv` and `AddPool` to build the architecture, then `RandomizeWeights` before training. Optional: `SetOptimizer(OptimizerType::ADAM, ...)` to switch from the default SGD-with-momentum to Adam (with decoupled weight decay).
 
 #### Mode / optimizer
 
@@ -212,9 +212,9 @@ void ForwardBatch(const float* const* raw_inputs, const int* input_lengths,
 
 | Method | Description |
 |--------|-------------|
-| `Embed` | Map a flat scalar array onto N = 2^DIM hypercube vertices via Direct Linear Assignment. Values must be in [-1.0, 1.0]. `embedded_out` must hold `GetStartN()` floats. Caller-owned buffer (designed for reuse). |
-| `Forward` | Run all conv/pool/readout layers from already-embedded activations. Input: `GetStartN()` floats. Output: `GetNumClasses()` floats. No allocation. |
-| `ForwardBatch` | Embed + forward for multiple samples in parallel using the internal thread pool. `logits_out` must hold `batch_size * GetNumClasses()` floats. Per-thread buffers are lazily allocated and reused. |
+| `Embed` | Map a flat scalar array onto N = 2^DIM hypercube vertices via Direct Linear Assignment. Values must be in [-1.0, 1.0]. `embedded_out` must hold `GetStartN()` floats. Caller-owned buffer (designed for reuse). Throws `std::runtime_error` if `input_length` exceeds capacity (`input_channels * GetStartN()`). |
+| `Forward` | Run all conv/pool/readout layers from already-embedded activations. Input: `GetStartN()` floats. Output: `GetNumClasses()` floats. Steady-state allocation-free (uses persistent ping-pong scratch on the network). Internally forces BN eval mode for the duration of the call and restores the prior per-layer training flag on exit (RAII-safe). |
+| `ForwardBatch` | Embed + forward for multiple samples in parallel using the internal thread pool. `logits_out` must hold `batch_size * GetNumClasses()` floats. Per-thread buffers are lazily allocated and reused. Same eval-mode RAII semantics as `Forward`. Throws `std::invalid_argument` if `batch_size <= 0`. |
 
 For single-sample inference, allocate two scratch vectors once and reuse them across calls — see the [Minimal example](#minimal-example).
 
@@ -242,11 +242,13 @@ void TrainEpoch(const float* const* inputs, const int* input_lengths,
 
 | Method | Description |
 |--------|-------------|
-| `TrainStep` | Single-sample SGD step: forward + backward + weight update. |
-| `TrainBatch` | Mini-batch parallel SGD step. Forward+backward run in parallel for each sample, gradients are reduced (averaged), then a single weight update is applied. Per-thread buffers are lazily allocated and reused. |
-| `TrainEpoch` | Iterate `sample_count` samples and dispatch `TrainBatch` in chunks of `batch_size`. With `shuffle_seed = 0`, samples are processed in input order. With nonzero `shuffle_seed`, the epoch is permuted deterministically (pass a different seed each epoch — e.g. epoch index — for a fresh reproducible shuffle). HCNN owns persistent gather buffers for the shuffle path; after the first shuffled epoch no further allocations occur unless `sample_count` grows. |
+| `TrainStep` | Single-sample step: forward + backward + weight update via the configured optimizer. Throws `std::runtime_error` if `target_class` is out of range. |
+| `TrainBatch` | Mini-batch parallel step. Forward+backward run in parallel for each sample, gradients are reduced (averaged), then a single weight update is applied via the configured optimizer. Per-thread buffers are lazily allocated and reused. Throws `std::invalid_argument` if `batch_size <= 0`, or `std::runtime_error` if any target is out of range. |
+| `TrainEpoch` | Iterate `sample_count` samples and dispatch `TrainBatch` in chunks of `batch_size` (the final chunk may be smaller). With `shuffle_seed = 0`, samples are processed in input order. With nonzero `shuffle_seed`, the epoch is permuted deterministically (pass a different seed each epoch — e.g. epoch index + 1 — for a fresh reproducible shuffle). HCNN owns persistent gather buffers for the shuffle path; after the first shuffled epoch no further allocations occur unless `sample_count` grows. Throws `std::invalid_argument` if `batch_size <= 0` or `sample_count < 0`. |
 
 `class_weights` (optional, length `GetNumClasses()`) scales the per-class loss; pass `nullptr` for uniform weighting.
+
+The optimizer (`SGD` or `ADAM`) and the per-layer batch-norm flag (set when calling `AddConv`) are honored automatically by all three training methods.
 
 #### Sizing accessors
 
@@ -259,13 +261,14 @@ void TrainEpoch(const float* const* inputs, const int* input_lengths,
 
 ### Internals (re-exported)
 
-`HCNN.h` transitively re-exports `HCNNNetwork.h`, which in turn re-exports `HCNNConv.h`, `HCNNPool.h`, `HCNNReadout.h`, and `ThreadPool.h`. These remain reachable for power users who need:
+`HCNN.h` transitively re-exports `HCNNNetwork.h`, which in turn re-exports `HCNNConv.h`, `HCNNPool.h`, `HCNNReadout.h`, and `ThreadPool.h`. All of these symbols live in `namespace hcnn`. They remain reachable for power users who need:
 
-- Direct kernel/bias inspection (`HCNNConv::get_kernel_data()`, etc.)
-- Custom gradient pipelines (`HCNNConv::compute_gradients` / `apply_gradients`)
+- Direct kernel/bias inspection (`hcnn::HCNNConv::get_kernel_data()`, etc.)
+- Custom gradient pipelines (`hcnn::HCNNConv::compute_gradients` / `apply_gradients`)
 - Layer-by-layer diagnostics (e.g. gradient checking)
+- A custom training loop that drives `hcnn::HCNNNetwork` directly instead of going through `HCNN`
 
-Typical SDK consumers should not need to touch them. The full inventory of these classes is defined in their respective headers and is not duplicated here — read the header you need.
+Typical SDK consumers should not need to touch them. The full inventory of these classes is documented in their respective headers and is not duplicated here — read the header you need.
 
 ## Memory layout
 
@@ -281,13 +284,13 @@ Input values must be in [-1.0, 1.0]. The embedding maps the first min(input_leng
 
 ## Threading
 
-`HCNNNetwork` owns a fork-join thread pool (auto-sized or caller-specified). Three threading strategies are used, never nested:
+`HCNNNetwork` owns a fork-join `ThreadPool` (auto-sized to `hardware_concurrency() - 1` workers, or caller-specified via the `num_threads` constructor parameter). Three threading strategies are used, never nested:
 
-- **Batch training** (`train_batch`): samples run forward+backward in parallel, gradients reduced and applied.
-- **Batch inference** (`forward_batch`): samples run forward in parallel.
-- **Per-layer vertex threading**: parallelizes the vertex loop within each conv layer. Only activates at DIM >= 12. Automatically disabled during batch dispatch.
+- **Batch training** (`TrainBatch`, `TrainEpoch`): samples run forward+backward in parallel, with each thread accumulating gradients into thread-local buffers. After all samples complete the gradients are reduced (summed), averaged, and applied in a single weight update.
+- **Batch inference** (`ForwardBatch`): samples run forward in parallel using lazily-allocated per-thread inference buffers.
+- **Per-layer vertex threading**: parallelizes the inner vertex loop within each conv layer. Only activates at `DIM >= 12` (below that, fork-join overhead exceeds the per-vertex work). Automatically disabled during batch dispatch via an RAII guard, preventing nested `ForEach` on the non-reentrant pool.
 
-The thread pool is internal and not part of the public API.
+The thread pool is internal and not part of the public API surface, though it is reachable as `hcnn::ThreadPool` for power users.
 
 ## Dependencies
 

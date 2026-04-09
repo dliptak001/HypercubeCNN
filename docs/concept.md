@@ -3,6 +3,8 @@
 **Author:** David Liptak
 **Date:** April 2026 (revised)
 
+> See [architecture.md](architecture.md) for the technical implementation, [CPP_SDK.md](CPP_SDK.md) for the C++ API, and [mnist.md](mnist.md) for benchmark results.
+
 ## What is HypercubeCNN?
 
 HypercubeCNN is a convolutional neural network that operates on binary hypercubes instead of spatial grids. The substrate is a DIM-dimensional hypercube with N = 2^DIM vertices. Each vertex is a DIM-bit integer; neighbors are reached by flipping single bits (XOR). All geometry is bitwise — no adjacency lists, no spatial coordinates, no padding.
@@ -65,11 +67,17 @@ The research direction: native hypercube data is where the architecture has a st
 
 **MNIST** (no spatial inductive bias):
 - 60K train / 10K test, 4 conv+pool stages, ~200K parameters
-- ~98% test accuracy with Xavier init, cosine LR, L2 weight decay
+- **98.10%** test accuracy with Xavier/He init, SGD-momentum, cosine LR, L2 weight decay
 - NN-only kernel (K=DIM) outperforms the earlier shell-mask design by +1.8% accuracy and 1.58x speedup
+
+See [mnist.md](mnist.md) for the full benchmark.
 
 ## Implementation
 
-Pure C++23 with zero external dependencies. All core classes live in the `HypercubeCNNCore` static library. Threading uses a custom fork-join ThreadPool (no OpenMP). The library is designed as a future C++ SDK surface — executables are thin wrappers that link against it.
+Pure C++23 with zero external dependencies, distributed as the `HypercubeCNNCore` static library. All public symbols live in `namespace hcnn`. The canonical SDK front door is the `hcnn::HCNN` class — a single PIMPL-style wrapper around the entire pipeline (input embedding → conv/pool stack → readout) with PascalCase methods. Power users who need direct weight access (serialization, gradient checking, custom training loops) can reach the underlying layer classes (`HCNNConv`, `HCNNPool`, `HCNNReadout`, `HCNNNetwork`) through transitive re-exports.
+
+Threading uses a custom fork-join `ThreadPool` (no OpenMP, no GPU, no external runtime). Three threading strategies coexist but never nest: per-sample batch parallelism for training and inference, plus per-vertex parallelism inside conv layers when DIM is large enough to make fork-join overhead worthwhile.
+
+The optimizer is configurable per-network: SGD-with-momentum (default) or Adam with decoupled weight decay. Conv layers support optional batch normalization, ReLU / LeakyReLU / linear activations, and per-channel learnable bias. The readout is either GAP (translation-invariant) or FLATTEN (position-sensitive).
 
 See [architecture.md](architecture.md) for full technical details.

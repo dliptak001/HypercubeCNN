@@ -6,6 +6,8 @@ HypercubeCNN performs convolutions on binary hypercubes instead of spatial grids
 
 The key insight: on a binary hypercube, every vertex has exactly DIM nearest neighbors at Hamming distance 1 (single-bit flips). Our convolution kernel learns one weight per neighbor direction (per bit position), shared across all vertices — the hypercube analogue of a 3x3 spatial kernel shared across all pixel positions.
 
+All public symbols live in `namespace hcnn`. Code samples in this document drop the prefix for brevity (`using namespace hcnn;` is implied).
+
 ## Data representation
 
 ### Vertices
@@ -60,13 +62,22 @@ The binary hypercube is vertex-transitive: every vertex looks the same from ever
 
 Each bit-flip direction k is a distinct geometric axis of the hypercube. The kernel learns how much each axis matters for each input→output channel pair. After multiple layers, information from vertices at Hamming distance 2, 3, ... arrives through composition of single-bit-flip convolutions (like how stacked 3x3 convolutions see larger receptive fields).
 
-### Activation and bias
+### Activation, bias, batch normalization
 
 After the weighted sum, each output vertex optionally gets:
-1. A per-channel bias term (one scalar per output channel, added to all vertices)
-2. ReLU activation: `out = max(0, pre_activation)`
+1. A per-channel bias term (one scalar per output channel, added to all vertices).
+2. Batch normalization (optional, per-layer): per-channel mean/variance computed across all N vertices of the current sample, with learnable scale (γ) and shift (β) parameters and an EMA of running stats for inference.
+3. Activation function: `Activation::NONE`, `Activation::RELU`, or `Activation::LEAKY_RELU` (slope 0.01).
 
-Both are standard and identical to spatial CNNs.
+All three are configured per-layer at construction time:
+
+```cpp
+net.AddConv(c_out, Activation::RELU,
+            /*use_bias=*/true,
+            /*use_batchnorm=*/false);
+```
+
+The forward path has two compiled variants — fused accumulate+activate (no BN) and a split accumulate → BN → activate (with BN) — selected by the per-layer flag.
 
 ### Cache tiling
 
@@ -97,35 +108,39 @@ On a binary hypercube, the antipodal vertex is the most information-rich pairing
 
 ## Readout (`HCNNReadout`)
 
-1. **Global average pooling**: average each channel across all remaining vertices → one scalar per channel.
-2. **Linear layer**: `[c_final] → [num_classes]` with bias. Produces raw logits.
+Selected at construction time via `ReadoutType`:
 
-This is identical to the GAP + FC readout used in modern spatial CNNs (ResNet, etc.).
+- **`ReadoutType::GAP`** (default): global average pooling per channel → one scalar per channel → linear layer `[c_final] → [num_classes]` with bias. Translation-invariant across hypercube vertices, identical to the GAP + FC readout used in modern spatial CNNs (ResNet, etc.).
+- **`ReadoutType::FLATTEN`**: every (channel, vertex) activation is treated as an independent feature → linear layer `[c_final * N_final] → [num_classes]` with bias. Position-sensitive — the readout learns per-vertex weights. Larger parameter count, useful when vertex identity carries information.
+
+Internally `HCNNReadout` is a single class; the FLATTEN mode is implemented by sizing the input as `c_final * N_final` and passing `N = 1` to the channel-wise average step (so the average is a no-op and the linear layer sees every activation directly).
 
 ## Network assembly (`HCNN`)
 
 `HCNN` is the canonical SDK front door — a single class wrapping the entire pipeline. The network is built by stacking conv and pool layers sequentially:
 
 ```cpp
-HCNN net(10);                     // DIM=10, N=1024
-net.AddConv(32);                  // 1→32 channels,   K=10 (DIM=10)
-net.AddPool(PoolType::MAX);       // DIM 10→9,        N 1024→512
-net.AddConv(64);                  // 32→64 channels,  K=9  (DIM=9)
-net.AddPool(PoolType::MAX);       // DIM 9→8,         N 512→256
-net.AddConv(128);                 // 64→128 channels, K=8  (DIM=8)
-net.AddPool(PoolType::MAX);       // DIM 8→7,         N 256→128
-net.AddConv(128);                 // 128→128 channels, K=7  (DIM=7)
-net.AddPool(PoolType::MAX);       // DIM 7→6,         N 128→64
-net.RandomizeWeights();           // Xavier/He init
+hcnn::HCNN net(10);                       // DIM=10, N=1024
+net.AddConv(32);                          // 1→32 channels,   K=10 (DIM=10)
+net.AddPool(hcnn::PoolType::MAX);         // DIM 10→9,        N 1024→512
+net.AddConv(64);                          // 32→64 channels,  K=9  (DIM=9)
+net.AddPool(hcnn::PoolType::MAX);         // DIM 9→8,         N 512→256
+net.AddConv(128);                         // 64→128 channels, K=8  (DIM=8)
+net.AddPool(hcnn::PoolType::MAX);         // DIM 8→7,         N 256→128
+net.AddConv(128);                         // 128→128 channels, K=7  (DIM=7)
+net.AddPool(hcnn::PoolType::MAX);         // DIM 7→6,         N 128→64
+net.RandomizeWeights();                   // Xavier/He init
 ```
 
-Internally `HCNN` owns an `HCNNNetwork` and forwards every call. The layer headers (`HCNNNetwork`, `HCNNConv`, `HCNNPool`, `HCNNReadout`) are re-exported transitively for power users who need direct weight access, but ordinary consumers should never need to reach for them.
+Internally `HCNN` owns an `HCNNNetwork` and forwards every call through a thin PIMPL-style wrapper. The layer headers (`HCNNNetwork`, `HCNNConv`, `HCNNPool`, `HCNNReadout`, `ThreadPool`) are re-exported transitively via `HCNN.h` for power users who need direct weight access, but ordinary consumers should never need to reach for them.
 
 Key properties:
 - DIM shrinks only at pool layers. Conv layers preserve dimensionality.
 - K = DIM at each conv layer, so deeper layers have fewer kernel directions (but operate on more abstract features).
 - Channel count typically increases with depth (same as spatial CNNs).
-- The readout is automatically configured from the final channel count.
+- The readout is automatically configured from the final channel count and the chosen `ReadoutType`.
+
+`HCNN` is non-copyable and non-movable (it owns a `HCNNNetwork`, which owns a `ThreadPool` with live worker threads and persistent per-thread scratch). Wrap it in `std::unique_ptr<HCNN>` if you need transfer-of-ownership semantics.
 
 ## Input embedding
 
@@ -135,19 +150,41 @@ For MNIST (784 pixels → 1024 vertices): pixels land on vertices 0-783, vertice
 
 ## Weight initialization
 
-Xavier/Glorot uniform (default): `scale = sqrt(6 / (fan_in + fan_out))` where `fan_in = c_in * K` and `fan_out = c_out * K`. Computed per-layer since K = DIM varies after pooling.
+`RandomizeWeights(scale, seed)` selects per layer based on `scale` and the layer's activation:
+
+- `scale > 0` — uniform `[-scale, +scale]` (deterministic, primarily for testing).
+- `scale <= 0` (default) — auto:
+  - **He/Kaiming uniform** for ReLU/LeakyReLU layers with `c_in > 1`: `s = sqrt(6 / fan_in)`. Accounts for the variance-halving effect of ReLU.
+  - **Xavier/Glorot uniform** otherwise (linear activation, or first layer with `c_in = 1` whose input is raw data, not post-ReLU activations): `s = sqrt(6 / (fan_in + fan_out))`.
+  - `fan_in = c_in * K`, `fan_out = c_out * K`. Computed per-layer since K = DIM varies after pooling.
+
+Biases are reset to zero. Optimizer state buffers (SGD velocity / Adam first and second moments) are cleared. Batch-norm parameters are reset to `γ = 1, β = 0` and running stats to `mean = 0, var = 1`.
 
 ## Training
 
 ### Optimizer
 
-SGD with momentum (0.9) and optional L2 weight decay. Decay is applied to kernel and readout weights only (not biases). The update rule:
+Two optimizers are available; choose per-network with `HCNN::SetOptimizer`:
 
-```
-g = gradient + weight_decay * weight
-velocity = momentum * velocity + g
-weight -= learning_rate * velocity
-```
+- **`OptimizerType::SGD`** (default) — SGD with momentum and optional L2 weight decay. Decay is applied to kernel and readout weights only (not biases). The update rule:
+
+  ```
+  g = gradient + weight_decay * weight
+  velocity = momentum * velocity + g
+  weight -= learning_rate * velocity
+  ```
+
+- **`OptimizerType::ADAM`** — Adam with decoupled weight decay (AdamW). Per-parameter first and second moment estimates with bias correction:
+
+  ```
+  m  = beta1 * m + (1 - beta1) * g
+  v  = beta2 * v + (1 - beta2) * g * g
+  m_hat = m / (1 - beta1^t)
+  v_hat = v / (1 - beta2^t)
+  weight -= lr * (m_hat / (sqrt(v_hat) + eps) + weight_decay * weight)
+  ```
+
+  The global timestep `t` is owned by `HCNNNetwork` and incremented per training call (`train_step` or `train_batch`); `SetOptimizer` resets it to zero.
 
 ### Learning rate schedule
 
@@ -161,9 +198,19 @@ No warmup, no restarts. Smooth decay avoids the instability of step decay.
 
 ### Mini-batch parallelism
 
-`train_batch` processes B samples in parallel across threads. Each thread runs full forward + backward, accumulating gradients into thread-local buffers. After all samples complete, gradients are reduced (summed), averaged, and applied in a single weight update.
+`train_batch` processes B samples in parallel across threads. Each thread runs full forward + backward, writing per-sample gradients into thread-local accumulators. After all samples complete, the accumulators are reduced (summed), averaged, and applied in a single weight update.
 
-Per-layer vertex threading is automatically disabled during batch parallelism to prevent nested reentrancy on the non-reentrant ThreadPool.
+Per-layer vertex threading is automatically disabled during batch parallelism via `LayerThreadGuard` (RAII), preventing nested `ForEach` on the non-reentrant ThreadPool. Per-sample batch-norm running-stats EMA updates are suppressed during the parallel forward pass via `BNStatsGuard` (RAII) to avoid a data race on `bn_running_mean` / `bn_running_var`; the running stats are recomputed from the per-thread accumulators and applied once after the reduction, race-free.
+
+All per-thread training buffers (forward caches, gradient accumulators, work buffers) are allocated lazily on the first `train_batch` call (`prepare_batch_buffers`) and reused across all subsequent calls — the steady-state hot path is allocation-free.
+
+### Inference
+
+`HCNN::Forward(embedded, logits)` runs the conv/pool/readout stack on a single pre-embedded sample. It is observably const w.r.t. batch-norm training state: an `EvalModeGuard` (RAII) saves the prior per-layer training flag, forces eval mode (so BN uses its running stats and never updates them), and restores the prior flag on scope exit — even on exception. This means a `Forward` call mid-training does not silently disable BN running-stats updates for subsequent training calls.
+
+The single-sample forward path uses persistent ping-pong scratch (`fwd_buf1_` / `fwd_buf2_`) sized to the largest layer in the network and grown on demand. After the first call no further allocation occurs.
+
+`HCNN::ForwardBatch(inputs, lengths, batch_size, logits_out)` parallelizes inference across samples using lazily-allocated per-thread buffers (`prepare_inference_buffers`). It uses the same `EvalModeGuard` semantics, plus the `LayerThreadGuard` to disable per-layer vertex threading during the parallel dispatch. Throws `std::invalid_argument` if `batch_size <= 0`.
 
 ### Epoch dispatch and shuffling
 
@@ -189,15 +236,17 @@ For the current MNIST configuration (DIM=10, 4 stages):
 
 ## Implementation
 
-All core code is in the `HypercubeCNNCore` static library (pure C++23, no external dependencies). The library exports:
+All core code is in the `HypercubeCNNCore` static library (pure C++23, no external dependencies). All public symbols live in `namespace hcnn`. The library exports:
 
 | Class | File | Role |
 |-------|------|------|
-| `HCNN` | HCNN.h/cpp | **Top-level SDK API** — wraps the entire pipeline |
-| `HCNNNetwork` | HCNNNetwork.h/cpp | Internal pipeline orchestrator (re-exported via `HCNN.h`) |
-| `HCNNConv` | HCNNConv.h/cpp | Single conv layer (re-exported) |
-| `HCNNPool` | HCNNPool.h/cpp | Antipodal pooling layer (re-exported) |
-| `HCNNReadout` | HCNNReadout.h/cpp | GAP + linear readout (re-exported) |
-| `ThreadPool` | ThreadPool.h | Header-only fork-join pool (re-exported) |
+| `hcnn::HCNN` | HCNN.h/cpp | **Top-level SDK API** — wraps the entire pipeline |
+| `hcnn::HCNNNetwork` | HCNNNetwork.h/cpp | Internal pipeline orchestrator (re-exported via `HCNN.h`) |
+| `hcnn::HCNNConv` | HCNNConv.h/cpp | Single conv layer (re-exported) |
+| `hcnn::HCNNPool` | HCNNPool.h/cpp | Antipodal pooling layer (re-exported) |
+| `hcnn::HCNNReadout` | HCNNReadout.h/cpp | GAP / FLATTEN linear readout (re-exported) |
+| `hcnn::ThreadPool` | ThreadPool.h | Header-only fork-join pool (re-exported) |
 
-Executables are thin wrappers that link the library. This separation is intentional — the library is the future C++ SDK surface.
+Public enums (all in `namespace hcnn`): `PoolType` (HCNNPool.h), `ReadoutType` (HCNNNetwork.h), `Activation` (HCNNConv.h), `OptimizerType` (HCNNConv.h).
+
+Executables are thin wrappers that link the library. This separation is intentional — the library is the C++ SDK surface.

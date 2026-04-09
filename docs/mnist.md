@@ -6,7 +6,7 @@ MNIST is not the target domain for HypercubeCNN — the architecture is designed
 
 The MNIST results serve as a **baseline** to validate the training pipeline and establish that the architecture can learn non-trivial features despite operating without spatial inductive bias.
 
-## Configuration
+## Configuration (full-dataset benchmark runs below)
 
 | Parameter | Value |
 |-----------|-------|
@@ -25,6 +25,8 @@ The MNIST results serve as a **baseline** to validate the training pipeline and 
 | Batch size | 32 or 256 (see runs below) |
 | Epochs | 20–40 |
 | Threads | 32 |
+
+The shipped `MNISTTrain` example (`examples/mnist_train.cpp`) loads a 20K / 2K subset by default for fast iteration. Bump the `load_mnist` calls to `60000` / `10000` to reproduce the runs below.
 
 ## Results
 
@@ -131,11 +133,13 @@ Key changes that mattered:
 ### What would push higher
 
 Without spatial inductive bias, reaching 99%+ likely requires:
-- Batch normalization (architecture-agnostic regularization)
-- Dropout (prevent co-adaptation of features)
-- Data augmentation (elastic deformations, pixel jitter)
+- **Batch normalization** — already supported (set `use_batchnorm=true` on `AddConv`); not yet swept on this benchmark.
+- **Adam optimizer** — already supported (`SetOptimizer(OptimizerType::ADAM)`); the runs above use SGD-with-momentum.
+- **LeakyReLU** — already supported (`Activation::LEAKY_RELU`); avoids dead-neuron pathologies on small networks.
+- **Dropout** — not yet implemented; would prevent co-adaptation of features.
+- **Data augmentation** (elastic deformations, pixel jitter) — out of scope for the core library; would belong in the dataloader.
 
-These are standard techniques that don't introduce spatial assumptions — they'd prove the bottleneck is regularization, not representation capacity.
+Of these, BN + Adam + LeakyReLU are the cheapest experiments — they're configurable per-network without touching the core library. The runs above predate those features; a fresh sweep would likely close some of the gap to spatial CNNs.
 
 ## Significance
 

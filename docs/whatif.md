@@ -1,3 +1,8 @@
+# What if: HypercubeRC → HypercubeCNN
+
+> Brainstorming note. Not a design doc. Captures a research direction worth exploring once
+> the standalone benchmarks on native hypercube data (molecular fingerprints, etc.) are in.
+
 so what would happen if I used my HypercubeCNN as the readout layer for C:\CLion\HypercubeRC?  HypercubeRC performs a high dimensional
 nonlinear projection of temporal/sequential data, and that projection is fed into HypercubeCNN, which is the same but a spatial
 high-dimensional nonlinear projection followed by a linear readout.
