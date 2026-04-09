@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 David Liptak
+
 #pragma once
 
 #include "HCNNNetwork.h"   // re-exports HCNNConv, HCNNPool, HCNNReadout, all enums

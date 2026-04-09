@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 David Liptak
+//
 // Smoke test for the HCNN top-level SDK API.
 // Everything goes through HCNN -- no direct use of HCNNNetwork or layer
 // classes.  This file is the canonical regression check that the SDK front

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 David Liptak
+
 #include "HCNN.h"
 #include <cmath>
 #include <iostream>

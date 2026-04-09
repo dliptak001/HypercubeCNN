@@ -1,5 +1,10 @@
 # HypercubeCNN
 
+[![CI](https://github.com/dliptak001/HypercubeCNN/actions/workflows/ci.yml/badge.svg)](https://github.com/dliptak001/HypercubeCNN/actions/workflows/ci.yml)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![C++23](https://img.shields.io/badge/C%2B%2B-23-blue.svg)]()
+[![CMake](https://img.shields.io/badge/CMake-3.21+-blue.svg)]()
+
 A convolutional neural network that operates on Boolean hypercubes instead of spatial grids -- the same XOR-addressed topology used by [HypercubeRC](https://github.com/dliptak001/HypercubeRC) and [HypercubeHopfield](https://github.com/dliptak001/HypercubeHopfield), now with learned convolution kernels and end-to-end backpropagation.
 
 ## What is HypercubeCNN?
@@ -17,6 +22,8 @@ Pooling pairs each vertex with its bitwise complement -- the maximally distant p
 ```cpp
 #include "HCNN.h"
 
+using namespace hcnn;
+
 HCNN net(10);                       // DIM=10, N=1024
 net.AddConv(32);                    // 1->32 channels, K=10
 net.AddPool(PoolType::MAX);         // DIM 10->9, N 1024->512
@@ -31,7 +38,7 @@ net.Embed(input_data, input_len, embedded.data());
 net.Forward(embedded.data(), logits.data());
 ```
 
-`HCNN` is the canonical SDK front door — a single class that wraps the entire pipeline (embed → conv/pool → readout). Available as a CMake static library via FetchContent or find_package. See [docs/CPP_SDK.md](docs/CPP_SDK.md) for full API reference and integration guide.
+`hcnn::HCNN` is the canonical SDK front door — a single class that wraps the entire pipeline (embed → conv/pool → readout). All public symbols live in `namespace hcnn`. Available as a CMake static library via `FetchContent` or `find_package`. See [docs/CPP_SDK.md](docs/CPP_SDK.md) for full API reference and integration guide.
 
 ## Pipeline
 

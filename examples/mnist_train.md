@@ -45,9 +45,10 @@ Total parameters: ~200K.
 | Learning rate | 0.06 | Initial LR, decays via cosine annealing |
 | LR schedule | Cosine annealing to 1e-5 | Smooth decay, no warmup or restarts |
 | Momentum | 0.9 | |
-| Batch size | 256 | Parallel across threads via train_batch |
+| Batch size | 256 | Parallel across threads via `TrainBatch` (dispatched by `TrainEpoch`) |
 | Weight decay | 1e-4 | Applied to kernels and readout weights (not biases) |
 | Epochs | 40 | |
+| Shuffle | per-epoch | `TrainEpoch(..., shuffle_seed = epoch + 1)` |
 
 ## Data loading
 
@@ -55,14 +56,39 @@ MNIST data is loaded from IDX binary files using `load_mnist()` from `dataloader
 
 ```cpp
 auto train_data = load_mnist("data/train-images-idx3-ubyte",
-                             "data/train-labels-idx1-ubyte", 60000);
-auto test_data = load_mnist("data/t10k-images-idx3-ubyte",
-                            "data/t10k-labels-idx1-ubyte", 10000);
+                             "data/train-labels-idx1-ubyte", 20000);
+auto test_data  = load_mnist("data/t10k-images-idx3-ubyte",
+                             "data/t10k-labels-idx1-ubyte",  2000);
 ```
 
-The `HCNNDataset` struct holds a vector of `Sample` (each with `std::vector<float> input` and `int target_class`). The `train_epoch` method handles shuffling, batching, and calling `train_batch` on the network.
+The `HCNNDataset` struct holds a vector of `Sample` (each with `std::vector<float> input` and `int target_class`). The example pre-builds a `DatasetView` of raw pointer arrays once per dataset and feeds it to `HCNN::TrainEpoch` (which handles shuffling and batching).
 
-MNIST IDX files must be placed in the `data/` directory at the project root. They are not included in the repository by default -- download from [yann.lecun.com/exdb/mnist](http://yann.lecun.com/exdb/mnist/) or use the copies in the repo if available.
+The shipped example loads a 20K / 2K subset for fast iteration. Bump both calls to `60000` / `10000` to train on the full dataset (~98% accuracy after 20–40 epochs — see [docs/mnist.md](../docs/mnist.md)).
+
+## Downloading the MNIST IDX files
+
+The IDX files are not checked into the repository. Download them once from any of the following mirrors and place them in `data/` at the project root:
+
+```bash
+mkdir -p data && cd data
+# Mirror 1: Tensorflow
+curl -L -O https://storage.googleapis.com/cvdf-datasets/mnist/train-images-idx3-ubyte.gz
+curl -L -O https://storage.googleapis.com/cvdf-datasets/mnist/train-labels-idx1-ubyte.gz
+curl -L -O https://storage.googleapis.com/cvdf-datasets/mnist/t10k-images-idx3-ubyte.gz
+curl -L -O https://storage.googleapis.com/cvdf-datasets/mnist/t10k-labels-idx1-ubyte.gz
+gunzip *.gz
+```
+
+After extraction the directory should contain four files:
+
+```
+data/train-images-idx3-ubyte    (45 MB)
+data/train-labels-idx1-ubyte    (60 KB)
+data/t10k-images-idx3-ubyte     (7.5 MB)
+data/t10k-labels-idx1-ubyte     (10 KB)
+```
+
+The MNIST dataset is the work of Yann LeCun, Corinna Cortes, and Christopher J.C. Burges and is distributed under their original terms; the HypercubeCNN repository ships only the loader code.
 
 ## How to run
 

@@ -1,5 +1,8 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 David Liptak
+
 #include "HCNN.h"
-#include "dataloader/HCNNDataset.h"
+#include "HCNNDataset.h"
 #include <chrono>
 #include <cmath>
 #include <filesystem>

@@ -69,8 +69,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 include(FetchContent)
 FetchContent_Declare(
     HypercubeCNN
-    GIT_REPOSITORY https://github.com/dliptak001/HypercubeCNNStaging.git
-    GIT_TAG        main
+    GIT_REPOSITORY https://github.com/dliptak001/HypercubeCNN.git
+    GIT_TAG        v0.1.0
 )
 FetchContent_MakeAvailable(HypercubeCNN)
 
