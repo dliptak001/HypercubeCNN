@@ -7,8 +7,27 @@ namespace hcnn {
 
 enum class PoolType { MAX, AVG };
 
-/// Antipodal pooling: pairs each vertex v with its bitwise complement v' (maximally
-/// distant vertex), reduces DIM by 1. The lower-half vertex survives.
+/**
+ * @class HCNNPool
+ * @brief Antipodal pooling layer.  Pairs each vertex `v` with its bitwise
+ *        complement `v ^ (2^DIM - 1)` -- the maximally distant vertex on the
+ *        hypercube -- and reduces DIM by 1.
+ *
+ * Reduction is exact: the lower-half vertex survives, the output is a
+ * perfect (DIM-1)-dimensional sub-hypercube with N/2 vertices.  No
+ * interpolation, no border handling, no overlap.
+ *
+ * Two reductions:
+ *   - PoolType::MAX -- keep the larger of the pair (and remember which one
+ *                      survived for the backward pass).
+ *   - PoolType::AVG -- arithmetic mean of the pair.
+ *
+ * Stateless apart from the configured input dimension and reduction type;
+ * carries no learnable parameters.  Forward writes max indices into a
+ * caller-provided vector when MAX pooling needs them for backward.
+ *
+ * Power-user class: ordinary SDK consumers should use HCNN.
+ */
 class HCNNPool {
 public:
     HCNNPool(int input_dim, PoolType type = PoolType::MAX);

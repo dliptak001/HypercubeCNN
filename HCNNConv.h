@@ -40,11 +40,41 @@ enum class OptimizerType { SGD, ADAM };
 
 /**
  * @class HCNNConv
- * @brief A single hypercube convolutional layer with configurable activation and bias.
+ * @brief One hypercube convolutional layer.  Maps c_in input channels on a
+ *        DIM-dimensional binary hypercube to c_out output channels on the
+ *        same hypercube using K = DIM single-bit-flip XOR neighbor masks.
  *
- * Supports forward inference, backpropagation with SGD+momentum weight
- * updates, and a separated gradient-computation path for numerical
- * gradient checking.
+ * Each output channel learns one weight per (input channel, neighbor
+ * direction) pair plus an optional bias.  Weight sharing across vertices is
+ * exact (the hypercube is vertex-transitive), so there is no padding,
+ * border handling, or adjacency table.
+ *
+ * Owns: kernel + (optional) bias + (optional) batch-norm parameters, plus
+ * the matching first / second moment buffers for SGD-momentum or Adam.
+ *
+ * Configurable per layer:
+ *   - activation: NONE / RELU / LEAKY_RELU
+ *   - use_bias: per-output-channel learnable bias
+ *   - use_batchnorm: per-channel batch normalization between conv and activation
+ *   - optimizer: SGD-with-momentum or Adam (set via set_optimizer)
+ *
+ * Two backward paths share the same gradient math but differ in where the
+ * gradients land:
+ *   - backward(): apply gradients in-place via the configured optimizer
+ *     (used by single-sample TrainStep)
+ *   - compute_gradients() + apply_gradients(): write raw gradients into
+ *     caller-provided buffers, then apply once (used by mini-batch
+ *     training to accumulate per-sample grads across threads)
+ *
+ * Threading: an optional ThreadPool parallelizes the inner vertex loop;
+ * only kicks in when DIM >= 12, since fork-join overhead dominates below.
+ * Disabled automatically during batch-parallel dispatch (LayerThreadGuard).
+ *
+ * Layout convention: all activation tensors are channel-major,
+ * `data[c * N + v]` for channel c, vertex v.
+ *
+ * Power-user class: ordinary SDK consumers should use HCNN, which builds
+ * and owns conv layers internally.
  */
 class HCNNConv {
 public:

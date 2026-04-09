@@ -14,11 +14,33 @@
 
 namespace hcnn {
 
-/// Minimal fork-join thread pool for parallel_for workloads.
-///
-/// Workers are created once and reused across ForEach calls.
-/// The calling thread participates as thread 0.
-/// Not intended for general task queuing.
+/**
+ * @class ThreadPool
+ * @brief Minimal fork-join thread pool for `parallel_for`-style workloads.
+ *
+ * Workers are spawned once at construction and reused across `ForEach`
+ * calls; there is no task queue, no work stealing, no priorities.  The
+ * calling thread participates as thread 0, so a pool of N workers gives
+ * N+1 active threads during a `ForEach`.
+ *
+ * `ForEach(count, func)` partitions `[0, count)` into N+1 contiguous
+ * chunks and invokes `func(thread_id, range_begin, range_end)` once per
+ * chunk.  Blocks until every chunk completes.  Exceptions thrown from any
+ * chunk are captured and rethrown on the calling thread after the join.
+ *
+ * Constraints:
+ *   - **Not reentrant.**  Calling `ForEach` from inside another `ForEach`
+ *     on the same pool deadlocks.  Higher-level code (HCNNNetwork) uses
+ *     `LayerThreadGuard` to disable per-layer vertex threading during
+ *     batch dispatch precisely to prevent this.
+ *   - Must be driven from a single thread; concurrent `ForEach` calls on
+ *     the same pool are unsupported.
+ *   - Non-copyable.  Move is not provided (the worker threads capture
+ *     `this`).
+ *
+ * Header-only, no dependencies beyond `<thread>` / `<mutex>` / `<atomic>`.
+ * Re-exported transitively via `HCNN.h`.
+ */
 class ThreadPool
 {
 public:

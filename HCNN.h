@@ -6,11 +6,19 @@
 
 namespace hcnn {
 
-/// @brief Top-level HypercubeCNN pipeline wrapper.
+/// @class HCNN
+/// @brief Top-level HypercubeCNN SDK front door.  One class wraps the entire
+///        pipeline: input embedding -> conv/pool stack -> readout, plus
+///        single-sample inference, batch inference, single-sample training,
+///        and mini-batch / full-epoch training.
 ///
-/// HCNN owns the full pipeline: input embedding -> conv/pool stack -> readout.
-/// This is the canonical SDK front door; consumers should rarely need to
-/// reach for the underlying layer classes directly.
+/// HCNN owns a `HCNNNetwork` (the internal orchestrator) and forwards every
+/// public call to it through a thin PIMPL-style wrapper.  Use this class for
+/// virtually all SDK consumption -- the underlying layer classes
+/// (`HCNNNetwork`, `HCNNConv`, `HCNNPool`, `HCNNReadout`, `ThreadPool`) are
+/// re-exported transitively via this header for power users who need direct
+/// weight access (serialization, gradient checking, custom training loops),
+/// but ordinary code should never need to reach for them.
 ///
 /// Build the architecture incrementally with AddConv()/AddPool(), then call
 /// RandomizeWeights() before training:

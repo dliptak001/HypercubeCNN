@@ -16,6 +16,41 @@ class ThreadPool;
 /// FLATTEN: concatenate all channel×vertex activations → linear (position-sensitive).
 enum class ReadoutType { GAP, FLATTEN };
 
+/**
+ * @class HCNNNetwork
+ * @brief Internal pipeline orchestrator: input embedding → conv/pool stack
+ *        → readout, plus the inference, training, and batch-dispatch logic
+ *        that drives them.
+ *
+ * Wrapped by `HCNN` (the canonical SDK front door).  Most consumers should
+ * use `HCNN`; this class is re-exported for power users who need direct
+ * weight access (e.g. for serialization or gradient checking) or who want
+ * to bypass the wrapper for custom training loops.
+ *
+ * Owns:
+ *   - `vector<HCNNConv>` and `vector<HCNNPool>` interleaved per `is_conv_layer`
+ *   - `HCNNReadout` (sized lazily by `randomize_all_weights` based on
+ *     readout type and final layer geometry)
+ *   - A `ThreadPool` shared across all layers
+ *   - Persistent per-thread inference buffers (`ibufs_`)
+ *   - Persistent per-thread training buffers and gradient accumulators
+ *     (`tbufs_`, `accum_`), allocated lazily on first `train_batch`
+ *   - Persistent ping-pong scratch (`fwd_buf1_` / `fwd_buf2_`) used by
+ *     single-sample `forward()`
+ *
+ * Threading: three strategies coexist but never nest.  `train_batch` and
+ * `forward_batch` parallelize across samples; `HCNNConv::forward` /
+ * `backward` parallelize across vertices when DIM is large enough.  The
+ * RAII `LayerThreadGuard` disables per-layer vertex threading during batch
+ * dispatch to keep the non-reentrant ThreadPool safe.  The RAII
+ * `BNStatsGuard` suppresses per-sample running-stats EMA updates during
+ * batch-parallel forward passes (race-free reduction happens after).  The
+ * RAII `EvalModeGuard` makes `forward()` / `forward_batch()` observably
+ * const w.r.t. batch-norm training state.
+ *
+ * Non-copyable, non-movable -- the owned ThreadPool has live worker
+ * threads.
+ */
 class HCNNNetwork {
 public:
     HCNNNetwork(int start_dim, int num_classes = 10,

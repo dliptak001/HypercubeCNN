@@ -9,6 +9,34 @@
 
 namespace hcnn {
 
+/**
+ * @class HCNNReadout
+ * @brief Final pipeline stage: collapses the hypercube activations into
+ *        per-class logits.
+ *
+ * Two operating modes, selected at construction time by how the network
+ * sizes the readout:
+ *   - **GAP** (global average pooling): the constructor receives
+ *     `input_channels = c_final`, and the readout averages each channel
+ *     across all surviving vertices to produce one scalar per channel,
+ *     then applies a linear `[c_final] -> [num_classes]` map.  Used when
+ *     `HCNN` is built with `ReadoutType::GAP` (the default).
+ *   - **FLATTEN**: the constructor receives `input_channels = c_final * N`
+ *     and the network passes `N = 1` to forward(), so the channel-wise
+ *     average is a no-op and the linear layer sees every (channel, vertex)
+ *     activation as an independent input.  Used when `HCNN` is built with
+ *     `ReadoutType::FLATTEN`.
+ *
+ * Owns: weight matrix + bias + matching first / second moment buffers
+ * (Adam allocates the second moments on demand via set_optimizer).
+ *
+ * Two backward paths mirror HCNNConv:
+ *   - backward(): apply gradients in-place via the configured optimizer.
+ *   - compute_gradients() + apply_gradients(): write raw gradients into
+ *     caller buffers, then apply once after batch reduction.
+ *
+ * Power-user class: ordinary SDK consumers should use HCNN.
+ */
 class HCNNReadout {
 public:
     HCNNReadout(int num_classes, int input_channels);
