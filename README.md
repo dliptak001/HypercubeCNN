@@ -99,7 +99,7 @@ HypercubeCNN/
   dataloader/             MNIST dataset loader (in-tree example utility)
   examples/               Training demos
   tests/                  HCNN SDK smoke test
-  docs/                   Architecture, SDK reference, concept
+  docs/                   Architecture and SDK reference
   cmake/                  Package config template
 ```
 
@@ -109,10 +109,10 @@ HypercubeCNN/
 |----------|-------------|
 | [docs/CPP_SDK.md](docs/CPP_SDK.md) | C++ SDK API reference and integration guide |
 | [docs/architecture.md](docs/architecture.md) | Full technical architecture |
-| [docs/concept.md](docs/concept.md) | Design motivation and research context |
-| [docs/original_work.md](docs/original_work.md) | Prior art survey |
 | [docs/mnist.md](docs/mnist.md) | MNIST benchmark results and analysis |
 | [examples/mnist_train.md](examples/mnist_train.md) | MNIST example walkthrough |
+| [CHANGELOG.md](CHANGELOG.md) | Release notes |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Build, test, and contribution guide |
 
 ## Results
 
