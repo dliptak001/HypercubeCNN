@@ -45,7 +45,7 @@ struct DatasetView {
     int size() const { return static_cast<int>(inputs.size()); }
 };
 
-static void evaluate(HCNN& net, const DatasetView& view, const char* label) {
+static void evaluate(hcnn::HCNN& net, const DatasetView& view, const char* label) {
     int K = net.GetNumClasses();
     int count = view.size();
 
@@ -67,7 +67,7 @@ static void evaluate(HCNN& net, const DatasetView& view, const char* label) {
               << " (" << accuracy << "%)\n";
 }
 
-static void train_and_evaluate(const char* name, HCNN& net,
+static void train_and_evaluate(const char* name, hcnn::HCNN& net,
                                const DatasetView& train_view,
                                const DatasetView& test_view,
                                float lr = 0.01f, int batch_size = 32,
@@ -111,9 +111,9 @@ int main() {
 
     std::cout << "Loading MNIST from " << data_dir << "...\n";
     auto train_data = load_mnist((data_dir / "train-images-idx3-ubyte").string(),
-                                 (data_dir / "train-labels-idx1-ubyte").string(), 60000);
+                                 (data_dir / "train-labels-idx1-ubyte").string(), 20000);
     auto test_data  = load_mnist((data_dir / "t10k-images-idx3-ubyte").string(),
-                                 (data_dir / "t10k-labels-idx1-ubyte").string(), 10000);
+                                 (data_dir / "t10k-labels-idx1-ubyte").string(), 2000);
     std::cout << "Train: " << train_data.size() << " samples, "
               << "Test: " << test_data.size() << " samples\n";
     std::cout << "Threads: " << std::thread::hardware_concurrency() << "\n";
@@ -121,15 +121,15 @@ int main() {
     DatasetView train_view(train_data);
     DatasetView test_view(test_data);
 
-    HCNN net(10);
-    net.AddConv(32);                  // 1->32 ch,    K=10 (DIM=10)
-    net.AddPool(PoolType::MAX);       // DIM 10->9,   N 1024->512
-    net.AddConv(64);                  // 32->64 ch,   K=9  (DIM=9)
-    net.AddPool(PoolType::MAX);       // DIM 9->8,    N 512->256
-    net.AddConv(128);                 // 64->128 ch,  K=8  (DIM=8)
-    net.AddPool(PoolType::MAX);       // DIM 8->7,    N 256->128
-    net.AddConv(128);                 // 128->128 ch, K=7  (DIM=7)
-    net.AddPool(PoolType::MAX);       // DIM 7->6,    N 128->64
+    hcnn::HCNN net(10);
+    net.AddConv(32);                          // 1->32 ch,    K=10 (DIM=10)
+    net.AddPool(hcnn::PoolType::MAX);         // DIM 10->9,   N 1024->512
+    net.AddConv(64);                          // 32->64 ch,   K=9  (DIM=9)
+    net.AddPool(hcnn::PoolType::MAX);         // DIM 9->8,    N 512->256
+    net.AddConv(128);                         // 64->128 ch,  K=8  (DIM=8)
+    net.AddPool(hcnn::PoolType::MAX);         // DIM 8->7,    N 256->128
+    net.AddConv(128);                         // 128->128 ch, K=7  (DIM=7)
+    net.AddPool(hcnn::PoolType::MAX);         // DIM 7->6,    N 128->64
     net.RandomizeWeights();
 
     train_and_evaluate("HCNN", net, train_view, test_view, 0.06f, 256, 1e-4f);

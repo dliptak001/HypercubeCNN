@@ -9,9 +9,9 @@ int main() {
     int failures = 0;
 
     // Build a small network: DIM=5, N=32, 4 classes
-    HCNN net(5, 4);
+    hcnn::HCNN net(5, 4);
     net.AddConv(16);
-    net.AddPool(PoolType::MAX);
+    net.AddPool(hcnn::PoolType::MAX);
     net.AddConv(16);
     net.RandomizeWeights();
 

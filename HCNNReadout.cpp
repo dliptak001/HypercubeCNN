@@ -2,6 +2,8 @@
 #include <algorithm>
 #include <cmath>
 
+namespace hcnn {
+
 HCNNReadout::HCNNReadout(int nc, int ic)
     : num_classes(nc), input_channels(ic),
       weights(nc * ic, 0.0f), bias(nc, 0.0f),
@@ -196,3 +198,5 @@ void HCNNReadout::apply_gradients(const float* weight_grad, const float* bias_gr
         }
     }
 }
+
+} // namespace hcnn

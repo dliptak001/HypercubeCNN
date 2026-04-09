@@ -4,6 +4,9 @@
 #include <cassert>
 #include <cmath>
 #include <random>
+#include <stdexcept>
+
+namespace hcnn {
 
 HCNNNetwork::HCNNNetwork(int dim, int num_classes, int input_channels,
                          ReadoutType readout_type, size_t num_threads)
@@ -97,8 +100,12 @@ void HCNNNetwork::forward(const float* first_layer_activations, float* logits) c
     if (conv_layers.empty()) {
         throw std::runtime_error("HCNNNetwork::forward called with no conv layers");
     }
-    // Use eval mode for BN (running stats)
-    set_training(false);
+
+    // Inference: force BN to eval mode for the duration of this call and
+    // restore the previous per-layer training flag on scope exit.  Caller
+    // observes no side effect on BN training state.  RAII restores even on
+    // exception.
+    EvalModeGuard eval_guard(conv_layers);
 
     // Compute max buffer size across all layers (including multi-channel input)
     int cur_N = 1 << start_dim;
@@ -114,10 +121,13 @@ void HCNNNetwork::forward(const float* first_layer_activations, float* logits) c
         }
     }
 
-    std::vector<float> buf1(max_size);
-    std::vector<float> buf2(max_size);
-    float* current = buf1.data();
-    float* next_buf = buf2.data();
+    // Persistent ping-pong scratch — grown on demand, reused across calls.
+    if (static_cast<int>(fwd_buf1_.size()) < max_size) {
+        fwd_buf1_.resize(max_size);
+        fwd_buf2_.resize(max_size);
+    }
+    float* current  = fwd_buf1_.data();
+    float* next_buf = fwd_buf2_.data();
 
     cur_N = 1 << start_dim;
     int input_size = input_channels * cur_N;
@@ -173,9 +183,13 @@ void HCNNNetwork::prepare_inference_buffers() {
 void HCNNNetwork::forward_batch(const float* const* raw_inputs,
                                 const int* input_lengths,
                                 int batch_size, float* logits_out) {
-    if (batch_size <= 0) return;
+    if (batch_size <= 0) {
+        throw std::invalid_argument("HCNNNetwork::forward_batch: batch_size must be > 0");
+    }
     prepare_inference_buffers();
-    set_training(false);
+
+    // Inference: force BN eval mode and restore on exit (see forward()).
+    EvalModeGuard eval_guard(conv_layers);
 
     int total = input_channels * (1 << start_dim);
     int K = num_classes;
@@ -460,7 +474,9 @@ void HCNNNetwork::train_batch(const float* const* inputs, const int* input_lengt
                               const int* targets, int batch_size,
                               float learning_rate, float momentum,
                               float weight_decay, const float* class_weights) {
-    if (batch_size <= 0) return;
+    if (batch_size <= 0) {
+        throw std::invalid_argument("HCNNNetwork::train_batch: batch_size must be > 0");
+    }
     for (int i = 0; i < batch_size; ++i) {
         if (targets[i] < 0 || targets[i] >= num_classes) {
             throw std::runtime_error("train_batch: target[" + std::to_string(i) + "] = "
@@ -670,3 +686,5 @@ void HCNNNetwork::train_batch(const float* const* inputs, const int* input_lengt
     readout.apply_gradients(base_rw.data(), base_rb.data(), learning_rate, momentum,
                             weight_decay, adam_timestep_);
 }
+
+} // namespace hcnn

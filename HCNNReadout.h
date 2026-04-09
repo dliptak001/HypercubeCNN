@@ -7,6 +7,8 @@
 // OptimizerType enum — defined in HCNNConv.h (no circular dependency)
 #include "HCNNConv.h"
 
+namespace hcnn {
+
 class HCNNReadout {
 public:
     HCNNReadout(int num_classes, int input_channels);
@@ -57,3 +59,5 @@ private:
     OptimizerType optimizer_type_ = OptimizerType::SGD;
     float adam_beta1_ = 0.9f, adam_beta2_ = 0.999f, adam_eps_ = 1e-8f;
 };
+
+} // namespace hcnn

@@ -4,6 +4,8 @@
 #include <cmath>
 #include <stdexcept>
 
+namespace hcnn {
+
 // Minimum DIM at which per-layer threading kicks in.
 // Below this, fork-join overhead exceeds the per-vertex work.
 static constexpr int THREAD_DIM_THRESHOLD = 12;
@@ -612,3 +614,5 @@ float HCNNConv::activate_derivative(float x) const {
         default:                     return 1.0f;
     }
 }
+
+} // namespace hcnn

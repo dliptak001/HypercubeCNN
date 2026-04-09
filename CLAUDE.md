@@ -37,6 +37,8 @@ HypercubeCNN performs convolutions on binary hypercubes using Hamming distance i
 
 `HCNN` (HCNN.h/cpp) is the canonical SDK front door — a thin wrapper around `HCNNNetwork` that exposes the entire pipeline through a single class. **All examples, tests, main.cpp, and any new code must drive the network through `HCNN`, not its subordinates.** The layer headers (`HCNNNetwork`, `HCNNConv`, `HCNNPool`, `HCNNReadout`) are still re-exported transitively via `HCNN.h` for power users, but the in-tree code is no longer allowed to use them directly.
 
+All public symbols live in `namespace hcnn` (`hcnn::HCNN`, `hcnn::PoolType`, etc.).
+
 ### Core pipeline
 
 `HCNNNetwork` (the internal orchestrator wrapped by `HCNN`) implements the full forward pass:

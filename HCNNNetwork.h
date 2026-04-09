@@ -7,6 +7,8 @@
 #include <vector>
 #include <stdexcept>
 
+namespace hcnn {
+
 class ThreadPool;
 
 /// Readout strategy after the final conv/pool layer.
@@ -45,6 +47,11 @@ public:
     void embed_input(const float* raw_input, int input_length,
                      float* first_layer_activations) const;
 
+    /// Single-sample forward pass.  Reads existing batch-norm mode (caller's
+    /// responsibility to call set_training(false) before inference).  Reuses
+    /// persistent ping-pong scratch buffers — no per-call allocation in steady
+    /// state.  Not thread-safe with respect to other forward() / train_step()
+    /// calls on the same network (the persistent scratch is shared).
     void forward(const float* first_layer_activations, float* logits) const;
 
     /// Batch inference: embed + forward for multiple samples in parallel.
@@ -143,6 +150,11 @@ private:
 
     void prepare_inference_buffers();
 
+    // Persistent scratch for single-sample forward() — sized to the largest
+    // layer in the network and reused across calls.
+    mutable std::vector<float> fwd_buf1_;
+    mutable std::vector<float> fwd_buf2_;
+
     // RAII guard to disable per-layer threading during batch dispatch
     // and restore it when the scope exits (including on exception).
     struct LayerThreadGuard {
@@ -153,6 +165,28 @@ private:
         }
         ~LayerThreadGuard() {
             for (auto& layer : layers) layer.set_thread_pool(pool);
+        }
+    };
+
+    // RAII guard for inference: temporarily forces eval mode (so BN uses
+    // running stats and never updates them), and restores the prior per-layer
+    // training flag on scope exit (including on exception).  This makes
+    // forward() / forward_batch() observably const w.r.t. BN training state.
+    // Takes a const reference because HCNNConv::set_training is const-qualified
+    // (the training flag is `mutable`).
+    struct EvalModeGuard {
+        const std::vector<HCNNConv>& layers;
+        std::vector<bool> prev_training;
+        explicit EvalModeGuard(const std::vector<HCNNConv>& l) : layers(l) {
+            prev_training.reserve(layers.size());
+            for (const auto& layer : layers) {
+                prev_training.push_back(layer.is_training());
+                layer.set_training(false);
+            }
+        }
+        ~EvalModeGuard() {
+            for (size_t i = 0; i < layers.size(); ++i)
+                layers[i].set_training(prev_training[i]);
         }
     };
 
@@ -170,3 +204,5 @@ private:
         }
     };
 };
+
+} // namespace hcnn

@@ -28,6 +28,8 @@
 #include <vector>
 #include <random>
 
+namespace hcnn {
+
 class ThreadPool;
 
 /// Activation function applied after convolution (and optional batch normalization).
@@ -183,6 +185,9 @@ public:
     /// Set training mode (true) or eval mode (false) for batch normalization.
     void set_training(bool training) const { training_ = training; }
 
+    /// Current training-mode flag (for RAII save/restore in inference paths).
+    bool is_training() const { return training_; }
+
     /// Skip running-stats EMA updates in forward() (for batch-parallel mode).
     void set_skip_running_stats(bool skip) const { skip_running_stats_ = skip; }
 
@@ -266,3 +271,5 @@ private:
     float activate(float x) const;
     float activate_derivative(float x) const;
 };
+
+} // namespace hcnn

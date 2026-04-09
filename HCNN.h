@@ -4,6 +4,8 @@
 #include <memory>
 #include <vector>
 
+namespace hcnn {
+
 /// @brief Top-level HypercubeCNN pipeline wrapper.
 ///
 /// HCNN owns the full pipeline: input embedding -> conv/pool stack -> readout.
@@ -13,11 +15,11 @@
 /// Build the architecture incrementally with AddConv()/AddPool(), then call
 /// RandomizeWeights() before training:
 ///
-///     HCNN net(10, /*num_classes=*/10);   // DIM=10, N=1024
+///     hcnn::HCNN net(10, /*num_classes=*/10);   // DIM=10, N=1024
 ///     net.AddConv(32);
-///     net.AddPool(PoolType::MAX);
+///     net.AddPool(hcnn::PoolType::MAX);
 ///     net.AddConv(64);
-///     net.AddPool(PoolType::MAX);
+///     net.AddPool(hcnn::PoolType::MAX);
 ///     net.RandomizeWeights();
 ///
 ///     // Single-sample inference: caller owns and reuses both buffers.
@@ -27,9 +29,24 @@
 ///     net.Forward(embedded.data(), logits.data());
 ///
 /// All methods that take raw inputs avoid hidden per-call allocations:
-/// inference and training paths reuse pre-allocated internal buffers.
+/// single-sample inference reuses persistent ping-pong scratch on the
+/// network; batch inference and batch training reuse lazily-allocated
+/// per-thread buffers.
 ///
-/// Non-copyable, non-movable.
+/// **Enums** consumed by this API are defined alongside their owning
+/// internal headers (all re-exported transitively via HCNN.h):
+///   - `hcnn::PoolType`      (HCNNPool.h)     — MAX, AVG
+///   - `hcnn::ReadoutType`   (HCNNNetwork.h)  — GAP, FLATTEN
+///   - `hcnn::Activation`    (HCNNConv.h)     — NONE, RELU, LEAKY_RELU
+///   - `hcnn::OptimizerType` (HCNNConv.h)     — SGD, ADAM
+///
+/// **Non-copyable, non-movable.**  HCNN owns a HCNNNetwork (which in turn
+/// owns a ThreadPool with live worker threads) and persistent scratch
+/// vectors used by inference and training.  Move semantics would require
+/// either teaching the worker threads to follow the moved-from object or
+/// rebuilding the pool on the destination — both add complexity for no
+/// real-world win, so move is deleted entirely.  Wrap in
+/// `std::unique_ptr<HCNN>` if you need transfer-of-ownership semantics.
 class HCNN {
 public:
     explicit HCNN(int start_dim, int num_classes = 10,
@@ -114,7 +131,8 @@ public:
                     const float* class_weights = nullptr);
 
     /// Iterate `sample_count` samples and dispatch TrainBatch in chunks of
-    /// `batch_size` (the final chunk may be smaller).
+    /// `batch_size` (the final chunk may be smaller).  Throws
+    /// `std::invalid_argument` if `batch_size <= 0` or `sample_count < 0`.
     ///
     /// `shuffle_seed`:
     ///   - 0 (default): no shuffle, samples are processed in input order.
@@ -123,6 +141,8 @@ public:
     ///     reproducible permutation.  HCNN owns persistent gather buffers
     ///     used by the shuffle path -- after the first shuffled epoch, no
     ///     further allocations occur as long as `sample_count` does not grow.
+    ///     Note: the gather buffers grow on demand but never shrink; their
+    ///     steady-state size is the largest `sample_count` ever passed.
     void TrainEpoch(const float* const* inputs, const int* input_lengths,
                     const int* targets, int sample_count, int batch_size,
                     float learning_rate, float momentum = 0.0f,
@@ -144,8 +164,12 @@ private:
     // Persistent gather buffers used by TrainEpoch's shuffle path.
     // Allocated lazily and grown as `sample_count` increases; reused
     // across epochs so the steady-state shuffle is allocation-free.
+    // Buffers grow on demand but never shrink — steady-state size is the
+    // largest sample_count ever passed.
     std::vector<const float*> shuffle_inputs_;
     std::vector<int>          shuffle_lengths_;
     std::vector<int>          shuffle_targets_;
     std::vector<int>          shuffle_idx_;
 };
+
+} // namespace hcnn

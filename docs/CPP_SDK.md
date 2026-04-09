@@ -41,6 +41,8 @@ After installation, the SDK contains:
 
 Consumers include `"HCNN.h"` and link against `HypercubeCNNCore`. `HCNN` is the canonical front door for the entire pipeline; the underlying layer headers are re-exported transitively for power users who need direct weight access or custom training loops.
 
+All public symbols live in the `hcnn::` namespace (`hcnn::HCNN`, `hcnn::PoolType`, etc.).
+
 ## Building from source
 
 Requirements: C++23 compiler (GCC 13+, Clang 17+, MSVC 2022+), CMake 3.21+.
@@ -99,6 +101,8 @@ A self-contained forward pass on synthetic data (no MNIST required):
 #include <random>
 
 int main() {
+    using namespace hcnn;
+
     // Build a small network: DIM=6, N=64 vertices, 4 classes
     HCNN net(6, /*num_classes=*/4);
     net.AddConv(16);
@@ -132,16 +136,26 @@ int main() {
 
 ### Enums
 
+All enums live in `namespace hcnn`. They are scattered across the layer headers but all reachable through `HCNN.h` (transitively).
+
 | Enum | Values | Defined in | Description |
 |------|--------|------------|-------------|
-| `ReadoutType` | `GAP`, `FLATTEN` | HCNNNetwork.h | Readout strategy. GAP: global average pooling per channel (translation-invariant). FLATTEN: concatenate all channel x vertex activations (position-sensitive). |
-| `PoolType` | `MAX`, `AVG` | HCNNPool.h | Antipodal pooling reduction. MAX: keep the larger value. AVG: average the pair. |
+| `hcnn::PoolType`      | `MAX`, `AVG`              | HCNNPool.h     | Antipodal pooling reduction. MAX: keep the larger value. AVG: average the pair. |
+| `hcnn::ReadoutType`   | `GAP`, `FLATTEN`          | HCNNNetwork.h  | Readout strategy. GAP: global average pooling per channel (translation-invariant). FLATTEN: concatenate all channel x vertex activations (position-sensitive). |
+| `hcnn::Activation`    | `NONE`, `RELU`, `LEAKY_RELU` | HCNNConv.h  | Activation function applied after conv (and optional batch normalization). |
+| `hcnn::OptimizerType` | `SGD`, `ADAM`             | HCNNConv.h     | Weight-update rule. Configured per-network via `HCNN::SetOptimizer`. |
 
 ### HCNN
 
 The canonical SDK front door. Owns the full pipeline: input embedding → conv/pool stack → readout. Non-copyable, non-movable.
 
-All methods that take raw inputs avoid hidden per-call allocations: training and batch-inference paths use pre-allocated internal buffers; single-sample inference takes caller-owned scratch buffers designed for reuse.
+All public methods avoid hidden per-call allocations in steady state:
+
+- **Single-sample inference** (`Forward`): caller owns the embed/logits scratch and reuses it; HCNN keeps a persistent ping-pong scratch internally for the conv/pool ladder, sized to the largest layer and grown on demand.
+- **Batch inference** (`ForwardBatch`) and **batch training** (`TrainBatch`, `TrainEpoch`): per-thread work buffers are allocated lazily on the first call and reused thereafter.
+- **TrainEpoch shuffle**: persistent gather buffers grow on demand (and never shrink); the steady-state shuffle is allocation-free.
+
+`Forward` and `ForwardBatch` are observably const w.r.t. batch-norm running statistics: they internally force eval mode for the duration of the call and restore the prior per-layer training flag on exit (RAII-safe, including on exception). You do not need to call `SetTraining(false)` before inference.
 
 #### Constructor
 

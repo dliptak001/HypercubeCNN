@@ -165,6 +165,15 @@ No warmup, no restarts. Smooth decay avoids the instability of step decay.
 
 Per-layer vertex threading is automatically disabled during batch parallelism to prevent nested reentrancy on the non-reentrant ThreadPool.
 
+### Epoch dispatch and shuffling
+
+`HCNN::TrainEpoch` is the convenience wrapper that drives a full pass over a dataset: it walks `sample_count` samples and dispatches `TrainBatch` in chunks of `batch_size`, with the last chunk possibly smaller. Two modes:
+
+- `shuffle_seed = 0` — samples are processed in input order.
+- `shuffle_seed != 0` — HCNN gathers `(input, length, target)` triples into persistent scratch in a permutation deterministically derived from the seed (Mersenne Twister + `std::shuffle`), then iterates the gathered arrays. Pass a different seed each epoch (e.g. epoch index + 1) for a fresh reproducible permutation.
+
+The gather buffers grow on demand and are reused across epochs, so the steady-state shuffle path is allocation-free as long as `sample_count` does not grow.
+
 ## Parameter count
 
 For the current MNIST configuration (DIM=10, 4 stages):

@@ -3,6 +3,9 @@
 #include <algorithm>
 #include <numeric>
 #include <random>
+#include <stdexcept>
+
+namespace hcnn {
 
 HCNN::HCNN(int start_dim, int num_classes, int input_channels,
            ReadoutType readout_type, size_t num_threads)
@@ -77,8 +80,13 @@ void HCNN::TrainEpoch(const float* const* inputs, const int* input_lengths,
                       const int* targets, int sample_count, int batch_size,
                       float learning_rate, float momentum, float weight_decay,
                       const float* class_weights, unsigned shuffle_seed) {
-    if (batch_size <= 0) batch_size = 1;
-    if (sample_count <= 0) return;
+    if (batch_size <= 0) {
+        throw std::invalid_argument("HCNN::TrainEpoch: batch_size must be > 0");
+    }
+    if (sample_count < 0) {
+        throw std::invalid_argument("HCNN::TrainEpoch: sample_count must be >= 0");
+    }
+    if (sample_count == 0) return;
 
     // Shuffle path: gather inputs/lengths/targets into persistent scratch
     // buffers in a freshly permuted order, then iterate the gathered arrays
@@ -123,3 +131,5 @@ int HCNN::GetStartDim() const       { return net_->get_start_dim(); }
 int HCNN::GetStartN() const         { return net_->get_start_N(); }
 int HCNN::GetInputChannels() const  { return net_->get_input_channels(); }
 int HCNN::GetNumClasses() const     { return net_->get_num_classes(); }
+
+} // namespace hcnn

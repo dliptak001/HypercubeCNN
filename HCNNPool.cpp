@@ -1,6 +1,8 @@
 #include "HCNNPool.h"
 #include <cassert>
 
+namespace hcnn {
+
 HCNNPool::HCNNPool(int input_dim, PoolType type)
     : input_dim(input_dim), output_dim(input_dim - 1),
       input_N(1 << input_dim), output_N(1 << (input_dim - 1)),
@@ -59,3 +61,5 @@ void HCNNPool::backward(const float* grad_out, float* grad_in, int num_channels,
         }
     }
 }
+
+} // namespace hcnn

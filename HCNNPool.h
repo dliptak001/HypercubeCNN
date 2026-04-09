@@ -3,6 +3,8 @@
 #include <vector>
 #include <cstdint>
 
+namespace hcnn {
+
 enum class PoolType { MAX, AVG };
 
 /// Antipodal pooling: pairs each vertex v with its bitwise complement v' (maximally
@@ -26,3 +28,5 @@ private:
     int input_dim, output_dim, input_N, output_N;
     PoolType type;
 };
+
+} // namespace hcnn

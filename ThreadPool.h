@@ -12,6 +12,8 @@
 #include <thread>
 #include <vector>
 
+namespace hcnn {
+
 /// Minimal fork-join thread pool for parallel_for workloads.
 ///
 /// Workers are created once and reused across ForEach calls.
@@ -136,3 +138,5 @@ private:
     alignas(64) std::atomic<int> remaining_{0};
     char pad_[64 - sizeof(std::atomic<int>)] = {};
 };
+
+} // namespace hcnn
