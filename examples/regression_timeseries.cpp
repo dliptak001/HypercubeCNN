@@ -19,9 +19,11 @@
 //
 // What this example shows:
 //
-//   - Constructing an HCNN regression network with TANH activation
-//     (the natural activation for time-series workloads, matching the
-//     reservoir's own nonlinearity)
+//   - Constructing a deep HCNN regression network: two conv+pool stages
+//     with TANH activation (the natural activation for time-series
+//     workloads, matching the reservoir's own nonlinearity)
+//   - Stacking conv+pool pairs for a 2-hop receptive field on the
+//     hypercube -- a more realistic template for HypercubeRC readout
 //   - Centering targets on the train mean -- standard regression
 //     hygiene that HypercubeRC's existing pipeline does via its
 //     feature_mean / feature_scale standardization
@@ -34,14 +36,11 @@
 //
 //   The DIM constant below defaults to 12 for a good balance between
 //   showcasing real scale and finishing in a reasonable time.  Bump it
-//   to 14 or 16 to test how the architecture scales further.  At
-//   DIM=16 (N=65536 vertices) per-epoch wall time should be ~1-3
-//   seconds depending on machine; total runtime ~5-15 minutes.
-//   If convergence stalls at higher DIM, the most likely fix is more
-//   conv channels (capacity) or a second conv+pool pair (depth) --
-//   the target is not exactly expressible, so the model needs enough
-//   degrees of freedom to *learn* a useful projection, not just to
-//   identify a sparse-recovery solution.
+//   to 14 or 16 to test how the architecture scales further.  At higher
+//   DIM, the second conv layer's parameter count grows as 256*(DIM-1),
+//   so per-epoch wall time increases significantly.  If convergence
+//   stalls at higher DIM, try more conv channels (capacity) or a third
+//   conv+pool pair (depth).
 
 #include "HCNN.h"
 
@@ -271,51 +270,56 @@ int main() {
 
     // ----- Network -----
     //
-    // Conv(16, TANH, bias) -> MaxPool -> GAP -> Linear(16 -> 1)
+    // Conv(16, TANH) -> MaxPool -> Conv(16, TANH) -> MaxPool -> GAP -> Linear(16 -> 1)
+    //
+    // Two conv+pool stages give the model a 2-hop receptive field on the
+    // hypercube.  The first conv sees DIM immediate neighbors per vertex;
+    // the second sees (DIM-1) neighbors in the pooled graph, so each
+    // output vertex integrates information from a 2-hop neighborhood in
+    // the original hypercube.  This is a more realistic template for
+    // HypercubeRC readout than a single-layer net.
     //
     // TANH is the natural activation for time-series workloads -- smooth,
     // symmetric, bounded in (-1, 1).  Same nonlinearity used by the
     // synthetic reservoir, by HypercubeRC's actual reservoir, and by every
     // RNN-family model in the literature.
     //
-    // 16 conv channels gives the model meaningful learning capacity for a
-    // task that is NOT exactly expressible by a single channel.  The conv
-    // kernel sees DIM single-bit-flip neighbors per vertex, so each
-    // channel learns a different DIM-direction filter over the state.
-    //
-    // Antipodal max-pool pairs vertices on opposite sides of the hypercube
-    // and collapses them into the larger of their two activations.  For a
-    // tanh-bounded conv output this picks the more strongly responding
-    // member of each pair, which is a useful inductive bias for "extract
-    // the strongest signal across phase-related vertices."
+    // Each antipodal max-pool pairs vertices on opposite sides of the
+    // hypercube and keeps the larger activation, reducing DIM by 1.
+    // Two pools take DIM -> DIM-2, N -> N/4.
     //
     // GAP averages the post-pool activations across the surviving
     // vertices and feeds the channel means into a linear projection
-    // 16 -> 1.  At larger DIM you may need either more channels (more
-    // capacity in the conv) or a second conv+pool pair (depth); both are
-    // documented in the file header.
+    // 16 -> 1.
     hcnn::HCNN net(DIM, /*num_outputs=*/1, /*input_channels=*/1,
                    hcnn::ReadoutType::GAP,
                    hcnn::TaskType::Regression);
     net.AddConv(16, hcnn::Activation::TANH, /*use_bias=*/true);
     net.AddPool(hcnn::PoolType::MAX);
+    net.AddConv(16, hcnn::Activation::TANH, /*use_bias=*/true);
+    net.AddPool(hcnn::PoolType::MAX);
     net.RandomizeWeights();
     net.SetOptimizer(hcnn::OptimizerType::ADAM);
 
-    const int conv_params = 1 * 16 * DIM + 16;   // kernel + bias
-    const int readout_params = 16 + 1;           // weight + bias
-    std::cout << "Architecture: Conv(16, TANH, bias)\n";
-    std::cout << "              -> MaxPool (antipodal)\n";
+    const int conv1_params = 1 * 16 * DIM + 16;        // 1->16 channels, K=DIM
+    const int conv2_params = 16 * 16 * (DIM - 1) + 16; // 16->16 channels, K=DIM-1
+    const int readout_params = 16 + 1;                  // weight + bias
+    const int total_params = conv1_params + conv2_params + readout_params;
+    std::cout << "Architecture: Conv(1->16, TANH, bias)    DIM=" << DIM << "\n";
+    std::cout << "              -> MaxPool (antipodal)      DIM=" << (DIM - 1) << "\n";
+    std::cout << "              -> Conv(16->16, TANH, bias) DIM=" << (DIM - 1) << "\n";
+    std::cout << "              -> MaxPool (antipodal)      DIM=" << (DIM - 2) << "\n";
     std::cout << "              -> GAP\n";
     std::cout << "              -> Linear(16 -> 1)\n";
-    std::cout << "Parameters:   " << (conv_params + readout_params)
-              << " (" << conv_params << " conv + " << readout_params << " readout)\n\n";
+    std::cout << "Parameters:   " << total_params
+              << " (" << conv1_params << " conv1 + " << conv2_params
+              << " conv2 + " << readout_params << " readout)\n\n";
 
     // ----- Training loop -----
-    constexpr int   epochs       = 200;
+    constexpr int   epochs       = 300;
     constexpr int   batch_size   = 32;
-    constexpr float lr_max       = 0.01f;
-    constexpr float lr_min       = 1e-3f;    // 10% of lr_max -- keeps learning
+    constexpr float lr_max       = 0.002f;
+    constexpr float lr_min       = 2e-4f;    // 10% of lr_max -- keeps learning
     constexpr float momentum     = 0.0f;     // Adam handles adaptive scaling
     constexpr float weight_decay = 0.0f;
 
