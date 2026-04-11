@@ -14,6 +14,11 @@
 
 namespace hcnn {
 
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable : 4324)  // structure was padded due to alignment specifier
+#endif
+
 /**
  * @class ThreadPool
  * @brief Minimal fork-join thread pool for `parallel_for`-style workloads.
@@ -159,5 +164,9 @@ private:
     // remaining_ on its own cache line to avoid false sharing with mutex/cv.
     alignas(64) std::atomic<int> remaining_{0};
 };
+
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
 
 } // namespace hcnn
