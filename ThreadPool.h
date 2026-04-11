@@ -122,9 +122,9 @@ private:
     void WorkerLoop(size_t tid)
     {
         size_t local_gen = 0;
+        std::function<void(size_t)> fn;  // reused across iterations (avoids per-call heap alloc)
         while (true)
         {
-            std::function<void(size_t)> fn;
             {
                 std::unique_lock lock(mutex_);
                 cv_work_.wait(lock, [&] { return stop_ || generation_ > local_gen; });

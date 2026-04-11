@@ -7,13 +7,13 @@
 #include <vector>
 
 /// In-tree example dataset container.  Pure data: holds samples and offers
-/// accessors.  No coupling to HCNN/HCNNNetwork -- consumers gather raw
-/// pointer arrays from `samples` and feed them to HCNN::TrainEpoch /
+/// accessors.  No coupling to HCNN/HCNNNetwork -- consumers flatten samples
+/// into contiguous buffers and feed them to HCNN::TrainEpoch /
 /// HCNN::ForwardBatch directly.
 struct HCNNDataset {
     struct Sample {
         std::vector<float> input;   // scalars in [-1.0, 1.0]
-        int target_class;           // class index [0, num_classes)
+        int target_class;           // class index [0, num_outputs)
     };
 
     std::vector<Sample> samples;

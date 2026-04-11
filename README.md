@@ -17,6 +17,8 @@ Why this topology? The binary hypercube is vertex-transitive: every vertex looks
 
 Pooling pairs each vertex with its bitwise complement -- the maximally distant point on the hypercube -- and reduces DIM by 1, producing a perfect (DIM-1)-dimensional sub-hypercube. Stacking conv + pool stages builds a feature hierarchy analogous to standard CNN architectures, with DIM shrinking and channel count growing at each stage.
 
+The architecture supports both classification (softmax + cross-entropy) and regression (MSE) via a unified conv/pool/readout pipeline -- only the loss gradient differs. Activations include ReLU, LeakyReLU, and tanh (the natural choice for bounded-output regression and reservoir-computing readouts).
+
 ## Quick start (C++)
 
 ```cpp
@@ -33,12 +35,12 @@ net.RandomizeWeights();             // Xavier/He init
 
 // Forward pass -- caller-owned scratch buffers, designed for reuse.
 std::vector<float> embedded(net.GetStartN());
-std::vector<float> logits(net.GetNumClasses());
+std::vector<float> logits(net.GetNumOutputs());
 net.Embed(input_data, input_len, embedded.data());
 net.Forward(embedded.data(), logits.data());
 ```
 
-`hcnn::HCNN` is the canonical SDK front door — a single class that wraps the entire pipeline (embed → conv/pool → readout). All public symbols live in `namespace hcnn`. Available as a CMake static library via `FetchContent` or `find_package`. See [docs/CPP_SDK.md](docs/CPP_SDK.md) for full API reference and integration guide.
+`hcnn::HCNN` is the canonical SDK front door -- a single class that wraps the entire pipeline (embed → conv/pool → readout). All public symbols live in `namespace hcnn`. Available as a CMake static library via `FetchContent` or `find_package`. See [docs/CPP_SDK.md](docs/CPP_SDK.md) for full API reference and integration guide.
 
 ## Pipeline
 
@@ -58,7 +60,7 @@ Pool (HCNNPool) -- antipodal pairing, DIM -> DIM-1
 [repeat conv + pool stages]
   |
   v
-Readout (HCNNReadout) -- global average per channel -> linear -> logits
+Readout (HCNNReadout) -- global average per channel -> linear -> output
 ```
 
 ## Build targets
@@ -67,7 +69,8 @@ Readout (HCNNReadout) -- global average per channel -> linear -> logits
 |--------|---------|
 | `HypercubeCNNCore` | Static library (HCNN front door + core layers) |
 | `HypercubeCNN` | Quick check runner (main.cpp) |
-| `MNISTTrain` | MNIST training demo (examples/mnist_train.cpp) |
+| `MNISTTrain` | MNIST classification demo (examples/mnist_train.cpp) |
+| `RegressionTimeseries` | Regression demo -- next-step prediction (examples/regression_timeseries.cpp) |
 | `CoreSmokeTest` | HCNN SDK smoke test (tests/CoreSmokeTest.cpp) |
 
 ## Building from source
@@ -109,18 +112,16 @@ HypercubeCNN/
 |----------|-------------|
 | [docs/CPP_SDK.md](docs/CPP_SDK.md) | C++ SDK API reference and integration guide |
 | [docs/architecture.md](docs/architecture.md) | Full technical architecture |
-| [docs/mnist.md](docs/mnist.md) | MNIST benchmark results and analysis |
-| [examples/mnist_train.md](examples/mnist_train.md) | MNIST example walkthrough |
-| [CHANGELOG.md](CHANGELOG.md) | Release notes |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | Build, test, and contribution guide |
+| [examples/mnist_train.md](examples/mnist_train.md) | MNIST classification example, benchmark results, and analysis |
+| [examples/regression_timeseries.md](examples/regression_timeseries.md) | Regression example, DIM=16 results, and HypercubeRC integration notes |
 
 ## Results
 
-MNIST is used as a validation benchmark, not a leaderboard target -- the goal is to confirm that the hypercube convolution learns meaningful features via standard backpropagation, not to compete with spatial CNNs on a task that inherently favors 2D locality.
+Both benchmarks validate that hypercube convolution learns meaningful features via standard backpropagation -- they are not leaderboard targets.
 
-**MNIST** (no spatial inductive bias): **98.10%** test accuracy with ~200K parameters, 4 conv+pool stages, SGD with momentum, cosine LR annealing. The network learns digit features from hypercube topology alone -- no 2D spatial locality is encoded.
+**Classification -- MNIST** (no spatial inductive bias): **98.10%** test accuracy with ~200K parameters, 4 conv+pool stages, SGD with momentum, cosine LR annealing. The network learns digit features from hypercube topology alone -- no 2D spatial locality is encoded. See [examples/mnist_train.md](examples/mnist_train.md).
 
-See [docs/mnist.md](docs/mnist.md) for full results and analysis.
+**Regression -- time-series prediction** (DIM=16, N=65,536 vertices): **R² = 0.9919** predicting the next value of a sine wave from a 65,536-dimensional synthetic reservoir state, using only 289 parameters (227:1 compression). Validates HCNN as a learned readout layer for reservoir computing. See [examples/regression_timeseries.md](examples/regression_timeseries.md).
 
 ## License
 

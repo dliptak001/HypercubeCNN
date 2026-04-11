@@ -34,8 +34,8 @@ HCNNConv::HCNNConv(int dim, int c_in, int c_out, Activation activation,
       bn_running_var(use_batchnorm ? c_out : 0, 1.0f),
       bn_gamma_m(use_batchnorm ? c_out : 0, 0.0f),
       bn_beta_m(use_batchnorm ? c_out : 0, 0.0f) {
-    if (DIM < 3) {
-        throw std::runtime_error("HCNNConv requires DIM >= 3");
+    if (DIM < 3 || DIM > 32) {
+        throw std::runtime_error("HCNNConv requires 3 <= DIM <= 32");
     }
 }
 
@@ -148,18 +148,18 @@ void HCNNConv::forward(const float* in, float* out, float* pre_act,
 
             // Phase 2: Batch normalization across all N vertices for this channel
             if (training_) {
-                // Compute per-channel mean
-                float mean = 0.0f;
-                for (int v = 0; v < N; ++v) mean += out_co[v];
-                mean /= static_cast<float>(N);
+                // Compute per-channel mean (double accumulator for DIM >= 14)
+                double mean_d = 0.0;
+                for (int v = 0; v < N; ++v) mean_d += out_co[v];
+                float mean = static_cast<float>(mean_d / N);
 
-                // Compute per-channel variance
-                float var = 0.0f;
+                // Compute per-channel variance (double accumulator)
+                double var_d = 0.0;
                 for (int v = 0; v < N; ++v) {
                     float d = out_co[v] - mean;
-                    var += d * d;
+                    var_d += static_cast<double>(d) * d;
                 }
-                var /= static_cast<float>(N);
+                float var = static_cast<float>(var_d / N);
 
                 float inv_std = 1.0f / std::sqrt(var + bn_eps_);
 
@@ -256,35 +256,45 @@ void HCNNConv::backward(const float* grad_out, const float* in, const float* pre
     const bool use_adam = (optimizer_type_ == OptimizerType::ADAM && timestep > 0);
     const bool use_threads = thread_pool && DIM >= THREAD_DIM_THRESHOLD;
 
-    // Pre-activation gradients (gradient through activation function)
-    std::vector<float> grad_pre(c_out * N);
-    for (int i = 0; i < c_out * N; ++i)
+    // Adam bias-correction denominators — constant for the entire update.
+    const float bc1 = use_adam ? 1.0f - std::pow(adam_beta1_, timestep) : 1.0f;
+    const float bc2 = use_adam ? 1.0f - std::pow(adam_beta2_, timestep) : 1.0f;
+
+    // Pre-activation gradients (gradient through activation function).
+    // Persistent scratch — grown on demand, reused across calls.
+    const int grad_pre_size = c_out * N;
+    if (static_cast<int>(backward_work_.size()) < grad_pre_size)
+        backward_work_.resize(grad_pre_size);
+    float* grad_pre = backward_work_.data();
+    for (int i = 0; i < grad_pre_size; ++i)
         grad_pre[i] = grad_out[i] * activate_derivative(pre_act[i]);
 
     // BN backward: transform grad from "w.r.t. BN output" to "w.r.t. raw sum"
     if (use_batchnorm && bn_save) {
         for (int co = 0; co < c_out; ++co) {
-            float* gp = grad_pre.data() + co * N;
+            float* gp = grad_pre + co * N;
             const float* pa = pre_act + co * N;
             float inv_std = bn_save[co];
             float gamma_co = bn_gamma[co];
             float inv_gamma = (gamma_co != 0.0f) ? (1.0f / gamma_co) : 0.0f;
             float inv_N = 1.0f / static_cast<float>(N);
 
-            // Pass 1: compute dgamma, dbeta, and intermediate sums
-            float dgamma = 0.0f, dbeta = 0.0f;
-            float sum_dx_hat = 0.0f, sum_dx_hat_xhat = 0.0f;
+            // Pass 1: compute dgamma, dbeta, and intermediate sums (double accumulators)
+            double dgamma_d = 0.0, dbeta_d = 0.0;
+            double sum_dx_hat_d = 0.0, sum_dx_hat_xhat_d = 0.0;
             for (int v = 0; v < N; ++v) {
                 float x_hat = (pa[v] - bn_beta[co]) * inv_gamma;
                 float dx_hat = gp[v] * gamma_co;
-                dgamma += gp[v] * x_hat;
-                dbeta += gp[v];
-                sum_dx_hat += dx_hat;
-                sum_dx_hat_xhat += dx_hat * x_hat;
+                dgamma_d += gp[v] * x_hat;
+                dbeta_d += gp[v];
+                sum_dx_hat_d += dx_hat;
+                sum_dx_hat_xhat_d += dx_hat * x_hat;
             }
 
-            float mean_dx = sum_dx_hat * inv_N;
-            float mean_dx_xhat = sum_dx_hat_xhat * inv_N;
+            float dgamma = static_cast<float>(dgamma_d);
+            float dbeta = static_cast<float>(dbeta_d);
+            float mean_dx = static_cast<float>(sum_dx_hat_d * inv_N);
+            float mean_dx_xhat = static_cast<float>(sum_dx_hat_xhat_d * inv_N);
 
             // Pass 2: compute gradient w.r.t. raw weighted sum (replaces grad_pre)
             for (int v = 0; v < N; ++v) {
@@ -297,13 +307,13 @@ void HCNNConv::backward(const float* grad_out, const float* in, const float* pre
             if (use_adam) {
                 bn_gamma_m[co] = adam_beta1_ * bn_gamma_m[co] + (1.0f - adam_beta1_) * dgamma;
                 bn_gamma_m2[co] = adam_beta2_ * bn_gamma_m2[co] + (1.0f - adam_beta2_) * dgamma * dgamma;
-                float mh = bn_gamma_m[co] / (1.0f - std::pow(adam_beta1_, timestep));
-                float vh = bn_gamma_m2[co] / (1.0f - std::pow(adam_beta2_, timestep));
+                float mh = bn_gamma_m[co] / bc1;
+                float vh = bn_gamma_m2[co] / bc2;
                 bn_gamma[co] -= learning_rate * mh / (std::sqrt(vh) + adam_eps_);
                 bn_beta_m[co] = adam_beta1_ * bn_beta_m[co] + (1.0f - adam_beta1_) * dbeta;
                 bn_beta_m2[co] = adam_beta2_ * bn_beta_m2[co] + (1.0f - adam_beta2_) * dbeta * dbeta;
-                mh = bn_beta_m[co] / (1.0f - std::pow(adam_beta1_, timestep));
-                vh = bn_beta_m2[co] / (1.0f - std::pow(adam_beta2_, timestep));
+                mh = bn_beta_m[co] / bc1;
+                vh = bn_beta_m2[co] / bc2;
                 bn_beta[co] -= learning_rate * mh / (std::sqrt(vh) + adam_eps_);
             } else {
                 bn_gamma_m[co] = momentum * bn_gamma_m[co] + dgamma;
@@ -324,7 +334,7 @@ void HCNNConv::backward(const float* grad_out, const float* in, const float* pre
                     size_t t_end = std::min(t + TILE, v_end);
                     for (size_t v = t; v < t_end; ++v) gi[v] = 0.0f;
                     for (int co = 0; co < c_out; ++co) {
-                        const float* gp = grad_pre.data() + co * N;
+                        const float* gp = grad_pre + co * N;
                         for (int k = 0; k < K; ++k) {
                             float w = kernel[kernel_idx(co, ci, k)];
                             uint32_t m = 1u << k;
@@ -346,27 +356,27 @@ void HCNNConv::backward(const float* grad_out, const float* in, const float* pre
 
     // Weight update: channel-level parallelism, tiled reduction
     auto do_weight_update = [&](int co) {
-        const float* gp = grad_pre.data() + co * N;
+        const float* gp = grad_pre + co * N;
         for (int ci = 0; ci < c_in; ++ci) {
             const float* in_ci = in + ci * N;
-            // Accumulate per-mask gradients across tiles
-            float grad_k[32] = {};  // K = DIM <= 32
+            // Accumulate per-mask gradients across tiles (double accumulators)
+            double grad_k[32] = {};  // K = DIM <= 32
             for (int t = 0; t < N; t += static_cast<int>(TILE)) {
                 int t_end = std::min(t + static_cast<int>(TILE), N);
                 for (int k = 0; k < K; ++k) {
                     uint32_t m = 1u << k;
                     for (int v = t; v < t_end; ++v)
-                        grad_k[k] += gp[v] * in_ci[v ^ m];
+                        grad_k[k] += static_cast<double>(gp[v]) * in_ci[v ^ m];
                 }
             }
             for (int k = 0; k < K; ++k) {
                 int ki = kernel_idx(co, ci, k);
-                float g = grad_k[k];
+                float g = static_cast<float>(grad_k[k]);
                 if (use_adam) {
                     kernel_m[ki] = adam_beta1_ * kernel_m[ki] + (1.0f - adam_beta1_) * g;
                     kernel_m2[ki] = adam_beta2_ * kernel_m2[ki] + (1.0f - adam_beta2_) * g * g;
-                    float mh = kernel_m[ki] / (1.0f - std::pow(adam_beta1_, timestep));
-                    float vh = kernel_m2[ki] / (1.0f - std::pow(adam_beta2_, timestep));
+                    float mh = kernel_m[ki] / bc1;
+                    float vh = kernel_m2[ki] / bc2;
                     kernel[ki] -= learning_rate * (mh / (std::sqrt(vh) + adam_eps_) + weight_decay * kernel[ki]);
                 } else {
                     g += weight_decay * kernel[ki];
@@ -376,13 +386,14 @@ void HCNNConv::backward(const float* grad_out, const float* in, const float* pre
             }
         }
         if (use_bias) {
-            float grad_b = 0.0f;
-            for (int v = 0; v < N; ++v) grad_b += gp[v];
+            double grad_b_d = 0.0;
+            for (int v = 0; v < N; ++v) grad_b_d += gp[v];
+            float grad_b = static_cast<float>(grad_b_d);
             if (use_adam) {
                 bias_m[co] = adam_beta1_ * bias_m[co] + (1.0f - adam_beta1_) * grad_b;
                 bias_m2[co] = adam_beta2_ * bias_m2[co] + (1.0f - adam_beta2_) * grad_b * grad_b;
-                float mh = bias_m[co] / (1.0f - std::pow(adam_beta1_, timestep));
-                float vh = bias_m2[co] / (1.0f - std::pow(adam_beta2_, timestep));
+                float mh = bias_m[co] / bc1;
+                float vh = bias_m2[co] / bc2;
                 bias[co] -= learning_rate * mh / (std::sqrt(vh) + adam_eps_);
             } else {
                 bias_m[co] = momentum * bias_m[co] + grad_b;
@@ -434,19 +445,19 @@ void HCNNConv::compute_gradients(const float* grad_out, const float* in, const f
             float inv_gamma = (gamma_co != 0.0f) ? (1.0f / gamma_co) : 0.0f;
             float inv_N = 1.0f / static_cast<float>(N);
 
-            float dgamma = 0.0f, dbeta = 0.0f;
-            float sum_dx_hat = 0.0f, sum_dx_hat_xhat = 0.0f;
+            double dgamma_d = 0.0, dbeta_d = 0.0;
+            double sum_dx_hat_d = 0.0, sum_dx_hat_xhat_d = 0.0;
             for (int v = 0; v < N; ++v) {
                 float x_hat = (pa[v] - bn_beta[co]) * inv_gamma;
                 float dx_hat = gp[v] * gamma_co;
-                dgamma += gp[v] * x_hat;
-                dbeta += gp[v];
-                sum_dx_hat += dx_hat;
-                sum_dx_hat_xhat += dx_hat * x_hat;
+                dgamma_d += gp[v] * x_hat;
+                dbeta_d += gp[v];
+                sum_dx_hat_d += dx_hat;
+                sum_dx_hat_xhat_d += dx_hat * x_hat;
             }
 
-            float mean_dx = sum_dx_hat * inv_N;
-            float mean_dx_xhat = sum_dx_hat_xhat * inv_N;
+            float mean_dx = static_cast<float>(sum_dx_hat_d * inv_N);
+            float mean_dx_xhat = static_cast<float>(sum_dx_hat_xhat_d * inv_N);
 
             for (int v = 0; v < N; ++v) {
                 float x_hat = (pa[v] - bn_beta[co]) * inv_gamma;
@@ -454,8 +465,8 @@ void HCNNConv::compute_gradients(const float* grad_out, const float* in, const f
                 gp[v] = inv_std * (dx_hat - mean_dx - x_hat * mean_dx_xhat);
             }
 
-            if (bn_gamma_grad) bn_gamma_grad[co] = dgamma;
-            if (bn_beta_grad) bn_beta_grad[co] = dbeta;
+            if (bn_gamma_grad) bn_gamma_grad[co] = static_cast<float>(dgamma_d);
+            if (bn_beta_grad) bn_beta_grad[co] = static_cast<float>(dbeta_d);
         }
     }
 
@@ -489,28 +500,28 @@ void HCNNConv::compute_gradients(const float* grad_out, const float* in, const f
         }
     }
 
-    // Kernel + bias gradient: channel-level, tiled reduction
+    // Kernel + bias gradient: channel-level, tiled reduction (double accumulators)
     auto do_kernel_grad = [&](int co) {
         const float* gp = grad_pre + co * N;
         for (int ci = 0; ci < c_in; ++ci) {
             const float* in_ci = in + ci * N;
-            float grad_k[32] = {};  // K = DIM <= 32
+            double grad_k[32] = {};  // K = DIM <= 32
             for (int t = 0; t < N; t += static_cast<int>(TILE)) {
                 int t_end = std::min(t + static_cast<int>(TILE), N);
                 for (int k = 0; k < K; ++k) {
                     uint32_t m = 1u << k;
                     for (int v = t; v < t_end; ++v)
-                        grad_k[k] += gp[v] * in_ci[v ^ m];
+                        grad_k[k] += static_cast<double>(gp[v]) * in_ci[v ^ m];
                 }
             }
             for (int k = 0; k < K; ++k) {
-                kernel_grad[kernel_idx(co, ci, k)] = grad_k[k];
+                kernel_grad[kernel_idx(co, ci, k)] = static_cast<float>(grad_k[k]);
             }
         }
         if (bias_grad && use_bias) {
-            float grad_b = 0.0f;
-            for (int v = 0; v < N; ++v) grad_b += gp[v];
-            bias_grad[co] = grad_b;
+            double grad_b_d = 0.0;
+            for (int v = 0; v < N; ++v) grad_b_d += gp[v];
+            bias_grad[co] = static_cast<float>(grad_b_d);
         }
     };
 
@@ -532,6 +543,8 @@ void HCNNConv::apply_gradients(const float* kernel_grad, const float* bias_grad,
                            const float* bn_gamma_grad_in, const float* bn_beta_grad_in,
                            int timestep) {
     const bool use_adam = (optimizer_type_ == OptimizerType::ADAM && timestep > 0);
+    const float bc1 = use_adam ? 1.0f - std::pow(adam_beta1_, timestep) : 1.0f;
+    const float bc2 = use_adam ? 1.0f - std::pow(adam_beta2_, timestep) : 1.0f;
     int total_k = c_out * c_in * K;
 
     if (use_adam) {
@@ -539,8 +552,8 @@ void HCNNConv::apply_gradients(const float* kernel_grad, const float* bias_grad,
             float g = kernel_grad[i];
             kernel_m[i] = adam_beta1_ * kernel_m[i] + (1.0f - adam_beta1_) * g;
             kernel_m2[i] = adam_beta2_ * kernel_m2[i] + (1.0f - adam_beta2_) * g * g;
-            float mh = kernel_m[i] / (1.0f - std::pow(adam_beta1_, timestep));
-            float vh = kernel_m2[i] / (1.0f - std::pow(adam_beta2_, timestep));
+            float mh = kernel_m[i] / bc1;
+            float vh = kernel_m2[i] / bc2;
             kernel[i] -= learning_rate * (mh / (std::sqrt(vh) + adam_eps_) + weight_decay * kernel[i]);
         }
     } else {
@@ -557,8 +570,8 @@ void HCNNConv::apply_gradients(const float* kernel_grad, const float* bias_grad,
                 float g = bias_grad[co];
                 bias_m[co] = adam_beta1_ * bias_m[co] + (1.0f - adam_beta1_) * g;
                 bias_m2[co] = adam_beta2_ * bias_m2[co] + (1.0f - adam_beta2_) * g * g;
-                float mh = bias_m[co] / (1.0f - std::pow(adam_beta1_, timestep));
-                float vh = bias_m2[co] / (1.0f - std::pow(adam_beta2_, timestep));
+                float mh = bias_m[co] / bc1;
+                float vh = bias_m2[co] / bc2;
                 bias[co] -= learning_rate * mh / (std::sqrt(vh) + adam_eps_);
             } else {
                 bias_m[co] = momentum * bias_m[co] + bias_grad[co];
@@ -573,13 +586,13 @@ void HCNNConv::apply_gradients(const float* kernel_grad, const float* bias_grad,
                 float gg = bn_gamma_grad_in[co], bg = bn_beta_grad_in[co];
                 bn_gamma_m[co] = adam_beta1_ * bn_gamma_m[co] + (1.0f - adam_beta1_) * gg;
                 bn_gamma_m2[co] = adam_beta2_ * bn_gamma_m2[co] + (1.0f - adam_beta2_) * gg * gg;
-                float mh = bn_gamma_m[co] / (1.0f - std::pow(adam_beta1_, timestep));
-                float vh = bn_gamma_m2[co] / (1.0f - std::pow(adam_beta2_, timestep));
+                float mh = bn_gamma_m[co] / bc1;
+                float vh = bn_gamma_m2[co] / bc2;
                 bn_gamma[co] -= learning_rate * mh / (std::sqrt(vh) + adam_eps_);
                 bn_beta_m[co] = adam_beta1_ * bn_beta_m[co] + (1.0f - adam_beta1_) * bg;
                 bn_beta_m2[co] = adam_beta2_ * bn_beta_m2[co] + (1.0f - adam_beta2_) * bg * bg;
-                mh = bn_beta_m[co] / (1.0f - std::pow(adam_beta1_, timestep));
-                vh = bn_beta_m2[co] / (1.0f - std::pow(adam_beta2_, timestep));
+                mh = bn_beta_m[co] / bc1;
+                vh = bn_beta_m2[co] / bc2;
                 bn_beta[co] -= learning_rate * mh / (std::sqrt(vh) + adam_eps_);
             } else {
                 bn_gamma_m[co] = momentum * bn_gamma_m[co] + bn_gamma_grad_in[co];
@@ -606,6 +619,7 @@ float HCNNConv::activate(float x) const {
     switch (activation) {
         case Activation::RELU:       return (x > 0.0f) ? x : 0.0f;
         case Activation::LEAKY_RELU: return (x > 0.0f) ? x : leaky_alpha_ * x;
+        case Activation::TANH:       return std::tanh(x);
         default:                     return x;
     }
 }
@@ -614,6 +628,15 @@ float HCNNConv::activate_derivative(float x) const {
     switch (activation) {
         case Activation::RELU:       return (x > 0.0f) ? 1.0f : 0.0f;
         case Activation::LEAKY_RELU: return (x > 0.0f) ? 1.0f : leaky_alpha_;
+        case Activation::TANH: {
+            // d/dx tanh(x) = 1 - tanh(x)^2.  We receive the pre-activation
+            // here (consistent with the RELU/LEAKY path that conditions on
+            // pre-activation sign), so recompute tanh(x) once.  The cost is
+            // one extra `tanh` per gradient element; profile-wise this is a
+            // wash because the forward pass already dominates conv compute.
+            float t = std::tanh(x);
+            return 1.0f - t * t;
+        }
         default:                     return 1.0f;
     }
 }

@@ -8,6 +8,8 @@
 
 namespace hcnn {
 
+class ThreadPool;
+
 enum class PoolType { MAX, AVG };
 
 /**
@@ -46,9 +48,12 @@ public:
     int get_input_N() const { return input_N; }
     int get_output_N() const { return output_N; }
 
+    void set_thread_pool(ThreadPool* tp) { thread_pool = tp; }
+
 private:
     int input_dim, output_dim, input_N, output_N;
     PoolType type;
+    ThreadPool* thread_pool = nullptr;
 };
 
 } // namespace hcnn

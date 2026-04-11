@@ -4,16 +4,19 @@
 #include "HCNN.h"
 
 #include <algorithm>
+#include <cstring>
 #include <numeric>
 #include <random>
 #include <stdexcept>
 
 namespace hcnn {
 
-HCNN::HCNN(int start_dim, int num_classes, int input_channels,
-           ReadoutType readout_type, size_t num_threads)
-    : net_(std::make_unique<HCNNNetwork>(start_dim, num_classes, input_channels,
-                                         readout_type, num_threads)) {}
+HCNN::HCNN(int start_dim, int num_outputs, int input_channels,
+           ReadoutType readout_type, TaskType task_type, LossType loss_type,
+           size_t num_threads)
+    : net_(std::make_unique<HCNNNetwork>(start_dim, num_outputs, input_channels,
+                                         readout_type, task_type, loss_type,
+                                         num_threads)) {}
 
 HCNN::~HCNN() = default;
 
@@ -56,13 +59,13 @@ void HCNN::Forward(const float* embedded, float* logits) const {
     net_->forward(embedded, logits);
 }
 
-void HCNN::ForwardBatch(const float* const* raw_inputs, const int* input_lengths,
+void HCNN::ForwardBatch(const float* flat_inputs, int input_length,
                         int batch_size, float* logits_out) {
-    net_->forward_batch(raw_inputs, input_lengths, batch_size, logits_out);
+    net_->forward_batch(flat_inputs, input_length, batch_size, logits_out);
 }
 
 // ---------------------------------------------------------------------------
-//  Training
+//  Training — classification
 // ---------------------------------------------------------------------------
 void HCNN::TrainStep(const float* raw_input, int input_length, int target_class,
                      float learning_rate, float momentum, float weight_decay,
@@ -71,15 +74,15 @@ void HCNN::TrainStep(const float* raw_input, int input_length, int target_class,
                      momentum, weight_decay, class_weights);
 }
 
-void HCNN::TrainBatch(const float* const* inputs, const int* input_lengths,
+void HCNN::TrainBatch(const float* flat_inputs, int input_length,
                       const int* targets, int batch_size,
                       float learning_rate, float momentum, float weight_decay,
                       const float* class_weights) {
-    net_->train_batch(inputs, input_lengths, targets, batch_size,
+    net_->train_batch(flat_inputs, input_length, targets, batch_size,
                       learning_rate, momentum, weight_decay, class_weights);
 }
 
-void HCNN::TrainEpoch(const float* const* inputs, const int* input_lengths,
+void HCNN::TrainEpoch(const float* flat_inputs, int input_length,
                       const int* targets, int sample_count, int batch_size,
                       float learning_rate, float momentum, float weight_decay,
                       const float* class_weights, unsigned shuffle_seed) {
@@ -91,39 +94,117 @@ void HCNN::TrainEpoch(const float* const* inputs, const int* input_lengths,
     }
     if (sample_count == 0) return;
 
-    // Shuffle path: gather inputs/lengths/targets into persistent scratch
-    // buffers in a freshly permuted order, then iterate the gathered arrays
-    // in contiguous chunks.  Buffers grow on demand and are reused across
-    // calls -- after the first shuffled epoch, no allocations occur unless
-    // sample_count grows.
-    if (shuffle_seed != 0) {
-        const auto n = static_cast<size_t>(sample_count);
-        if (shuffle_idx_.size() < n) {
-            shuffle_idx_.resize(n);
-            shuffle_inputs_.resize(n);
-            shuffle_lengths_.resize(n);
-            shuffle_targets_.resize(n);
-        }
-        std::iota(shuffle_idx_.begin(), shuffle_idx_.begin() + n, 0);
+    const auto n  = static_cast<size_t>(sample_count);
+    const auto il = static_cast<size_t>(input_length);
+    const auto bs = static_cast<size_t>(batch_size);
 
+    // Build shuffle permutation if requested.
+    if (shuffle_seed != 0) {
+        if (shuffle_idx_.size() < n) shuffle_idx_.resize(n);
+        std::iota(shuffle_idx_.begin(), shuffle_idx_.begin() + n, 0);
         std::mt19937 rng(shuffle_seed);
         std::shuffle(shuffle_idx_.begin(), shuffle_idx_.begin() + n, rng);
-
-        for (size_t i = 0; i < n; ++i) {
-            int j = shuffle_idx_[i];
-            shuffle_inputs_[i]  = inputs[j];
-            shuffle_lengths_[i] = input_lengths[j];
-            shuffle_targets_[i] = targets[j];
-        }
-        inputs        = shuffle_inputs_.data();
-        input_lengths = shuffle_lengths_.data();
-        targets       = shuffle_targets_.data();
     }
 
     for (int start = 0; start < sample_count; start += batch_size) {
         int chunk = std::min(batch_size, sample_count - start);
-        net_->train_batch(inputs + start, input_lengths + start, targets + start,
-                          chunk, learning_rate, momentum, weight_decay, class_weights);
+
+        if (shuffle_seed != 0) {
+            // Gather this chunk into contiguous scratch buffers.
+            if (shuffle_inputs_.size() < bs * il)
+                shuffle_inputs_.resize(bs * il);
+            if (shuffle_targets_.size() < bs)
+                shuffle_targets_.resize(bs);
+
+            for (int i = 0; i < chunk; ++i) {
+                int j = shuffle_idx_[start + i];
+                std::memcpy(shuffle_inputs_.data() + i * il,
+                            flat_inputs + j * il, il * sizeof(float));
+                shuffle_targets_[i] = targets[j];
+            }
+            net_->train_batch(shuffle_inputs_.data(), input_length,
+                              shuffle_targets_.data(), chunk,
+                              learning_rate, momentum, weight_decay,
+                              class_weights);
+        } else {
+            net_->train_batch(flat_inputs + start * il, input_length,
+                              targets + start, chunk,
+                              learning_rate, momentum, weight_decay,
+                              class_weights);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+//  Training — regression
+// ---------------------------------------------------------------------------
+void HCNN::TrainStepRegression(const float* raw_input, int input_length,
+                               const float* target, float learning_rate,
+                               float momentum, float weight_decay) {
+    net_->train_step_regression(raw_input, input_length, target, learning_rate,
+                                momentum, weight_decay);
+}
+
+void HCNN::TrainBatchRegression(const float* flat_inputs, int input_length,
+                                const float* flat_targets, int batch_size,
+                                float learning_rate, float momentum,
+                                float weight_decay) {
+    net_->train_batch_regression(flat_inputs, input_length, flat_targets,
+                                 batch_size, learning_rate, momentum,
+                                 weight_decay);
+}
+
+void HCNN::TrainEpochRegression(const float* flat_inputs, int input_length,
+                                const float* flat_targets,
+                                int sample_count, int batch_size,
+                                float learning_rate, float momentum,
+                                float weight_decay, unsigned shuffle_seed) {
+    if (batch_size <= 0) {
+        throw std::invalid_argument("HCNN::TrainEpochRegression: batch_size must be > 0");
+    }
+    if (sample_count < 0) {
+        throw std::invalid_argument("HCNN::TrainEpochRegression: sample_count must be >= 0");
+    }
+    if (sample_count == 0) return;
+
+    const auto n   = static_cast<size_t>(sample_count);
+    const auto il  = static_cast<size_t>(input_length);
+    const auto bs  = static_cast<size_t>(batch_size);
+    const auto K   = static_cast<size_t>(net_->get_num_outputs());
+
+    // Build shuffle permutation if requested.
+    if (shuffle_seed != 0) {
+        if (shuffle_idx_.size() < n) shuffle_idx_.resize(n);
+        std::iota(shuffle_idx_.begin(), shuffle_idx_.begin() + n, 0);
+        std::mt19937 rng(shuffle_seed);
+        std::shuffle(shuffle_idx_.begin(), shuffle_idx_.begin() + n, rng);
+    }
+
+    for (int start = 0; start < sample_count; start += batch_size) {
+        int chunk = std::min(batch_size, sample_count - start);
+
+        if (shuffle_seed != 0) {
+            // Gather this chunk into contiguous scratch buffers.
+            if (shuffle_inputs_.size() < bs * il)
+                shuffle_inputs_.resize(bs * il);
+            if (shuffle_targets_f_.size() < bs * K)
+                shuffle_targets_f_.resize(bs * K);
+
+            for (int i = 0; i < chunk; ++i) {
+                int j = shuffle_idx_[start + i];
+                std::memcpy(shuffle_inputs_.data() + i * il,
+                            flat_inputs + j * il, il * sizeof(float));
+                std::memcpy(shuffle_targets_f_.data() + i * K,
+                            flat_targets + j * K, K * sizeof(float));
+            }
+            net_->train_batch_regression(shuffle_inputs_.data(), input_length,
+                                         shuffle_targets_f_.data(), chunk,
+                                         learning_rate, momentum, weight_decay);
+        } else {
+            net_->train_batch_regression(flat_inputs + start * il, input_length,
+                                         flat_targets + start * K, chunk,
+                                         learning_rate, momentum, weight_decay);
+        }
     }
 }
 
@@ -133,6 +214,8 @@ void HCNN::TrainEpoch(const float* const* inputs, const int* input_lengths,
 int HCNN::GetStartDim() const       { return net_->get_start_dim(); }
 int HCNN::GetStartN() const         { return net_->get_start_N(); }
 int HCNN::GetInputChannels() const  { return net_->get_input_channels(); }
-int HCNN::GetNumClasses() const     { return net_->get_num_classes(); }
+int HCNN::GetNumOutputs() const     { return net_->get_num_outputs(); }
+TaskType HCNN::GetTaskType() const  { return net_->get_task_type(); }
+LossType HCNN::GetLossType() const  { return net_->get_loss_type(); }
 
 } // namespace hcnn

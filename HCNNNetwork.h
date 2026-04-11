@@ -6,6 +6,7 @@
 #include "HCNNConv.h"
 #include "HCNNPool.h"
 #include "HCNNReadout.h"
+#include <functional>
 #include <memory>
 #include <vector>
 #include <stdexcept>
@@ -18,6 +19,37 @@ class ThreadPool;
 /// GAP: global average pooling per channel → linear (translation-invariant).
 /// FLATTEN: concatenate all channel×vertex activations → linear (position-sensitive).
 enum class ReadoutType { GAP, FLATTEN };
+
+/// Task the network is being trained for.  Controls the training API
+/// shape (integer class targets vs. float regression targets), the
+/// interpretation of raw readout outputs, and — unless overridden via
+/// `LossType` — the default loss function.
+///
+/// - `Classification`: raw readout outputs are logits, trained through
+///   softmax + cross-entropy loss.  Use `train_step` / `train_batch` /
+///   `TrainEpoch` with integer class targets.
+/// - `Regression`: raw readout outputs are real-valued predictions,
+///   trained through MSE loss (by default).  Use
+///   `train_step_regression` / `train_batch_regression` /
+///   `TrainEpochRegression` with `const float*` targets of length
+///   `num_outputs`.
+enum class TaskType { Classification, Regression };
+
+/// Loss function used by training.
+///
+/// - `Default`: infer from `TaskType` — CrossEntropy for Classification,
+///   MSE for Regression.  This is the normal path.
+/// - `CrossEntropy`: softmax + cross-entropy.  Only valid when
+///   `TaskType == Classification`.
+/// - `MSE`: mean squared error.  Only valid when
+///   `TaskType == Regression`.
+///
+/// Additional loss functions (Huber, L1, ...) will slot in here as
+/// future enum values with no API break — the gradient dispatch in
+/// `HCNNNetwork::compute_classification_grad` and
+/// `HCNNNetwork::compute_regression_grad` is designed to accommodate
+/// them with a single case statement.
+enum class LossType { Default, CrossEntropy, MSE };
 
 /**
  * @class HCNNNetwork
@@ -56,9 +88,11 @@ enum class ReadoutType { GAP, FLATTEN };
  */
 class HCNNNetwork {
 public:
-    HCNNNetwork(int start_dim, int num_classes = 10,
+    HCNNNetwork(int start_dim, int num_outputs = 10,
                 int input_channels = 1,
                 ReadoutType readout_type = ReadoutType::GAP,
+                TaskType task_type = TaskType::Classification,
+                LossType loss_type = LossType::Default,
                 size_t num_threads = 0);
     ~HCNNNetwork();
 
@@ -93,8 +127,11 @@ public:
     void forward(const float* first_layer_activations, float* logits) const;
 
     /// Batch inference: embed + forward for multiple samples in parallel.
-    /// logits_out must have batch_size * num_classes floats.
-    void forward_batch(const float* const* raw_inputs, const int* input_lengths,
+    /// `flat_inputs` is `batch_size * input_length` floats (contiguous,
+    /// row-major).  `logits_out` must have `batch_size * num_outputs` floats.
+    /// For classification nets these are raw (pre-softmax) logits; for
+    /// regression nets they are the raw real-valued predictions.
+    void forward_batch(const float* flat_inputs, int input_length,
                        int batch_size, float* logits_out);
 
     void train_step(const float* raw_input, int input_length,
@@ -104,17 +141,39 @@ public:
 
     /// Mini-batch training: process batch_size samples in parallel, average
     /// gradients, then apply a single weight update. Requires ThreadPool.
-    /// class_weights: optional per-class loss scaling (length num_classes).
-    void train_batch(const float* const* inputs, const int* input_lengths,
+    /// `flat_inputs` is `batch_size * input_length` contiguous floats.
+    /// class_weights: optional per-class loss scaling (length num_outputs).
+    /// Classification only — throws std::logic_error if task_type_ is
+    /// Regression.
+    void train_batch(const float* flat_inputs, int input_length,
                      const int* targets, int batch_size,
                      float learning_rate, float momentum = 0.0f,
                      float weight_decay = 0.0f,
                      const float* class_weights = nullptr);
 
+    /// Regression counterpart of train_step.  `target` is a pointer to
+    /// `num_outputs` floats — the per-output regression targets for a
+    /// single sample.  Throws std::logic_error if task_type_ is
+    /// Classification.
+    void train_step_regression(const float* raw_input, int input_length,
+                               const float* target, float learning_rate,
+                               float momentum = 0.0f,
+                               float weight_decay = 0.0f);
+
+    /// Regression counterpart of train_batch.  `flat_targets` is
+    /// `batch_size * num_outputs` contiguous floats (row-major).
+    /// Throws std::logic_error if task_type_ is Classification.
+    void train_batch_regression(const float* flat_inputs, int input_length,
+                                const float* flat_targets, int batch_size,
+                                float learning_rate, float momentum = 0.0f,
+                                float weight_decay = 0.0f);
+
     int get_start_dim() const { return start_dim; }
     int get_start_N() const { return 1 << start_dim; }
     int get_input_channels() const { return input_channels; }
-    int get_num_classes() const { return num_classes; }
+    int get_num_outputs() const { return num_outputs; }
+    TaskType get_task_type() const { return task_type_; }
+    LossType get_loss_type() const { return loss_type_; }
 
     HCNNConv& get_conv(size_t i) { return conv_layers[i]; }
     HCNNReadout& get_readout() { return readout; }
@@ -126,9 +185,11 @@ public:
 private:
     int start_dim;
     int current_dim;
-    int num_classes;
+    int num_outputs;
     int input_channels;
     ReadoutType readout_type;
+    TaskType task_type_;
+    LossType loss_type_;
     int readout_N{1};          // N passed to readout: 1 for FLATTEN, final_N for GAP
     int adam_timestep_{0};     // Global optimizer timestep (incremented per train_step/train_batch)
     std::vector<HCNNConv> conv_layers;
@@ -177,6 +238,62 @@ private:
     void prepare_batch_buffers();
     void zero_accumulators();
 
+    // ----- Shared training cores -----------------------------------------
+    //
+    // train_step / train_step_regression and train_batch / train_batch_regression
+    // share an identical forward / backward / weight-update pipeline.  The
+    // only thing that differs between classification and regression is the
+    // computation of dL/d(logits) for each sample.  We capture that one
+    // step in a callable and let the wrappers (the public train_* methods)
+    // build the appropriate lambda.
+    //
+    // The "loss-grad" callbacks receive a `probs_scratch` buffer of size
+    // num_outputs floats.  Classification lambdas use it to hold the
+    // softmax probabilities (a side effect of compute_classification_grad);
+    // regression lambdas ignore it.
+    using LossGradStepFn = std::function<void(const float* logits,
+                                              float* grad_logits_out,
+                                              float* probs_scratch)>;
+    using LossGradBatchFn = std::function<void(int sample_idx,
+                                               const float* logits,
+                                               float* grad_logits_out,
+                                               float* probs_scratch)>;
+
+    // Single-sample training core.  Caller is responsible for any task /
+    // target validation -- this method trusts its inputs.
+    void train_step_impl(const float* raw_input, int input_length,
+                         const LossGradStepFn& loss_grad,
+                         float learning_rate, float momentum,
+                         float weight_decay);
+
+    // Mini-batch training core.  Caller is responsible for any task /
+    // target / batch_size validation.
+    void train_batch_impl(const float* flat_inputs, int input_length,
+                          int batch_size,
+                          const LossGradBatchFn& loss_grad,
+                          float learning_rate, float momentum,
+                          float weight_decay);
+
+    // Compute dL/d(logits) for a single sample under a classification loss.
+    // `probs_scratch` must point to at least `num_outputs` floats and
+    // receives the softmax of `logits` as a side effect (callers that
+    // care about the softmax, e.g. for loss reporting, can read it).
+    // Dispatches internally on `loss_type_` so future classification
+    // losses (e.g. focal loss) can slot in with no caller change.
+    // Throws std::logic_error if called on a Regression task.
+    void compute_classification_grad(const float* logits, int target_class,
+                                     float class_weight,
+                                     float* probs_scratch,
+                                     float* grad_logits_out) const;
+
+    // Compute dL/d(logits) for a single sample under a regression loss.
+    // `target` is a pointer to `num_outputs` real-valued targets.
+    // Dispatches internally on `loss_type_` so future regression losses
+    // (Huber, L1, ...) can slot in with no caller change.  Throws
+    // std::logic_error if called on a Classification task.
+    void compute_regression_grad(const float* logits, const float* target,
+                                 float* grad_logits_out) const;
+
     // --- Persistent inference buffers (allocated once, reused every forward_batch) ---
     struct InferenceBuf {
         std::vector<float> buf1, buf2;
@@ -196,13 +313,17 @@ private:
     // RAII guard to disable per-layer threading during batch dispatch
     // and restore it when the scope exits (including on exception).
     struct LayerThreadGuard {
-        std::vector<HCNNConv>& layers;
+        std::vector<HCNNConv>& conv;
+        std::vector<HCNNPool>& pool_layers;
         ThreadPool* pool;
-        LayerThreadGuard(std::vector<HCNNConv>& l, ThreadPool* p) : layers(l), pool(p) {
-            for (auto& layer : layers) layer.set_thread_pool(nullptr);
+        LayerThreadGuard(std::vector<HCNNConv>& c, std::vector<HCNNPool>& p, ThreadPool* tp)
+            : conv(c), pool_layers(p), pool(tp) {
+            for (auto& layer : conv) layer.set_thread_pool(nullptr);
+            for (auto& layer : pool_layers) layer.set_thread_pool(nullptr);
         }
         ~LayerThreadGuard() {
-            for (auto& layer : layers) layer.set_thread_pool(pool);
+            for (auto& layer : conv) layer.set_thread_pool(pool);
+            for (auto& layer : pool_layers) layer.set_thread_pool(pool);
         }
     };
 

@@ -36,7 +36,22 @@ namespace hcnn {
 class ThreadPool;
 
 /// Activation function applied after convolution (and optional batch normalization).
-enum class Activation { NONE, RELU, LEAKY_RELU };
+///
+/// - `NONE`: identity, useful when the layer's output feeds directly into a
+///   downstream nonlinearity (e.g. an antipodal max-pool that is itself the
+///   network's nonlinearity).
+/// - `RELU`, `LEAKY_RELU`: standard rectified-linear variants.  Single-sided,
+///   non-smooth at zero, fast.  Use He/Kaiming initialization (set
+///   automatically by `randomize_weights`).
+/// - `TANH`: smooth, symmetric, bounded in (-1, 1).  The standard activation
+///   for time-series and recurrent-network workloads (LSTM, GRU, ESN), and
+///   the natural choice when HCNN is used as a regression readout for a
+///   reservoir whose state is itself tanh-bounded -- the activations of the
+///   conv layer then live in the same range as the reservoir state, and the
+///   gradient is everywhere smooth (no kink at zero like RELU/LEAKY_RELU,
+///   which interacts badly with the antipodal max-pool's already-non-smooth
+///   gradient).  Uses Xavier/Glorot initialization.
+enum class Activation { NONE, RELU, LEAKY_RELU, TANH };
 
 /// Optimizer for weight updates.
 enum class OptimizerType { SGD, ADAM };
@@ -56,7 +71,7 @@ enum class OptimizerType { SGD, ADAM };
  * the matching first / second moment buffers for SGD-momentum or Adam.
  *
  * Configurable per layer:
- *   - activation: NONE / RELU / LEAKY_RELU
+ *   - activation: NONE / RELU / LEAKY_RELU / TANH
  *   - use_bias: per-output-channel learnable bias
  *   - use_batchnorm: per-channel batch normalization between conv and activation
  *   - optimizer: SGD-with-momentum or Adam (set via set_optimizer)
@@ -106,7 +121,8 @@ public:
      * When scale > 0, uses uniform random values in [-scale, +scale].
      * When scale <= 0, auto-selects based on activation and depth:
      *   ReLU/LeakyReLU with c_in > 1: He/Kaiming uniform, s = sqrt(6 / fan_in).
-     *   First layer (c_in=1) or NONE: Xavier/Glorot uniform, s = sqrt(6 / (fan_in + fan_out)).
+     *   Otherwise (NONE, TANH, or first layer with c_in=1):
+     *     Xavier/Glorot uniform, s = sqrt(6 / (fan_in + fan_out)).
      * fan_in = c_in * K, fan_out = c_out * K.
      *
      * Biases are reset to zero.  Momentum velocity buffers are cleared.
@@ -285,6 +301,8 @@ private:
     // Optimizer configuration
     OptimizerType optimizer_type_ = OptimizerType::SGD;
     float adam_beta1_ = 0.9f, adam_beta2_ = 0.999f, adam_eps_ = 1e-8f;
+
+    std::vector<float> backward_work_;  ///< Persistent scratch for backward() [c_out * N], grown on demand.
 
     ThreadPool* thread_pool = nullptr;  ///< Optional thread pool for parallel execution.
 

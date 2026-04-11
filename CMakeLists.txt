@@ -110,7 +110,15 @@ if(HCNN_BUILD_EXAMPLES)
         ${PROJECT_SOURCE_DIR}/dataloader
     )
 
-    set(HCNN_EXE_TARGETS HypercubeCNN MNISTTrain CoreSmokeTest)
+    # RegressionTimeseries: time-series next-step prediction from a
+    # synthetic reservoir-like state vector.  Validates HCNN as a
+    # scalable regression readout for the workload that drives the
+    # HypercubeRC integration (Phase B).  Self-contained -- no
+    # external data, no HypercubeRC dependency.
+    add_executable(RegressionTimeseries examples/regression_timeseries.cpp)
+
+    set(HCNN_EXE_TARGETS HypercubeCNN MNISTTrain CoreSmokeTest
+                         RegressionTimeseries)
 
     foreach(tgt IN LISTS HCNN_EXE_TARGETS)
         target_link_libraries(${tgt}

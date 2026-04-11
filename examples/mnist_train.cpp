@@ -3,6 +3,7 @@
 
 #include "HCNN.h"
 #include "HCNNDataset.h"
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <filesystem>
@@ -25,42 +26,44 @@ static int argmax(const float* v, int n) {
     return best;
 }
 
-// Flat-array view of a dataset, suitable for HCNN's raw-pointer training
-// and inference APIs.  Built once per dataset and reused across epochs.
-struct DatasetView {
-    std::vector<const float*> inputs;
-    std::vector<int>          lengths;
-    std::vector<int>          targets;
+// Contiguous flat-buffer view of a dataset, suitable for HCNN's flat
+// training and inference APIs.  Built once per dataset and reused across
+// epochs.  Flattens the per-sample vectors in HCNNDataset into a single
+// contiguous buffer.
+struct FlatDataset {
+    std::vector<float> inputs;   // count * input_length contiguous floats
+    std::vector<int>   targets;  // count class indices
+    int count = 0;
+    int input_length = 0;
 
-    explicit DatasetView(const HCNNDataset& ds) {
-        const int n = static_cast<int>(ds.size());
-        inputs.resize(n);
-        lengths.resize(n);
-        targets.resize(n);
-        for (int i = 0; i < n; ++i) {
+    explicit FlatDataset(const HCNNDataset& ds) {
+        count = static_cast<int>(ds.size());
+        if (count == 0) return;
+        input_length = static_cast<int>(ds.get(0).input.size());
+        inputs.resize(static_cast<size_t>(count) * input_length);
+        targets.resize(count);
+        for (int i = 0; i < count; ++i) {
             const auto& s = ds.get(i);
-            inputs[i]  = s.input.data();
-            lengths[i] = static_cast<int>(s.input.size());
+            std::copy(s.input.begin(), s.input.end(),
+                      inputs.begin() + i * input_length);
             targets[i] = s.target_class;
         }
     }
-
-    int size() const { return static_cast<int>(inputs.size()); }
 };
 
-static void evaluate(hcnn::HCNN& net, const DatasetView& view, const char* label) {
-    int K = net.GetNumClasses();
-    int count = view.size();
+static void evaluate(hcnn::HCNN& net, const FlatDataset& ds, const char* label) {
+    int K = net.GetNumOutputs();
+    int count = ds.count;
 
     std::vector<float> all_logits(static_cast<size_t>(count) * K);
-    net.ForwardBatch(view.inputs.data(), view.lengths.data(), count, all_logits.data());
+    net.ForwardBatch(ds.inputs.data(), ds.input_length, count, all_logits.data());
 
     float total_loss = 0.0f;
     int correct = 0;
     for (int i = 0; i < count; ++i) {
         const float* logits = all_logits.data() + i * K;
-        total_loss += cross_entropy_loss(logits, K, view.targets[i]);
-        if (argmax(logits, K) == view.targets[i]) ++correct;
+        total_loss += cross_entropy_loss(logits, K, ds.targets[i]);
+        if (argmax(logits, K) == ds.targets[i]) ++correct;
     }
 
     float avg_loss = total_loss / count;
@@ -71,18 +74,18 @@ static void evaluate(hcnn::HCNN& net, const DatasetView& view, const char* label
 }
 
 static void train_and_evaluate(const char* name, hcnn::HCNN& net,
-                               const DatasetView& train_view,
-                               const DatasetView& test_view,
+                               const FlatDataset& train_ds,
+                               const FlatDataset& test_ds,
                                float lr = 0.01f, int batch_size = 32,
                                float weight_decay = 0.0f) {
     std::cout << "\n=== " << name << " (lr=" << lr
               << ", batch=" << batch_size
               << ", wd=" << weight_decay << ") ===\n";
-    evaluate(net, test_view, "Initial test");
+    evaluate(net, test_ds, "Initial test");
 
     const int epochs = 40;
     const float momentum = 0.9f;
-    const float lr_min = 1e-5f;
+    const float lr_min = 1e-3f;  // 10% of lr_max
     for (int epoch = 0; epoch < epochs; ++epoch) {
         // Cosine annealing: lr decays smoothly from lr to lr_min
         float progress = static_cast<float>(epoch) / static_cast<float>(epochs);
@@ -90,10 +93,8 @@ static void train_and_evaluate(const char* name, hcnn::HCNN& net,
                            * (1.0f + std::cos(static_cast<float>(std::numbers::pi) * progress));
 
         auto t0 = std::chrono::steady_clock::now();
-        // Pass `epoch + 1` as the shuffle seed -- nonzero, distinct per epoch,
-        // and reproducible across runs.
-        net.TrainEpoch(train_view.inputs.data(), train_view.lengths.data(),
-                       train_view.targets.data(), train_view.size(), batch_size,
+        net.TrainEpoch(train_ds.inputs.data(), train_ds.input_length,
+                       train_ds.targets.data(), train_ds.count, batch_size,
                        current_lr, momentum, weight_decay,
                        /*class_weights=*/nullptr,
                        /*shuffle_seed=*/static_cast<unsigned>(epoch + 1));
@@ -101,9 +102,9 @@ static void train_and_evaluate(const char* name, hcnn::HCNN& net,
         double secs = std::chrono::duration<double>(t1 - t0).count();
 
         std::string label = "Epoch " + std::to_string(epoch + 1) + "/" + std::to_string(epochs);
-        evaluate(net, test_view, label.c_str());
+        evaluate(net, test_ds, label.c_str());
         std::cout << "  (lr=" << current_lr << ", " << secs << "s, "
-                  << train_view.size() / secs << " samples/s)\n";
+                  << train_ds.count / secs << " samples/s)\n";
     }
 }
 
@@ -121,8 +122,8 @@ int main() {
               << "Test: " << test_data.size() << " samples\n";
     std::cout << "Threads: " << std::thread::hardware_concurrency() << "\n";
 
-    DatasetView train_view(train_data);
-    DatasetView test_view(test_data);
+    FlatDataset train_flat(train_data);
+    FlatDataset test_flat(test_data);
 
     hcnn::HCNN net(10);
     net.AddConv(32);                          // 1->32 ch,    K=10 (DIM=10)
@@ -135,7 +136,7 @@ int main() {
     net.AddPool(hcnn::PoolType::MAX);         // DIM 7->6,    N 128->64
     net.RandomizeWeights();
 
-    train_and_evaluate("HCNN", net, train_view, test_view, 0.06f, 256, 1e-4f);
+    train_and_evaluate("HCNN", net, train_flat, test_flat, 0.06f, 256, 1e-4f);
 
     return 0;
 }

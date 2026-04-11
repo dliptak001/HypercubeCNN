@@ -2,6 +2,7 @@
 // Copyright 2026 David Liptak
 
 #include "HCNN.h"
+#include <algorithm>
 #include <cmath>
 #include <iostream>
 #include <random>
@@ -19,7 +20,7 @@ int main() {
     net.RandomizeWeights();
 
     int N = net.GetStartN();
-    int K = net.GetNumClasses();
+    int K = net.GetNumOutputs();
 
     // Generate synthetic data
     const int num_samples = 16;
@@ -66,12 +67,13 @@ int main() {
     }
 
     // Check 2: batch inference produces finite logits
-    std::vector<const float*> ptrs(num_samples);
-    std::vector<int> lengths(num_samples, N);
-    for (int i = 0; i < num_samples; ++i) ptrs[i] = inputs[i].data();
+    std::vector<float> flat_inputs(num_samples * N);
+    for (int i = 0; i < num_samples; ++i)
+        std::copy(inputs[i].begin(), inputs[i].end(),
+                  flat_inputs.begin() + i * N);
 
     std::vector<float> all_logits(num_samples * K);
-    net.ForwardBatch(ptrs.data(), lengths.data(), num_samples, all_logits.data());
+    net.ForwardBatch(flat_inputs.data(), N, num_samples, all_logits.data());
 
     bool all_ok = true;
     for (int i = 0; i < num_samples * K; ++i)
