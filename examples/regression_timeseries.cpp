@@ -32,10 +32,11 @@
 //
 // How to scale this up:
 //
-//   The DIM constant below defaults to 10 for fast iteration during
-//   development.  Bump it to 12, 14, or 16 to test how the architecture
-//   scales.  At DIM=16 (N=65536 vertices) per-epoch wall time should
-//   be ~1-3 seconds depending on machine; total runtime ~5-15 minutes.
+//   The DIM constant below defaults to 12 for a good balance between
+//   showcasing real scale and finishing in a reasonable time.  Bump it
+//   to 14 or 16 to test how the architecture scales further.  At
+//   DIM=16 (N=65536 vertices) per-epoch wall time should be ~1-3
+//   seconds depending on machine; total runtime ~5-15 minutes.
 //   If convergence stalls at higher DIM, the most likely fix is more
 //   conv channels (capacity) or a second conv+pool pair (depth) --
 //   the target is not exactly expressible, so the model needs enough
@@ -56,7 +57,7 @@
 // ---------------------------------------------------------------------------
 // Hypercube geometry
 // ---------------------------------------------------------------------------
-constexpr int DIM = 16;            // N = 65536 vertices.  Bump to 12, 14, 16
+constexpr int DIM = 12;            // N = 4096 vertices.  Bump to 14, 16
 constexpr int N   = 1 << DIM;      // to test scaling.
 
 // ---------------------------------------------------------------------------
@@ -311,10 +312,10 @@ int main() {
               << " (" << conv_params << " conv + " << readout_params << " readout)\n\n";
 
     // ----- Training loop -----
-    constexpr int   epochs       = 400;
+    constexpr int   epochs       = 200;
     constexpr int   batch_size   = 32;
-    constexpr float lr_max       = 0.005f;
-    constexpr float lr_min       = 5e-4f;    // 10% of lr_max -- keeps learning
+    constexpr float lr_max       = 0.01f;
+    constexpr float lr_min       = 1e-3f;    // 10% of lr_max -- keeps learning
     constexpr float momentum     = 0.0f;     // Adam handles adaptive scaling
     constexpr float weight_decay = 0.0f;
 
@@ -322,8 +323,7 @@ int main() {
     std::cout << std::scientific << std::setprecision(3)
               << "Initial test MSE: " << before.mse
               << "   target_var: " << before.target_var
-              << std::fixed << std::setprecision(4)
-              << "   R^2: " << before.r2() << "\n\n";
+              << "   1-R^2: " << (1.0 - before.r2()) << "\n\n";
 
     for (int e = 0; e < epochs; ++e) {
         const float progress = static_cast<float>(e) / static_cast<float>(epochs);
@@ -336,6 +336,7 @@ int main() {
                                  train_flat.count, batch_size,
                                  lr, momentum, weight_decay,
                                  /*shuffle_seed=*/static_cast<unsigned>(e + 1));
+
         if (e < 5 || (e + 1) % 10 == 0 || e == epochs - 1) {
             EvalResult train_r = evaluate(net, train_flat);
             EvalResult test_r  = evaluate(net, test_flat);
@@ -347,9 +348,8 @@ int main() {
                       << std::scientific << std::setprecision(3)
                       << "  train_mse=" << std::setw(10) << train_r.mse
                       << "  test_mse="  << std::setw(10) << test_r.mse
-                      << std::fixed << std::setprecision(4)
-                      << "  R^2=" << std::setw(7) << test_r.r2()
-                      << std::setprecision(3)
+                      << "  1-R^2=" << std::setw(10) << (1.0 - test_r.r2())
+                      << std::fixed << std::setprecision(3)
                       << "  (" << secs << "s)\n";
         }
     }
@@ -360,16 +360,22 @@ int main() {
               << std::scientific << std::setprecision(3) << after.mse
               << std::fixed << std::setprecision(2)
               << "  (" << reduction << "% reduction)\n"
-              << std::setprecision(4)
-              << "Final test R^2:    " << after.r2()
-              << "  (1.0 = perfect fit)\n";
+              << std::scientific << std::setprecision(3)
+              << "Final test 1-R^2:  " << (1.0 - after.r2())
+              << "  (0 = perfect fit)\n";
 
-    // ----- Sample predictions (first 8 test timesteps, original scale) -----
+    // ----- Sample predictions (evenly spaced across the test set) -----
+    //
+    // Spread 8 samples across the full test window so the output covers
+    // peaks, troughs, and zero crossings -- not just one phase of the sine.
+    constexpr int n_samples = 8;
+    const int stride = std::max(1, test_flat.count / n_samples);
     std::cout << "\nSample predictions (test set, original scale):\n";
     std::cout << "  step  target      pred       err\n";
     std::vector<float> embedded(N);
     std::vector<float> pred(1);
-    for (int i = 0; i < std::min(8, test_flat.count); ++i) {
+    for (int s = 0; s < n_samples && s * stride < test_flat.count; ++s) {
+        const int i = s * stride;
         net.Embed(test_flat.inputs.data() + i * N, N, embedded.data());
         net.Forward(embedded.data(), pred.data());
         const float target_orig = test_flat.targets[i] + train_target_mean;

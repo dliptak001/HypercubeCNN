@@ -11,7 +11,7 @@ This is the canonical regression example for HCNN and the primary validation for
 - Using `OptimizerType::ADAM` with cosine LR annealing and a floor
 - Target centering (subtract train-set mean before training)
 - Evaluating via `ForwardBatch` for efficient parallel inference
-- Scaling to DIM=16 (N=65,536 vertices, 289 parameters)
+- Scaling to DIM=12 (N=4,096 vertices, 225 parameters)
 
 No external data is required -- the example synthesizes its own reservoir and data on every run.
 
@@ -24,7 +24,7 @@ A synthetic reservoir of N independent leaky tanh integrators is driven by sin(0
 ## Architecture
 
 ```
-Input: N floats -> N vertices (DIM configurable, default 16)
+Input: N floats -> N vertices (DIM configurable, default 12)
   |
 Conv1: 1 -> 16 channels, K=DIM, Activation::TANH, bias
 Pool1: MAX (antipodal), DIM -> DIM-1, N -> N/2
@@ -40,7 +40,7 @@ Readout: GAP per channel -> Linear(16 -> 1) -> prediction
 | Readout bias | 1 |
 | **Total** | **16 * DIM + 33** |
 
-At DIM=16: **289 parameters** predicting from a 65,536-dimensional state (227:1 compression).
+At DIM=12: **225 parameters** predicting from a 4,096-dimensional state (18:1 compression). At DIM=16: 289 parameters from 65,536 dimensions (227:1).
 
 ### Architectural choices
 
@@ -105,9 +105,11 @@ cmake --build cmake-build-release
 ./cmake-build-release/RegressionTimeseries
 ```
 
-No data files, no environment setup -- the example generates its own reservoir and data. At DIM=16 the default run takes ~3 hours (400 epochs x ~26s/epoch). For a quick sanity check, edit the source to set DIM=10 (~1 minute total).
+No data files, no environment setup -- the example generates its own reservoir and data. At DIM=12 the default run completes in a few minutes. For higher scale, bump DIM to 14 or 16 (DIM=16 takes ~3 hours at 400 epochs x ~26s/epoch).
 
-## DIM=16 results (N=65,536 vertices, 289 parameters)
+## DIM=16 scaling results (N=65,536 vertices, 289 parameters)
+
+The default DIM=12 finishes quickly. These DIM=16 results demonstrate that the architecture scales to much larger hypercubes.
 
 Run date: 2026-04-10. Hardware: Windows 11, MinGW g++, 32 threads.
 
