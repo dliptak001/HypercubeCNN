@@ -158,7 +158,6 @@ private:
 
     // remaining_ on its own cache line to avoid false sharing with mutex/cv.
     alignas(64) std::atomic<int> remaining_{0};
-    char pad_[64 - sizeof(std::atomic<int>)] = {};
 };
 
 } // namespace hcnn

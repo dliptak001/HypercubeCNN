@@ -257,8 +257,8 @@ void HCNNConv::backward(const float* grad_out, const float* in, const float* pre
     const bool use_threads = thread_pool && DIM >= THREAD_DIM_THRESHOLD;
 
     // Adam bias-correction denominators — constant for the entire update.
-    const float bc1 = use_adam ? 1.0f - std::pow(adam_beta1_, timestep) : 1.0f;
-    const float bc2 = use_adam ? 1.0f - std::pow(adam_beta2_, timestep) : 1.0f;
+    const float bc1 = use_adam ? 1.0f - static_cast<float>(std::pow(adam_beta1_, timestep)) : 1.0f;
+    const float bc2 = use_adam ? 1.0f - static_cast<float>(std::pow(adam_beta2_, timestep)) : 1.0f;
 
     // Pre-activation gradients (gradient through activation function).
     // Persistent scratch — grown on demand, reused across calls.
@@ -543,8 +543,8 @@ void HCNNConv::apply_gradients(const float* kernel_grad, const float* bias_grad,
                            const float* bn_gamma_grad_in, const float* bn_beta_grad_in,
                            int timestep) {
     const bool use_adam = (optimizer_type_ == OptimizerType::ADAM && timestep > 0);
-    const float bc1 = use_adam ? 1.0f - std::pow(adam_beta1_, timestep) : 1.0f;
-    const float bc2 = use_adam ? 1.0f - std::pow(adam_beta2_, timestep) : 1.0f;
+    const float bc1 = use_adam ? 1.0f - static_cast<float>(std::pow(adam_beta1_, timestep)) : 1.0f;
+    const float bc2 = use_adam ? 1.0f - static_cast<float>(std::pow(adam_beta2_, timestep)) : 1.0f;
     int total_k = c_out * c_in * K;
 
     if (use_adam) {

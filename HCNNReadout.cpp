@@ -73,8 +73,8 @@ void HCNNReadout::backward(const float* grad_logits, const float* in, int N,
                            float weight_decay, int timestep,
                            float* work_buf) {
     const bool use_adam = (optimizer_type_ == OptimizerType::ADAM && timestep > 0);
-    const float bc1 = use_adam ? 1.0f - std::pow(adam_beta1_, timestep) : 1.0f;
-    const float bc2 = use_adam ? 1.0f - std::pow(adam_beta2_, timestep) : 1.0f;
+    const float bc1 = use_adam ? 1.0f - static_cast<float>(std::pow(adam_beta1_, timestep)) : 1.0f;
+    const float bc2 = use_adam ? 1.0f - static_cast<float>(std::pow(adam_beta2_, timestep)) : 1.0f;
     std::vector<float> avg_storage;
     float* channel_avg;
     if (work_buf) {
@@ -176,8 +176,8 @@ void HCNNReadout::apply_gradients(const float* weight_grad, const float* bias_gr
                                   float learning_rate, float momentum, float weight_decay,
                                   int timestep) {
     const bool use_adam = (optimizer_type_ == OptimizerType::ADAM && timestep > 0);
-    const float bc1 = use_adam ? 1.0f - std::pow(adam_beta1_, timestep) : 1.0f;
-    const float bc2 = use_adam ? 1.0f - std::pow(adam_beta2_, timestep) : 1.0f;
+    const float bc1 = use_adam ? 1.0f - static_cast<float>(std::pow(adam_beta1_, timestep)) : 1.0f;
+    const float bc2 = use_adam ? 1.0f - static_cast<float>(std::pow(adam_beta2_, timestep)) : 1.0f;
     int total_w = num_outputs * input_channels;
 
     if (use_adam) {
