@@ -85,8 +85,10 @@ public:
     int get_input_channels() const { return input_channels; }
 
     float* get_weight_data() { return weights.data(); }
+    const float* get_weight_data() const { return weights.data(); }
     int get_weight_size() const { return static_cast<int>(weights.size()); }
     float* get_bias_data() { return bias.data(); }
+    const float* get_bias_data() const { return bias.data(); }
     int get_bias_size() const { return static_cast<int>(bias.size()); }
 
 private:

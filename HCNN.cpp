@@ -4,6 +4,7 @@
 #include "HCNN.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cstring>
 #include <numeric>
 #include <random>
@@ -217,5 +218,73 @@ int HCNN::GetInputChannels() const  { return net_->get_input_channels(); }
 int HCNN::GetNumOutputs() const     { return net_->get_num_outputs(); }
 TaskType HCNN::GetTaskType() const  { return net_->get_task_type(); }
 LossType HCNN::GetLossType() const  { return net_->get_loss_type(); }
+
+// ---------------------------------------------------------------------------
+//  Weight serialization
+// ---------------------------------------------------------------------------
+
+size_t HCNN::GetWeightCount() const {
+    size_t total = 0;
+    for (size_t i = 0; i < net_->get_num_conv(); ++i) {
+        const auto& conv = net_->get_conv(i);
+        total += static_cast<size_t>(conv.get_kernel_size());
+        total += static_cast<size_t>(conv.get_bias_size());
+    }
+    const auto& ro = net_->get_readout();
+    total += static_cast<size_t>(ro.get_weight_size());
+    total += static_cast<size_t>(ro.get_bias_size());
+    return total;
+}
+
+std::vector<float> HCNN::GetWeights() const {
+    std::vector<float> blob;
+    blob.reserve(GetWeightCount());
+
+    for (size_t i = 0; i < net_->get_num_conv(); ++i) {
+        const auto& conv = net_->get_conv(i);
+        const float* k = conv.get_kernel_data();
+        blob.insert(blob.end(), k, k + conv.get_kernel_size());
+        const float* b = conv.get_bias_data();
+        blob.insert(blob.end(), b, b + conv.get_bias_size());
+    }
+
+    const auto& ro = net_->get_readout();
+    const float* w = ro.get_weight_data();
+    blob.insert(blob.end(), w, w + ro.get_weight_size());
+    const float* b = ro.get_bias_data();
+    blob.insert(blob.end(), b, b + ro.get_bias_size());
+
+    return blob;
+}
+
+void HCNN::SetWeights(const std::vector<float>& blob) {
+    if (blob.size() != GetWeightCount()) {
+        throw std::invalid_argument(
+            "HCNN::SetWeights: blob size " + std::to_string(blob.size()) +
+            " != weight count " + std::to_string(GetWeightCount()));
+    }
+
+    size_t offset = 0;
+
+    for (size_t i = 0; i < net_->get_num_conv(); ++i) {
+        auto& conv = net_->get_conv(i);
+        int ks = conv.get_kernel_size();
+        std::memcpy(conv.get_kernel_data(), blob.data() + offset, ks * sizeof(float));
+        offset += static_cast<size_t>(ks);
+        int bs = conv.get_bias_size();
+        std::memcpy(conv.get_bias_data(), blob.data() + offset, bs * sizeof(float));
+        offset += static_cast<size_t>(bs);
+    }
+
+    auto& ro = net_->get_readout();
+    int ws = ro.get_weight_size();
+    std::memcpy(ro.get_weight_data(), blob.data() + offset, ws * sizeof(float));
+    offset += static_cast<size_t>(ws);
+    int bs = ro.get_bias_size();
+    std::memcpy(ro.get_bias_data(), blob.data() + offset, bs * sizeof(float));
+    offset += static_cast<size_t>(bs);
+
+    assert(offset == blob.size());
+}
 
 } // namespace hcnn

@@ -252,6 +252,27 @@ public:
     TaskType GetTaskType() const;
     LossType GetLossType() const;
 
+    // -----------------------------------------------------------------
+    //  Weight serialization
+    // -----------------------------------------------------------------
+
+    /// @brief Total number of trainable parameters across all layers.
+    [[nodiscard]] size_t GetWeightCount() const;
+
+    /// @brief Flatten all trainable parameters into a contiguous vector.
+    ///
+    /// Layout (contiguous, in order):
+    ///   for each conv layer i = 0 .. num_conv-1:
+    ///     conv[i] kernel   (c_out * c_in * K floats)
+    ///     conv[i] bias     (c_out floats, or 0 if bias disabled)
+    ///   readout weights    (num_outputs * input_features floats)
+    ///   readout bias       (num_outputs floats)
+    [[nodiscard]] std::vector<float> GetWeights() const;
+
+    /// @brief Restore all trainable parameters from a contiguous vector.
+    /// @throws std::invalid_argument if blob.size() != GetWeightCount().
+    void SetWeights(const std::vector<float>& blob);
+
 
 private:
     std::unique_ptr<HCNNNetwork> net_;

@@ -262,8 +262,10 @@ public:
     /** @name Raw weight access (for serialization and gradient checking) */
     ///@{
     float* get_kernel_data() { return kernel.data(); }                           ///< Pointer to kernel weight array.
+    const float* get_kernel_data() const { return kernel.data(); }              ///< Const pointer to kernel weight array.
     int get_kernel_size() const { return static_cast<int>(kernel.size()); }      ///< Total kernel weight count.
     float* get_bias_data() { return bias.data(); }                               ///< Pointer to bias array.
+    const float* get_bias_data() const { return bias.data(); }                  ///< Const pointer to bias array.
     int get_bias_size() const { return static_cast<int>(bias.size()); }          ///< Bias element count (0 if bias disabled).
     ///@}
 

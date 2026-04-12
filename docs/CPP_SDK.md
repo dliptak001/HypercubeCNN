@@ -328,6 +328,32 @@ The `LossType` enum is designed for extension: adding a new loss (Huber, L1, foc
 | `GetTaskType()` | `TaskType::Classification` or `TaskType::Regression`. |
 | `GetLossType()` | The resolved loss type (never `LossType::Default` -- resolved at construction). |
 
+#### Weight serialization
+
+```cpp
+[[nodiscard]] size_t GetWeightCount() const;
+[[nodiscard]] std::vector<float> GetWeights() const;
+void SetWeights(const std::vector<float>& blob);
+```
+
+| Method | Description |
+|--------|-------------|
+| `GetWeightCount` | Total number of trainable scalar parameters across all layers (conv kernels + conv biases + readout weights + readout bias). |
+| `GetWeights` | Flatten all trainable parameters into a contiguous `std::vector<float>`. The layout is deterministic — see below. |
+| `SetWeights` | Restore all trainable parameters from a contiguous vector. Throws `std::invalid_argument` if `blob.size() != GetWeightCount()`. |
+
+**Blob layout** (contiguous, in order):
+
+```
+for each conv layer i = 0 .. num_conv-1:
+  conv[i] kernel   (c_out * c_in * K floats)
+  conv[i] bias     (c_out floats, or 0 elements if bias disabled)
+readout weights    (num_outputs * input_features floats)
+readout bias       (num_outputs floats)
+```
+
+`GetWeights` and `SetWeights` are exact inverses: `SetWeights(GetWeights())` is an identity operation. The blob format is portable across runs and can be used for checkpointing, weight transfer between networks with identical architectures, or external optimization (e.g. evolutionary strategies).
+
 ### Internals (re-exported)
 
 `HCNN.h` transitively re-exports `HCNNNetwork.h`, which in turn re-exports `HCNNConv.h`, `HCNNPool.h`, `HCNNReadout.h`, and `ThreadPool.h`. All of these symbols live in `namespace hcnn`. They remain reachable for power users who need:

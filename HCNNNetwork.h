@@ -176,7 +176,9 @@ public:
     LossType get_loss_type() const { return loss_type_; }
 
     HCNNConv& get_conv(size_t i) { return conv_layers[i]; }
+    const HCNNConv& get_conv(size_t i) const { return conv_layers[i]; }
     HCNNReadout& get_readout() { return readout; }
+    const HCNNReadout& get_readout() const { return readout; }
     size_t get_num_conv() const { return conv_layers.size(); }
     size_t get_num_pool() const { return pool_layers.size(); }
     const std::vector<bool>& get_layer_types() const { return is_conv_layer; }
