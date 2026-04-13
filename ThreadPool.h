@@ -146,8 +146,18 @@ private:
                     exception_ = std::current_exception();
             }
 
-            if (remaining_.fetch_sub(1) == 1)
+            if (remaining_.fetch_sub(1) == 1) {
+                // Acquire the mutex once before notifying to close the
+                // lost-wakeup race against ForEach's cv_done_.wait(lock, pred).
+                // Without this, a caller that reads a stale `remaining_` under
+                // its mutex hold, then commits to wait(), can be added to the
+                // CV waiter list AFTER we've already notified — and notify
+                // with an empty waiter list is a no-op.  Taking the mutex here
+                // blocks until the caller has either already seen remaining_==0
+                // or fully entered wait(), making the subsequent notify race-free.
+                { std::lock_guard lock(mutex_); }
                 cv_done_.notify_one();
+            }
         }
     }
 
