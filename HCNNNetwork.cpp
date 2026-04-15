@@ -2,7 +2,9 @@
 // Copyright 2026 David Liptak
 
 #include "HCNNNetwork.h"
+#include "HCNNProfile.h"
 #include "ThreadPool.h"
+#include <chrono>
 #include <algorithm>
 #include <cmath>
 #include <random>
@@ -682,6 +684,12 @@ void HCNNNetwork::train_batch_impl(const float* flat_inputs, int input_length,
     set_training(true);
     ++adam_timestep_;
 
+#if HCNN_PROFILE
+    const auto wall_t0 = std::chrono::steady_clock::now();
+    HCNN_PROFILE_INCREMENT(batches, 1);
+    HCNN_PROFILE_INCREMENT(samples, static_cast<int64_t>(batch_size));
+#endif
+
     int num_layers = static_cast<int>(is_conv_layer.size());
     size_t num_conv = conv_layers.size();
     size_t nt = accum_.size();
@@ -696,10 +704,13 @@ void HCNNNetwork::train_batch_impl(const float* flat_inputs, int input_length,
         auto& b = tbufs_[tid];
 
         // Embed directly into cache[0]
-        auto& c0 = b.cache[0];
-        std::fill(c0.activation.begin(), c0.activation.end(), 0.0f);
-        embed_input(flat_inputs + sample_idx * input_length, input_length,
-                    c0.activation.data());
+        {
+            HCNN_PROFILE_SCOPE(ns_embed);
+            auto& c0 = b.cache[0];
+            std::fill(c0.activation.begin(), c0.activation.end(), 0.0f);
+            embed_input(flat_inputs + sample_idx * input_length, input_length,
+                        c0.activation.data());
+        }
 
         size_t ci = 0, pi = 0;
 
@@ -707,50 +718,68 @@ void HCNNNetwork::train_batch_impl(const float* flat_inputs, int input_length,
         for (int i = 0; i < num_layers; ++i) {
             auto& c = b.cache[i + 1];
             if (is_conv_layer[i]) {
-                conv_layers[ci].forward(b.cache[i].activation.data(),
-                                        c.activation.data(), c.pre_act.data(),
-                                        b.bn_save[ci].empty() ? nullptr
-                                            : b.bn_save[ci].data());
-                // Accumulate per-sample BN mean/var for deferred running-stats update
-                if (!a.conv_bn_mean[ci].empty()) {
-                    int c_out = conv_layers[ci].get_c_out();
-                    for (int co = 0; co < c_out; ++co) {
-                        a.conv_bn_mean[ci][co] += b.bn_save[ci][c_out + co];
-                        a.conv_bn_var[ci][co]  += b.bn_save[ci][2 * c_out + co];
+                {
+                    HCNN_PROFILE_SCOPE(ns_fwd_conv);
+                    conv_layers[ci].forward(b.cache[i].activation.data(),
+                                            c.activation.data(), c.pre_act.data(),
+                                            b.bn_save[ci].empty() ? nullptr
+                                                : b.bn_save[ci].data());
+                    // Accumulate per-sample BN mean/var for deferred running-stats update
+                    if (!a.conv_bn_mean[ci].empty()) {
+                        int c_out = conv_layers[ci].get_c_out();
+                        for (int co = 0; co < c_out; ++co) {
+                            a.conv_bn_mean[ci][co] += b.bn_save[ci][c_out + co];
+                            a.conv_bn_var[ci][co]  += b.bn_save[ci][2 * c_out + co];
+                        }
                     }
                 }
                 ++ci;
             } else {
-                pool_layers[pi].forward(b.cache[i].activation.data(),
-                                        c.activation.data(),
-                                        layer_info_[i].channels,
-                                        &c.max_indices);
+                {
+                    HCNN_PROFILE_SCOPE(ns_fwd_pool);
+                    pool_layers[pi].forward(b.cache[i].activation.data(),
+                                            c.activation.data(),
+                                            layer_info_[i].channels,
+                                            &c.max_indices);
+                }
                 ++pi;
             }
         }
 
         // Readout forward
         auto& final_c = b.cache[num_layers];
-        std::fill(b.logits.begin(), b.logits.end(), 0.0f);
-        readout.forward(final_c.activation.data(), b.logits.data(), readout_N,
-                        b.readout_work.data());
+        {
+            HCNN_PROFILE_SCOPE(ns_fwd_readout);
+            std::fill(b.logits.begin(), b.logits.end(), 0.0f);
+            readout.forward(final_c.activation.data(), b.logits.data(), readout_N,
+                            b.readout_work.data());
+        }
 
         // Loss gradient (provided by caller).  b.probs is per-thread scratch
         // for classification softmax; regression callbacks ignore it.
-        loss_grad(sample_idx, b.logits.data(), b.grad_logits.data(), b.probs.data());
+        {
+            HCNN_PROFILE_SCOPE(ns_loss_grad);
+            loss_grad(sample_idx, b.logits.data(), b.grad_logits.data(), b.probs.data());
+        }
 
         // Readout backward
-        int final_size = layer_info_[num_layers].channels * layer_info_[num_layers].N;
-        std::fill(b.grad_a.begin(), b.grad_a.begin() + final_size, 0.0f);
-        readout.compute_gradients(b.grad_logits.data(), final_c.activation.data(),
-                                  readout_N, b.grad_a.data(),
-                                  b.rw_grad.data(), b.rb_grad.data(),
-                                  b.readout_work.data());
+        {
+            HCNN_PROFILE_SCOPE(ns_bwd_readout);
+            int final_size = layer_info_[num_layers].channels * layer_info_[num_layers].N;
+            std::fill(b.grad_a.begin(), b.grad_a.begin() + final_size, 0.0f);
+            readout.compute_gradients(b.grad_logits.data(), final_c.activation.data(),
+                                      readout_N, b.grad_a.data(),
+                                      b.rw_grad.data(), b.rb_grad.data(),
+                                      b.readout_work.data());
+        }
 
-        for (int i = 0; i < readout.get_weight_size(); ++i)
-            a.readout_weight_grad[i] += b.rw_grad[i];
-        for (int i = 0; i < readout.get_bias_size(); ++i)
-            a.readout_bias_grad[i] += b.rb_grad[i];
+        {
+            HCNN_PROFILE_SCOPE(ns_grad_accum);
+            for (int i = 0; i < readout.get_weight_size(); ++i)
+                a.readout_weight_grad[i] += b.rw_grad[i];
+            for (int i = 0; i < readout.get_bias_size(); ++i)
+                a.readout_bias_grad[i] += b.rb_grad[i];
+        }
 
         // Backward through layers — ping-pong between grad_a and grad_b
         ci = conv_layers.size();
@@ -762,28 +791,35 @@ void HCNNNetwork::train_batch_impl(const float* flat_inputs, int input_length,
 
             if (is_conv_layer[i]) {
                 --ci;
-                conv_layers[ci].compute_gradients(
-                    b.grad_a.data(),
-                    b.cache[i].activation.data(),
-                    b.cache[i + 1].pre_act.data(),
-                    (i > 0) ? b.grad_b.data() : nullptr,
-                    b.kg[ci].data(),
-                    b.bg[ci].empty() ? nullptr : b.bg[ci].data(),
-                    b.conv_work.data(),
-                    b.bn_save[ci].empty() ? nullptr : b.bn_save[ci].data(),
-                    b.bn_gg[ci].empty() ? nullptr : b.bn_gg[ci].data(),
-                    b.bn_bg[ci].empty() ? nullptr : b.bn_bg[ci].data());
+                {
+                    HCNN_PROFILE_SCOPE(ns_bwd_conv);
+                    conv_layers[ci].compute_gradients(
+                        b.grad_a.data(),
+                        b.cache[i].activation.data(),
+                        b.cache[i + 1].pre_act.data(),
+                        (i > 0) ? b.grad_b.data() : nullptr,
+                        b.kg[ci].data(),
+                        b.bg[ci].empty() ? nullptr : b.bg[ci].data(),
+                        b.conv_work.data(),
+                        b.bn_save[ci].empty() ? nullptr : b.bn_save[ci].data(),
+                        b.bn_gg[ci].empty() ? nullptr : b.bn_gg[ci].data(),
+                        b.bn_bg[ci].empty() ? nullptr : b.bn_bg[ci].data());
+                }
 
-                for (int j = 0; j < conv_layers[ci].get_kernel_size(); ++j)
-                    a.conv_kernel_grad[ci][j] += b.kg[ci][j];
-                for (int j = 0; j < conv_layers[ci].get_bias_size(); ++j)
-                    a.conv_bias_grad[ci][j] += b.bg[ci][j];
-                for (int j = 0; j < conv_layers[ci].get_bn_grad_size(); ++j)
-                    a.conv_bn_gamma_grad[ci][j] += b.bn_gg[ci][j];
-                for (int j = 0; j < conv_layers[ci].get_bn_grad_size(); ++j)
-                    a.conv_bn_beta_grad[ci][j] += b.bn_bg[ci][j];
+                {
+                    HCNN_PROFILE_SCOPE(ns_grad_accum);
+                    for (int j = 0; j < conv_layers[ci].get_kernel_size(); ++j)
+                        a.conv_kernel_grad[ci][j] += b.kg[ci][j];
+                    for (int j = 0; j < conv_layers[ci].get_bias_size(); ++j)
+                        a.conv_bias_grad[ci][j] += b.bg[ci][j];
+                    for (int j = 0; j < conv_layers[ci].get_bn_grad_size(); ++j)
+                        a.conv_bn_gamma_grad[ci][j] += b.bn_gg[ci][j];
+                    for (int j = 0; j < conv_layers[ci].get_bn_grad_size(); ++j)
+                        a.conv_bn_beta_grad[ci][j] += b.bn_bg[ci][j];
+                }
             } else {
                 --pi;
+                HCNN_PROFILE_SCOPE(ns_bwd_pool);
                 pool_layers[pi].backward(b.grad_a.data(), b.grad_b.data(),
                                          layer_info_[i].channels,
                                          &b.cache[i + 1].max_indices);
@@ -818,27 +854,34 @@ void HCNNNetwork::train_batch_impl(const float* flat_inputs, int input_length,
         auto& base_bng = accum_[0].conv_bn_gamma_grad[ci];
         auto& base_bnb = accum_[0].conv_bn_beta_grad[ci];
 
-        for (size_t t = 1; t < nt; ++t) {
-            for (int j = 0; j < ks; ++j) base_kg[j] += accum_[t].conv_kernel_grad[ci][j];
-            for (int j = 0; j < bs; ++j) base_bg[j] += accum_[t].conv_bias_grad[ci][j];
-            for (int j = 0; j < bns; ++j) base_bng[j] += accum_[t].conv_bn_gamma_grad[ci][j];
-            for (int j = 0; j < bns; ++j) base_bnb[j] += accum_[t].conv_bn_beta_grad[ci][j];
+        {
+            HCNN_PROFILE_SCOPE(ns_reduce);
+            for (size_t t = 1; t < nt; ++t) {
+                for (int j = 0; j < ks; ++j) base_kg[j] += accum_[t].conv_kernel_grad[ci][j];
+                for (int j = 0; j < bs; ++j) base_bg[j] += accum_[t].conv_bias_grad[ci][j];
+                for (int j = 0; j < bns; ++j) base_bng[j] += accum_[t].conv_bn_gamma_grad[ci][j];
+                for (int j = 0; j < bns; ++j) base_bnb[j] += accum_[t].conv_bn_beta_grad[ci][j];
+            }
+
+            for (int j = 0; j < ks; ++j) base_kg[j] *= scale;
+            for (int j = 0; j < bs; ++j) base_bg[j] *= scale;
+            for (int j = 0; j < bns; ++j) base_bng[j] *= scale;
+            for (int j = 0; j < bns; ++j) base_bnb[j] *= scale;
         }
 
-        for (int j = 0; j < ks; ++j) base_kg[j] *= scale;
-        for (int j = 0; j < bs; ++j) base_bg[j] *= scale;
-        for (int j = 0; j < bns; ++j) base_bng[j] *= scale;
-        for (int j = 0; j < bns; ++j) base_bnb[j] *= scale;
-
-        conv_layers[ci].apply_gradients(base_kg.data(),
-                                        base_bg.empty() ? nullptr : base_bg.data(),
-                                        learning_rate, momentum, weight_decay,
-                                        base_bng.empty() ? nullptr : base_bng.data(),
-                                        base_bnb.empty() ? nullptr : base_bnb.data(),
-                                        adam_timestep_);
+        {
+            HCNN_PROFILE_SCOPE(ns_apply_update);
+            conv_layers[ci].apply_gradients(base_kg.data(),
+                                            base_bg.empty() ? nullptr : base_bg.data(),
+                                            learning_rate, momentum, weight_decay,
+                                            base_bng.empty() ? nullptr : base_bng.data(),
+                                            base_bnb.empty() ? nullptr : base_bnb.data(),
+                                            adam_timestep_);
+        }
 
         // Reduce per-sample BN stats and update running mean/var (race-free)
         if (conv_layers[ci].has_batchnorm()) {
+            HCNN_PROFILE_SCOPE(ns_reduce);
             int c_out = conv_layers[ci].get_c_out();
             auto& base_mean = accum_[0].conv_bn_mean[ci];
             auto& base_var  = accum_[0].conv_bn_var[ci];
@@ -856,16 +899,32 @@ void HCNNNetwork::train_batch_impl(const float* flat_inputs, int input_length,
         }
     }
 
-    auto& base_rw = accum_[0].readout_weight_grad;
-    auto& base_rb = accum_[0].readout_bias_grad;
-    for (size_t t = 1; t < nt; ++t) {
-        for (size_t j = 0; j < base_rw.size(); ++j) base_rw[j] += accum_[t].readout_weight_grad[j];
-        for (size_t j = 0; j < base_rb.size(); ++j) base_rb[j] += accum_[t].readout_bias_grad[j];
+    {
+        HCNN_PROFILE_SCOPE(ns_reduce);
+        auto& base_rw = accum_[0].readout_weight_grad;
+        auto& base_rb = accum_[0].readout_bias_grad;
+        for (size_t t = 1; t < nt; ++t) {
+            for (size_t j = 0; j < base_rw.size(); ++j) base_rw[j] += accum_[t].readout_weight_grad[j];
+            for (size_t j = 0; j < base_rb.size(); ++j) base_rb[j] += accum_[t].readout_bias_grad[j];
+        }
+        for (auto& g : base_rw) g *= scale;
+        for (auto& g : base_rb) g *= scale;
     }
-    for (auto& g : base_rw) g *= scale;
-    for (auto& g : base_rb) g *= scale;
-    readout.apply_gradients(base_rw.data(), base_rb.data(), learning_rate, momentum,
-                            weight_decay, adam_timestep_);
+
+    {
+        HCNN_PROFILE_SCOPE(ns_apply_update);
+        auto& base_rw = accum_[0].readout_weight_grad;
+        auto& base_rb = accum_[0].readout_bias_grad;
+        readout.apply_gradients(base_rw.data(), base_rb.data(), learning_rate, momentum,
+                                weight_decay, adam_timestep_);
+    }
+
+#if HCNN_PROFILE
+    const auto wall_t1 = std::chrono::steady_clock::now();
+    HCNN_PROFILE_INCREMENT(
+        ns_wall_train_batch,
+        std::chrono::duration_cast<std::chrono::nanoseconds>(wall_t1 - wall_t0).count());
+#endif
 }
 
 } // namespace hcnn

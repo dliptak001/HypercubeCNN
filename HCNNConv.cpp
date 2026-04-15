@@ -17,7 +17,130 @@ static constexpr int THREAD_DIM_THRESHOLD = 12;
 // multiple of 8 (AVX-256 width).  At DIM=10 with T=64, 6 of 10 masks
 // stay within-tile; the remaining 4 each touch exactly one other tile,
 // keeping the working set in L1.
+// Used only by the DIM>=THREAD_DIM_THRESHOLD threaded path; the single-
+// threaded full-N helpers below use a block-pair pattern that doesn't
+// need tiling (natural L1 locality from contiguous paired accesses).
 static constexpr size_t TILE = 64;
+
+// ---------------------------------------------------------------------------
+// Full-N block-pair helpers (single-threaded hot path).
+//
+// The XOR-neighbor structure of the hypercube has a key property: for mask
+// m = (1 << k), the pair (v, v^m) lies within a block of 2^(k+1) consecutive
+// vertices, split into two halves of 2^k.  For v in the low half, v^m is v
+// plus 2^k (the high half); for v in the high half, v^m is v minus 2^k.  So
+// rewriting the XOR-indexed inner loop as a two-pass over a block's halves
+// turns it into a pair of contiguous loads that auto-vectorize cleanly.
+//
+// The original tiled XOR-indexed loop defeats SIMD: in_ci[v ^ m] is not a
+// contiguous load pattern as v increments, so the compiler either emits
+// gather ops or falls back to scalar.  The block-pair form below issues
+// only vanilla contiguous loads/stores.
+//
+// Used by the non-threaded path (DIM < THREAD_DIM_THRESHOLD = 12) of
+// HCNNConv::forward, HCNNConv::backward, and HCNNConv::compute_gradients.
+// The threaded path (DIM >= 12) still uses the tiled XOR form because it
+// needs to operate on arbitrary [v_begin, v_end) sub-ranges that may not
+// align to block boundaries.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Forward accumulate: out_co[v] = b + sum_{ci,k} w[co,ci,k] * in_ci[v ^ (1<<k)]
+// `kernel_slice` points to kernel[co, 0, 0], i.e., c_in*K weights in row order.
+inline void conv_accumulate_full(float* out_co, float b,
+                                 const float* in, int c_in, int N, int K,
+                                 const float* kernel_slice)
+{
+    for (int v = 0; v < N; ++v) out_co[v] = b;
+    for (int ci = 0; ci < c_in; ++ci) {
+        const float* in_ci = in + ci * N;
+        const float* kw   = kernel_slice + ci * K;
+        for (int k = 0; k < K; ++k) {
+            const float w    = kw[k];
+            const int half   = 1 << k;
+            const int block  = half << 1;
+            for (int base = 0; base < N; base += block) {
+                const float* in_lo  = in_ci   + base;
+                const float* in_hi  = in_ci   + base + half;
+                float*       out_lo = out_co  + base;
+                float*       out_hi = out_co  + base + half;
+                for (int i = 0; i < half; ++i) {
+                    out_lo[i] += w * in_hi[i];
+                    out_hi[i] += w * in_lo[i];
+                }
+            }
+        }
+    }
+}
+
+// Kernel-gradient accumulate for one (co, ci) pair:
+//   grad_k_out[k] = sum_v grad_pre_co[v] * in_ci[v ^ (1<<k)]
+// Full fp64 accumulation throughout — matches the original numerical
+// semantics bit-for-bit (modulo summation order, which is a ~1e-15
+// reassociation at fp64 precision).  The win vs. the original XOR-indexed
+// loop is contiguous loads: the compiler emits VCVTPS2PD + VFMADD231PD
+// at 4-wide fp64 rather than falling back to scalar/gather on the
+// in_ci[v^m] load pattern.  The simple 2-update reduction below is left
+// in form the compiler's auto-vectorizer recognizes as a reduction with
+// `-ffast-math` — manual unrolling into multiple scalar accumulators
+// defeats that recognition and is a net loss (measured).
+inline void conv_kernel_grad_one(const float* grad_pre_co,
+                                 const float* in_ci, int N, int K,
+                                 double* grad_k_out)
+{
+    for (int k = 0; k < K; ++k) {
+        const int half  = 1 << k;
+        const int block = half << 1;
+        double acc = 0.0;
+        for (int base = 0; base < N; base += block) {
+            const float* gp_lo = grad_pre_co + base;
+            const float* gp_hi = grad_pre_co + base + half;
+            const float* in_lo = in_ci       + base;
+            const float* in_hi = in_ci       + base + half;
+            for (int i = 0; i < half; ++i) {
+                acc += static_cast<double>(gp_lo[i]) * in_hi[i];
+                acc += static_cast<double>(gp_hi[i]) * in_lo[i];
+            }
+        }
+        grad_k_out[k] = acc;
+    }
+}
+
+// Input-gradient accumulate:
+//   gi_ci[v] = sum_{co,k} w[co,ci,k] * grad_pre_co[v ^ (1<<k)]
+// Used only for nl>=2 (first layer has grad_in = nullptr).  Same block-pair
+// restructure as forward — the access pattern is identical, only the buffer
+// roles swap.
+inline void conv_grad_in_full(float* gi_ci,
+                              const float* grad_pre, int c_out, int N, int K,
+                              const float* kernel,
+                              int c_in, int ci)
+{
+    for (int v = 0; v < N; ++v) gi_ci[v] = 0.0f;
+    for (int co = 0; co < c_out; ++co) {
+        const float* gp_co = grad_pre + co * N;
+        // kernel layout: [(co * c_in + ci) * K + k]
+        const float* kw = kernel + (co * c_in + ci) * K;
+        for (int k = 0; k < K; ++k) {
+            const float w    = kw[k];
+            const int half   = 1 << k;
+            const int block  = half << 1;
+            for (int base = 0; base < N; base += block) {
+                const float* gp_lo = gp_co + base;
+                const float* gp_hi = gp_co + base + half;
+                float*       gi_lo = gi_ci + base;
+                float*       gi_hi = gi_ci + base + half;
+                for (int i = 0; i < half; ++i) {
+                    gi_lo[i] += w * gp_hi[i];
+                    gi_hi[i] += w * gp_lo[i];
+                }
+            }
+        }
+    }
+}
+
+}  // anonymous namespace
 
 HCNNConv::HCNNConv(int dim, int c_in, int c_out, Activation activation,
                    bool use_bias, bool use_batchnorm)
@@ -116,8 +239,11 @@ void HCNNConv::forward(const float* in, float* out, float* pre_act,
     for (int co = 0; co < c_out; ++co) {
         float* out_co = out + co * N;
         float b = use_bias ? bias[co] : 0.0f;
+        const float* kernel_slice = kernel.data() + co * c_in * K;
 
-        // Tiled accumulation lambda (shared by both BN and non-BN paths)
+        // Tiled accumulation lambda — used by the threaded path (DIM>=12).
+        // For sub-ranges [v_begin, v_end) that don't align to block boundaries,
+        // we can't use the block-pair pattern, so keep the XOR form here.
         auto do_accumulate = [&](size_t v_begin, size_t v_end) {
             for (size_t t = v_begin; t < v_end; t += TILE) {
                 size_t t_end = std::min(t + TILE, v_end);
@@ -135,15 +261,21 @@ void HCNNConv::forward(const float* in, float* out, float* pre_act,
             }
         };
 
+        // Full-N block-pair path (non-threaded — the hot single-threaded
+        // path for nl=1 DIM 6..11 which is the primary config).
+        auto do_accumulate_full = [&]() {
+            conv_accumulate_full(out_co, b, in, c_in, N, K, kernel_slice);
+        };
+
         if (use_batchnorm) {
             // Split path: accumulate → BN → activate
 
-            // Phase 1: Tiled weighted sum (no activation yet)
+            // Phase 1: weighted sum (no activation yet)
             if (use_threads) {
                 thread_pool->ForEach(static_cast<size_t>(N),
                     [&](size_t, size_t begin, size_t end) { do_accumulate(begin, end); });
             } else {
-                do_accumulate(0, static_cast<size_t>(N));
+                do_accumulate_full();
             }
 
             // Phase 2: Batch normalization across all N vertices for this channel
@@ -208,7 +340,12 @@ void HCNNConv::forward(const float* in, float* out, float* pre_act,
             }
 
         } else {
-            // Fused path (no BN): accumulate + activate in one tiled pass
+            // Non-BN path: accumulate (block-pair single-threaded, tiled
+            // threaded) then activate in a separate linear pass.  The
+            // two-pass form adds one read+write per vertex vs. the original
+            // fused tiled version, but the block-pair accumulation phase
+            // vectorizes cleanly — net win for nl=1 DIM<12 (the primary
+            // config).
             auto do_vertices = [&](size_t v_begin, size_t v_end) {
                 for (size_t t = v_begin; t < v_end; t += TILE) {
                     size_t t_end = std::min(t + TILE, v_end);
@@ -240,7 +377,17 @@ void HCNNConv::forward(const float* in, float* out, float* pre_act,
                 thread_pool->ForEach(static_cast<size_t>(N),
                     [&](size_t, size_t begin, size_t end) { do_vertices(begin, end); });
             } else {
-                do_vertices(0, static_cast<size_t>(N));
+                do_accumulate_full();
+                if (pre_act) {
+                    float* pa = pre_act + co * N;
+                    for (int v = 0; v < N; ++v) {
+                        pa[v] = out_co[v];
+                        out_co[v] = activate(out_co[v]);
+                    }
+                } else {
+                    for (int v = 0; v < N; ++v)
+                        out_co[v] = activate(out_co[v]);
+                }
             }
         }
     }
@@ -324,7 +471,7 @@ void HCNNConv::backward(const float* grad_out, const float* in, const float* pre
         }
     }
 
-    // Input gradient: vertex-level parallelism, tiled
+    // Input gradient: vertex-level parallelism, tiled (threaded) or block-pair (not).
     if (grad_in) {
         for (int ci = 0; ci < c_in; ++ci) {
             float* gi = grad_in + ci * N;
@@ -349,26 +496,20 @@ void HCNNConv::backward(const float* grad_out, const float* in, const float* pre
                 thread_pool->ForEach(static_cast<size_t>(N),
                     [&](size_t, size_t b, size_t e) { do_vertices(b, e); });
             } else {
-                do_vertices(0, static_cast<size_t>(N));
+                conv_grad_in_full(gi, grad_pre, c_out, N, K,
+                                  kernel.data(), c_in, ci);
             }
         }
     }
 
-    // Weight update: channel-level parallelism, tiled reduction
+    // Weight update: channel-level parallelism across c_out.  Each call
+    // sweeps full [0, N) via the block-pair kernel-grad helper.
     auto do_weight_update = [&](int co) {
         const float* gp = grad_pre + co * N;
+        double grad_k[32];  // K = DIM <= 32
         for (int ci = 0; ci < c_in; ++ci) {
             const float* in_ci = in + ci * N;
-            // Accumulate per-mask gradients across tiles (double accumulators)
-            double grad_k[32] = {};  // K = DIM <= 32
-            for (int t = 0; t < N; t += static_cast<int>(TILE)) {
-                int t_end = std::min(t + static_cast<int>(TILE), N);
-                for (int k = 0; k < K; ++k) {
-                    uint32_t m = 1u << k;
-                    for (int v = t; v < t_end; ++v)
-                        grad_k[k] += static_cast<double>(gp[v]) * in_ci[v ^ m];
-                }
-            }
+            conv_kernel_grad_one(gp, in_ci, N, K, grad_k);
             for (int k = 0; k < K; ++k) {
                 int ki = kernel_idx(co, ci, k);
                 float g = static_cast<float>(grad_k[k]);
@@ -470,7 +611,8 @@ void HCNNConv::compute_gradients(const float* grad_out, const float* in, const f
         }
     }
 
-    // Input gradient: vertex-level, tiled
+    // Input gradient: vertex-level, tiled (threaded) or full-N block-pair.
+    // Dead code for nl=1 (first/only layer has grad_in=nullptr), live for nl>=2.
     if (grad_in) {
         for (int ci = 0; ci < c_in; ++ci) {
             float* gi = grad_in + ci * N;
@@ -495,28 +637,25 @@ void HCNNConv::compute_gradients(const float* grad_out, const float* in, const f
                 thread_pool->ForEach(static_cast<size_t>(N),
                     [&](size_t, size_t b, size_t e) { do_vertices(b, e); });
             } else {
-                do_vertices(0, static_cast<size_t>(N));
+                conv_grad_in_full(gi, grad_pre, c_out, N, K,
+                                  kernel.data(), c_in, ci);
             }
         }
     }
 
-    // Kernel + bias gradient: channel-level, tiled reduction (double accumulators)
+    // Kernel + bias gradient: channel-level parallelism across c_out.
+    // Each call sweeps full [0, N) via the block-pair helper, so threading
+    // (which splits c_out) and the helper's full-N assumption are
+    // compatible — no non-threaded/threaded split needed here.
     auto do_kernel_grad = [&](int co) {
         const float* gp = grad_pre + co * N;
+        double grad_k_buf[32];  // K <= DIM <= 32 per library constraints
         for (int ci = 0; ci < c_in; ++ci) {
             const float* in_ci = in + ci * N;
-            double grad_k[32] = {};  // K = DIM <= 32
-            for (int t = 0; t < N; t += static_cast<int>(TILE)) {
-                int t_end = std::min(t + static_cast<int>(TILE), N);
-                for (int k = 0; k < K; ++k) {
-                    uint32_t m = 1u << k;
-                    for (int v = t; v < t_end; ++v)
-                        grad_k[k] += static_cast<double>(gp[v]) * in_ci[v ^ m];
-                }
-            }
-            for (int k = 0; k < K; ++k) {
-                kernel_grad[kernel_idx(co, ci, k)] = static_cast<float>(grad_k[k]);
-            }
+            conv_kernel_grad_one(gp, in_ci, N, K, grad_k_buf);
+            for (int k = 0; k < K; ++k)
+                kernel_grad[kernel_idx(co, ci, k)] =
+                    static_cast<float>(grad_k_buf[k]);
         }
         if (bias_grad && use_bias) {
             double grad_b_d = 0.0;
