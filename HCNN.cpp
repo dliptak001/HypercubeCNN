@@ -9,6 +9,7 @@
 #include <numeric>
 #include <random>
 #include <stdexcept>
+#include <string>
 
 namespace hcnn {
 
