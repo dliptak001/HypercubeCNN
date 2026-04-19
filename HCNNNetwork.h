@@ -312,6 +312,25 @@ private:
     mutable std::vector<float> fwd_buf1_;
     mutable std::vector<float> fwd_buf2_;
 
+    // --- Persistent single-step training buffers (allocated once, reused every train_step) ---
+    struct StepCache {
+        std::vector<float> activation;
+        std::vector<float> pre_act;
+        std::vector<float> bn_save;
+        std::vector<int> max_indices;
+    };
+    struct StepBuf {
+        std::vector<float> embedded;
+        std::vector<StepCache> cache;
+        std::vector<int> layer_N;
+        std::vector<int> layer_ch;
+        std::vector<float> logits, probs, grad_logits;
+        std::vector<float> grad_a, grad_b;
+    };
+    bool step_buf_ready_{false};
+    StepBuf step_buf_;
+    void prepare_step_buffers();
+
     // RAII guard to disable per-layer threading during batch dispatch
     // and restore it when the scope exits (including on exception).
     struct LayerThreadGuard {

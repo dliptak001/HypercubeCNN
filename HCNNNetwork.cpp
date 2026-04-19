@@ -564,6 +564,59 @@ void HCNNNetwork::train_batch_regression(const float* flat_inputs,
 // new task type or loss function does not require touching these bodies.
 // ---------------------------------------------------------------------------
 
+void HCNNNetwork::prepare_step_buffers() {
+    if (step_buf_ready_) return;
+
+    const int N = 1 << start_dim;
+    const int total = input_channels * N;
+    const int num_layers = static_cast<int>(is_conv_layer.size());
+
+    step_buf_.embedded.resize(total);
+    step_buf_.cache.resize(num_layers + 1);
+    step_buf_.layer_N.resize(num_layers + 1);
+    step_buf_.layer_ch.resize(num_layers + 1);
+
+    step_buf_.layer_N[0] = N;
+    step_buf_.layer_ch[0] = input_channels;
+    step_buf_.cache[0].activation.resize(total);
+
+    int cur_N = N;
+    int cur_ch = input_channels;
+    size_t ci = 0, pi = 0;
+    int max_act_size = total;
+
+    for (int i = 0; i < num_layers; ++i) {
+        auto& c = step_buf_.cache[i + 1];
+        if (is_conv_layer[i]) {
+            cur_ch = conv_layers[ci].get_c_out();
+            int sz = cur_ch * cur_N;
+            c.activation.resize(sz);
+            c.pre_act.resize(sz);
+            c.bn_save.resize(conv_layers[ci].get_bn_save_size());
+            if (sz > max_act_size) max_act_size = sz;
+            ++ci;
+        } else {
+            int out_N = pool_layers[pi].get_output_N();
+            int sz = cur_ch * out_N;
+            c.activation.resize(sz);
+            c.max_indices.resize(sz);
+            cur_N = out_N;
+            if (sz > max_act_size) max_act_size = sz;
+            ++pi;
+        }
+        step_buf_.layer_N[i + 1] = cur_N;
+        step_buf_.layer_ch[i + 1] = cur_ch;
+    }
+
+    step_buf_.logits.resize(num_outputs);
+    step_buf_.probs.resize(num_outputs);
+    step_buf_.grad_logits.resize(num_outputs);
+    step_buf_.grad_a.resize(max_act_size);
+    step_buf_.grad_b.resize(max_act_size);
+
+    step_buf_ready_ = true;
+}
+
 void HCNNNetwork::train_step_impl(const float* raw_input, int input_length,
                                   const LossGradStepFn& loss_grad,
                                   float learning_rate, float momentum,
@@ -571,103 +624,80 @@ void HCNNNetwork::train_step_impl(const float* raw_input, int input_length,
     if (conv_layers.empty()) {
         throw std::runtime_error("HCNNNetwork::train_step_impl called with no conv layers");
     }
-    int N = 1 << start_dim;
-    int total = input_channels * N;
-    std::vector<float> embedded(total, 0.0f);
-    embed_input(raw_input, input_length, embedded.data());
+    prepare_step_buffers();
 
-    int num_layers = static_cast<int>(is_conv_layer.size());
+    const int num_layers = static_cast<int>(is_conv_layer.size());
     ++adam_timestep_;
 
     set_training(true);
 
-    // Per-layer cache for backprop
-    struct LayerCache {
-        std::vector<float> activation;
-        std::vector<float> pre_act;       // conv layers only
-        std::vector<float> bn_save;       // BN inv_std cache (conv layers with BN)
-        std::vector<int> max_indices;     // max-pool layers only
-        int N;
-        int channels;
-    };
+    std::fill(step_buf_.embedded.begin(), step_buf_.embedded.end(), 0.0f);
+    embed_input(raw_input, input_length, step_buf_.embedded.data());
 
-    std::vector<LayerCache> cache(num_layers + 1);
+    auto& cache = step_buf_.cache;
+    std::copy(step_buf_.embedded.begin(), step_buf_.embedded.end(),
+              cache[0].activation.begin());
 
-    // Cache[0] = embedded input
-    cache[0].N = N;
-    cache[0].channels = input_channels;
-    cache[0].activation.assign(embedded.begin(), embedded.end());
-
-    int cur_N = N;
     size_t ci = 0, pi = 0;
 
-    // Forward pass — store all intermediate activations
     for (int i = 0; i < num_layers; ++i) {
         auto& c = cache[i + 1];
         if (is_conv_layer[i]) {
-            c.N = cur_N;
-            c.channels = conv_layers[ci].get_c_out();
-            c.activation.resize(c.channels * cur_N);
-            c.pre_act.resize(c.channels * cur_N);
-            c.bn_save.resize(conv_layers[ci].get_bn_save_size());
             conv_layers[ci].forward(cache[i].activation.data(),
                                     c.activation.data(), c.pre_act.data(),
                                     c.bn_save.empty() ? nullptr : c.bn_save.data());
             ++ci;
         } else {
-            c.N = pool_layers[pi].get_output_N();
-            c.channels = cache[i].channels;
-            c.activation.resize(c.channels * c.N);
             pool_layers[pi].forward(cache[i].activation.data(),
-                                    c.activation.data(), c.channels,
+                                    c.activation.data(),
+                                    step_buf_.layer_ch[i],
                                     &c.max_indices);
-            cur_N = c.N;
             ++pi;
         }
     }
 
-    // Readout forward
-    auto& final_c = cache[num_layers];
-    std::vector<float> logits(num_outputs, 0.0f);
-    readout.forward(final_c.activation.data(), logits.data(), readout_N);
+    std::fill(step_buf_.logits.begin(), step_buf_.logits.end(), 0.0f);
+    readout.forward(cache[num_layers].activation.data(),
+                    step_buf_.logits.data(), readout_N);
 
-    // Loss gradient (provided by caller).  probs_scratch is sized to
-    // num_outputs and is used by classification callbacks for the softmax;
-    // regression callbacks ignore it.
-    std::vector<float> probs(num_outputs);
-    std::vector<float> grad_logits(num_outputs);
-    loss_grad(logits.data(), grad_logits.data(), probs.data());
+    loss_grad(step_buf_.logits.data(), step_buf_.grad_logits.data(),
+              step_buf_.probs.data());
 
-    // Backward through readout
-    std::vector<float> grad_current(final_c.channels * final_c.N);
-    readout.backward(grad_logits.data(), final_c.activation.data(),
-                     readout_N, grad_current.data(), learning_rate, momentum,
+    int final_sz = step_buf_.layer_ch[num_layers] * step_buf_.layer_N[num_layers];
+    std::fill(step_buf_.grad_a.begin(), step_buf_.grad_a.begin() + final_sz, 0.0f);
+    readout.backward(step_buf_.grad_logits.data(),
+                     cache[num_layers].activation.data(),
+                     readout_N, step_buf_.grad_a.data(), learning_rate, momentum,
                      weight_decay, adam_timestep_);
 
-    // Backward through layers in reverse
     ci = conv_layers.size();
     pi = pool_layers.size();
 
+    float* grad_cur = step_buf_.grad_a.data();
+    float* grad_prev = step_buf_.grad_b.data();
+
     for (int i = num_layers - 1; i >= 0; --i) {
-        std::vector<float> grad_prev(cache[i].channels * cache[i].N, 0.0f);
+        int prev_sz = step_buf_.layer_ch[i] * step_buf_.layer_N[i];
+        std::fill(grad_prev, grad_prev + prev_sz, 0.0f);
 
         if (is_conv_layer[i]) {
             --ci;
-            conv_layers[ci].backward(grad_current.data(),
+            conv_layers[ci].backward(grad_cur,
                                      cache[i].activation.data(),
                                      cache[i + 1].pre_act.data(),
-                                     (i > 0) ? grad_prev.data() : nullptr,
+                                     (i > 0) ? grad_prev : nullptr,
                                      learning_rate, momentum, weight_decay,
                                      cache[i + 1].bn_save.empty() ? nullptr
                                          : cache[i + 1].bn_save.data(),
                                      adam_timestep_);
         } else {
             --pi;
-            pool_layers[pi].backward(grad_current.data(), grad_prev.data(),
-                                     cache[i].channels, &cache[i + 1].max_indices);
+            pool_layers[pi].backward(grad_cur, grad_prev,
+                                     step_buf_.layer_ch[i],
+                                     &cache[i + 1].max_indices);
         }
 
-        grad_current = std::move(grad_prev);
+        std::swap(grad_cur, grad_prev);
     }
 }
 
