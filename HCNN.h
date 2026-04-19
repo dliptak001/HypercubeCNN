@@ -124,6 +124,11 @@ public:
     void SetOptimizer(OptimizerType type, float beta1 = 0.9f,
                       float beta2 = 0.999f, float eps = 1e-8f);
 
+    /// Eagerly allocate all internal work buffers (single-step, batch,
+    /// and inference).  Normally these are allocated lazily on first use;
+    /// call this after architecture setup to move the cost to startup.
+    void PrepareBuffers();
+
     // -----------------------------------------------------------------
     //  Inference
     // -----------------------------------------------------------------

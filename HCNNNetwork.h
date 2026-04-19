@@ -184,6 +184,10 @@ public:
     const std::vector<bool>& get_layer_types() const { return is_conv_layer; }
     const std::vector<int>& get_channel_counts() const { return channel_counts; }
 
+    /// Eagerly allocate all internal work buffers (single-step, batch,
+    /// inference).  Each is idempotent — safe to call multiple times.
+    void prepare_all_buffers();
+
 private:
     int start_dim;
     int current_dim;

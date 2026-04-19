@@ -49,6 +49,10 @@ void HCNN::SetOptimizer(OptimizerType type, float beta1, float beta2, float eps)
     net_->set_optimizer(type, beta1, beta2, eps);
 }
 
+void HCNN::PrepareBuffers() {
+    net_->prepare_all_buffers();
+}
+
 // ---------------------------------------------------------------------------
 //  Inference
 // ---------------------------------------------------------------------------

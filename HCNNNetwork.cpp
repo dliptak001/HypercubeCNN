@@ -287,6 +287,12 @@ void HCNNNetwork::train_step(const float* raw_input, int input_length,
 // ---------------------------------------------------------------------------
 // Mini-batch training: samples are processed in parallel, gradients averaged,
 // then a single weight update is applied.
+void HCNNNetwork::prepare_all_buffers() {
+    prepare_step_buffers();
+    prepare_batch_buffers();
+    prepare_inference_buffers();
+}
+
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // Lazily allocate persistent per-thread buffers on first train_batch call.
