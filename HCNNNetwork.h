@@ -311,6 +311,7 @@ private:
     // layer in the network and reused across calls.
     mutable std::vector<float> fwd_buf1_;
     mutable std::vector<float> fwd_buf2_;
+    mutable std::vector<float> fwd_readout_avg_;
 
     // --- Persistent single-step training buffers (allocated once, reused every train_step) ---
     struct StepCache {
@@ -326,6 +327,7 @@ private:
         std::vector<int> layer_ch;
         std::vector<float> logits, probs, grad_logits;
         std::vector<float> grad_a, grad_b;
+        std::vector<float> readout_avg;
     };
     bool step_buf_ready_{false};
     StepBuf step_buf_;

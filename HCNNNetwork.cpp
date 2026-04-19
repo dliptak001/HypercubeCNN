@@ -157,6 +157,7 @@ void HCNNNetwork::forward(const float* first_layer_activations, float* logits) c
     if (static_cast<int>(fwd_buf1_.size()) < max_size) {
         fwd_buf1_.resize(max_size);
         fwd_buf2_.resize(max_size);
+        fwd_readout_avg_.resize(channel_counts.back());
     }
     float* current  = fwd_buf1_.data();
     float* next_buf = fwd_buf2_.data();
@@ -179,7 +180,7 @@ void HCNNNetwork::forward(const float* first_layer_activations, float* logits) c
         std::swap(current, next_buf);
     }
 
-    readout.forward(current, logits, readout_N);
+    readout.forward(current, logits, readout_N, fwd_readout_avg_.data());
 }
 
 void HCNNNetwork::prepare_inference_buffers() {
@@ -611,6 +612,7 @@ void HCNNNetwork::prepare_step_buffers() {
     step_buf_.logits.resize(num_outputs);
     step_buf_.probs.resize(num_outputs);
     step_buf_.grad_logits.resize(num_outputs);
+    step_buf_.readout_avg.resize(cur_ch);
     step_buf_.grad_a.resize(max_act_size);
     step_buf_.grad_b.resize(max_act_size);
 
@@ -658,7 +660,8 @@ void HCNNNetwork::train_step_impl(const float* raw_input, int input_length,
 
     std::fill(step_buf_.logits.begin(), step_buf_.logits.end(), 0.0f);
     readout.forward(cache[num_layers].activation.data(),
-                    step_buf_.logits.data(), readout_N);
+                    step_buf_.logits.data(), readout_N,
+                    step_buf_.readout_avg.data());
 
     loss_grad(step_buf_.logits.data(), step_buf_.grad_logits.data(),
               step_buf_.probs.data());
@@ -668,7 +671,8 @@ void HCNNNetwork::train_step_impl(const float* raw_input, int input_length,
     readout.backward(step_buf_.grad_logits.data(),
                      cache[num_layers].activation.data(),
                      readout_N, step_buf_.grad_a.data(), learning_rate, momentum,
-                     weight_decay, adam_timestep_);
+                     weight_decay, adam_timestep_,
+                     step_buf_.readout_avg.data());
 
     ci = conv_layers.size();
     pi = pool_layers.size();
