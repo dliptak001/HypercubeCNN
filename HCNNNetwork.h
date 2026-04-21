@@ -15,11 +15,6 @@ namespace hcnn {
 
 class ThreadPool;
 
-/// Readout strategy after the final conv/pool layer.
-/// GAP: global average pooling per channel → linear (translation-invariant).
-/// FLATTEN: concatenate all channel×vertex activations → linear (position-sensitive).
-enum class ReadoutType { GAP, FLATTEN };
-
 /// Task the network is being trained for.  Controls the training API
 /// shape (integer class targets vs. float regression targets), the
 /// interpretation of raw readout outputs, and — unless overridden via
@@ -90,7 +85,6 @@ class HCNNNetwork {
 public:
     HCNNNetwork(int start_dim, int num_outputs = 10,
                 int input_channels = 1,
-                ReadoutType readout_type = ReadoutType::GAP,
                 TaskType task_type = TaskType::Classification,
                 LossType loss_type = LossType::Default,
                 size_t num_threads = 0);
@@ -193,10 +187,8 @@ private:
     int current_dim;
     int num_outputs;
     int input_channels;
-    ReadoutType readout_type;
     TaskType task_type_;
     LossType loss_type_;
-    int readout_N{1};          // N passed to readout: 1 for FLATTEN, final_N for GAP
     int adam_timestep_{0};     // Global optimizer timestep (incremented per train_step/train_batch)
     std::vector<HCNNConv> conv_layers;
     std::vector<HCNNPool> pool_layers;

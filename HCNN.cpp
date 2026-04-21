@@ -14,10 +14,10 @@
 namespace hcnn {
 
 HCNN::HCNN(int start_dim, int num_outputs, int input_channels,
-           ReadoutType readout_type, TaskType task_type, LossType loss_type,
+           TaskType task_type, LossType loss_type,
            size_t num_threads)
     : net_(std::make_unique<HCNNNetwork>(start_dim, num_outputs, input_channels,
-                                         readout_type, task_type, loss_type,
+                                         task_type, loss_type,
                                          num_threads)) {}
 
 HCNN::~HCNN() = default;

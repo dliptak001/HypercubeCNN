@@ -115,9 +115,9 @@ int main() {
 
     std::cout << "Loading MNIST from " << data_dir << "...\n";
     auto train_data = load_mnist((data_dir / "train-images-idx3-ubyte").string(),
-                                 (data_dir / "train-labels-idx1-ubyte").string(), 20000);
+                                 (data_dir / "train-labels-idx1-ubyte").string(), 60000);
     auto test_data  = load_mnist((data_dir / "t10k-images-idx3-ubyte").string(),
-                                 (data_dir / "t10k-labels-idx1-ubyte").string(), 2000);
+                                 (data_dir / "t10k-labels-idx1-ubyte").string(), 10000);
     std::cout << "Train: " << train_data.size() << " samples, "
               << "Test: " << test_data.size() << " samples\n";
     std::cout << "Threads: " << std::thread::hardware_concurrency() << "\n";
@@ -125,18 +125,51 @@ int main() {
     FlatDataset train_flat(train_data);
     FlatDataset test_flat(test_data);
 
-    hcnn::HCNN net(10);
-    net.AddConv(32);                          // 1->32 ch,    K=10 (DIM=10)
-    net.AddPool(hcnn::PoolType::MAX);         // DIM 10->9,   N 1024->512
-    net.AddConv(64);                          // 32->64 ch,   K=9  (DIM=9)
-    net.AddPool(hcnn::PoolType::MAX);         // DIM 9->8,    N 512->256
-    net.AddConv(128);                         // 64->128 ch,  K=8  (DIM=8)
-    net.AddPool(hcnn::PoolType::MAX);         // DIM 8->7,    N 256->128
-    net.AddConv(128);                         // 128->128 ch, K=7  (DIM=7)
-    net.AddPool(hcnn::PoolType::MAX);         // DIM 7->6,    N 128->64
+    // --- 2-layer with pooling: conv + pool + conv + FLATTEN ---
+    constexpr int DIM = 10;
+    constexpr int N   = 1 << DIM;
+    hcnn::HCNN net(DIM, /*num_outputs=*/10, /*input_channels=*/1);
+    net.AddConv(16);                           // 1->16 ch, K=10 (DIM=10)
+    net.AddPool(hcnn::PoolType::MAX);          // DIM 10->9, N 1024->512
+    net.AddConv(16);                           // 16->16 ch, K=9  (DIM=9)
     net.RandomizeWeights();
+    net.SetOptimizer(hcnn::OptimizerType::ADAM);
 
-    train_and_evaluate("HCNN", net, train_flat, test_flat, 0.06f, 256, 1e-4f);
+    constexpr int N_final = N / 2;             // one pool: N -> N/2
+    const int conv1_params   = 1 * 16 * DIM + 16;         // kernel + bias
+    const int conv2_params   = 16 * 16 * (DIM - 1) + 16;  // kernel + bias
+    const int readout_params = 16 * N_final * 10 + 10;   // FLATTEN: c_final * N_final * num_outputs + bias
+    const int total_params   = conv1_params + conv2_params + readout_params;
+    std::cout << "\nArchitecture: Conv(1->16, RELU, bias)   DIM=" << DIM
+              << "  N=" << N << "\n"
+              << "              -> MaxPool (antipodal)    DIM=" << (DIM - 1) << "\n"
+              << "              -> Conv(16->16, RELU, bias) DIM=" << (DIM - 1) << "\n"
+              << "              -> FLATTEN\n"
+              << "              -> Linear(" << (16 * N_final) << " -> 10)\n"
+              << "Parameters:   " << total_params
+              << " (" << conv1_params << " conv1 + " << conv2_params
+              << " conv2 + " << readout_params << " readout)\n\n";
+
+    // --- Shallow (commented out): 1 conv + FLATTEN, 16 ch ---
+    // hcnn::HCNN net(10, /*num_outputs=*/10, /*input_channels=*/1);
+    // net.AddConv(16);                           // 1->16 ch, K=10 (DIM=10)
+    // net.RandomizeWeights();
+    // train_and_evaluate("HCNN", net, train_flat, test_flat, 0.015f, 256, 1e-4f);
+
+    train_and_evaluate("HCNN", net, train_flat, test_flat, 0.002f, 256, 5e-4f);
+
+    // --- Deep (commented out for now): 4 conv+pool + FLATTEN ---
+    // hcnn::HCNN net(10, /*num_outputs=*/10, /*input_channels=*/1);
+    // net.AddConv(32);                          // 1->32 ch,    K=10 (DIM=10)
+    // net.AddPool(hcnn::PoolType::MAX);         // DIM 10->9,   N 1024->512
+    // net.AddConv(64);                          // 32->64 ch,   K=9  (DIM=9)
+    // net.AddPool(hcnn::PoolType::MAX);         // DIM 9->8,    N 512->256
+    // net.AddConv(128);                         // 64->128 ch,  K=8  (DIM=8)
+    // net.AddPool(hcnn::PoolType::MAX);         // DIM 8->7,    N 256->128
+    // net.AddConv(128);                         // 128->128 ch, K=7  (DIM=7)
+    // net.AddPool(hcnn::PoolType::MAX);         // DIM 7->6,    N 128->64
+    // net.RandomizeWeights();
+    // train_and_evaluate("HCNN", net, train_flat, test_flat, 0.06f, 256, 1e-4f);
 
     return 0;
 }

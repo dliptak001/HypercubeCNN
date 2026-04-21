@@ -82,9 +82,18 @@ inline void conv_accumulate_full(float* out_co, float b,
 // loop is contiguous loads: the compiler emits VCVTPS2PD + VFMADD231PD
 // at 4-wide fp64 rather than falling back to scalar/gather on the
 // in_ci[v^m] load pattern.  The simple 2-update reduction below is left
-// in form the compiler's auto-vectorizer recognizes as a reduction with
-// `-ffast-math` — manual unrolling into multiple scalar accumulators
-// defeats that recognition and is a net loss (measured).
+// in form the compiler's auto-vectorizer recognizes as a reduction —
+// manual unrolling into multiple scalar accumulators defeats that
+// recognition and is a net loss (measured).
+//
+// Associative-math is scoped to this function only: the reduction is
+// in fp64 so reordering introduces ~1e-15 error (negligible for fp32
+// gradients), and the auto-vectorizer needs it to split the serial
+// dependency chain into SIMD lanes.
+#ifdef __GNUC__
+#pragma GCC push_options
+#pragma GCC optimize("associative-math")
+#endif
 inline void conv_kernel_grad_one(const float* grad_pre_co,
                                  const float* in_ci, int N, int K,
                                  double* grad_k_out)
@@ -106,6 +115,9 @@ inline void conv_kernel_grad_one(const float* grad_pre_co,
         grad_k_out[k] = acc;
     }
 }
+#ifdef __GNUC__
+#pragma GCC pop_options
+#endif
 
 // Input-gradient accumulate:
 //   gi_ci[v] = sum_{co,k} w[co,ci,k] * grad_pre_co[v ^ (1<<k)]

@@ -60,7 +60,7 @@ Pool (HCNNPool) -- antipodal pairing, DIM -> DIM-1
 [repeat conv + pool stages]
   |
   v
-Readout (HCNNReadout) -- global average per channel -> linear -> output
+Readout (HCNNReadout) -- flatten all (channel, vertex) activations -> linear -> output
 ```
 
 ## Build targets
@@ -96,7 +96,7 @@ HypercubeCNN/
   HCNNNetwork.h/cpp       Internal orchestrator (re-exported via HCNN.h)
   HCNNConv.h/cpp          Conv layer
   HCNNPool.h/cpp          Antipodal pooling
-  HCNNReadout.h/cpp       GAP + linear readout
+  HCNNReadout.h/cpp       Linear readout
   ThreadPool.h            Header-only fork-join pool
   main.cpp                Quick check runner
   dataloader/             MNIST dataset loader (in-tree example utility)
@@ -113,15 +113,15 @@ HypercubeCNN/
 | [docs/CPP_SDK.md](docs/CPP_SDK.md) | C++ SDK API reference and integration guide |
 | [docs/architecture.md](docs/architecture.md) | Full technical architecture |
 | [examples/mnist_train.md](examples/mnist_train.md) | MNIST classification example, benchmark results, and analysis |
-| [examples/regression_timeseries.md](examples/regression_timeseries.md) | Regression example, DIM=16 results, and HypercubeRC integration notes |
+| [examples/regression_timeseries.md](examples/regression_timeseries.md) | Regression example, DIM=12 results, and HypercubeRC integration notes |
 
 ## Results
 
 Both benchmarks validate that hypercube convolution learns meaningful features via standard backpropagation -- they are not leaderboard targets.
 
-**Classification -- MNIST** (no spatial inductive bias): **98.10%** test accuracy with ~200K parameters, 4 conv+pool stages, SGD with momentum, cosine LR annealing. The network learns digit features from hypercube topology alone -- no 2D spatial locality is encoded. See [examples/mnist_train.md](examples/mnist_train.md).
+**Classification -- MNIST** (no spatial inductive bias): **98.07%** test accuracy with ~84K parameters, 2 conv layers + 1 pool stage, Adam optimizer, cosine LR annealing. The network learns digit features from hypercube topology alone -- no 2D spatial locality is encoded. See [examples/mnist_train.md](examples/mnist_train.md).
 
-**Regression -- time-series prediction** (DIM=16, N=65,536 vertices): **R² = 0.9919** predicting the next value of a sine wave from a 65,536-dimensional synthetic reservoir state, using only 289 parameters (227:1 compression). Validates HCNN as a learned readout layer for reservoir computing. See [examples/regression_timeseries.md](examples/regression_timeseries.md).
+**Regression -- time-series prediction** (DIM=12, N=4,096 vertices): **1-R² = 9.9e-8** (seven nines of variance explained) predicting the next value of a sine wave from a 4,096-dimensional synthetic reservoir state, with 19,425 parameters. Validates HCNN as a learned readout layer for reservoir computing. See [examples/regression_timeseries.md](examples/regression_timeseries.md).
 
 ## License
 

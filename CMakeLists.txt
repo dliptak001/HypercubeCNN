@@ -14,8 +14,10 @@ option(HCNN_NATIVE_ARCH
     "Tune codegen for the build host (-march=native -mtune=native). \
 Disable when building a binary that must run on a different CPU." ON)
 option(HCNN_FAST_MATH
-    "Enable -ffast-math (relaxes IEEE compliance for speed). \
-Disable when downstream code depends on strict NaN/Inf semantics." ON)
+    "Enable relaxed floating-point optimizations (inlined math functions, \
+no NaN/Inf guards). Unlike -ffast-math, this does NOT enable \
+-fassociative-math or -freciprocal-math, so accumulation order is \
+preserved and double-precision gradient reductions are protected." ON)
 option(HCNN_WERROR
     "Treat library warnings as errors." OFF)
 option(HCNN_BUILD_EXAMPLES
@@ -46,7 +48,10 @@ else()
         $<$<BOOL:${HCNN_WERROR}>:-Werror>
         $<$<AND:$<CONFIG:Release>,$<BOOL:${HCNN_NATIVE_ARCH}>>:-march=native>
         $<$<AND:$<CONFIG:Release>,$<BOOL:${HCNN_NATIVE_ARCH}>>:-mtune=native>
-        $<$<AND:$<CONFIG:Release>,$<BOOL:${HCNN_FAST_MATH}>>:-ffast-math>
+        $<$<AND:$<CONFIG:Release>,$<BOOL:${HCNN_FAST_MATH}>>:-fno-math-errno>
+        $<$<AND:$<CONFIG:Release>,$<BOOL:${HCNN_FAST_MATH}>>:-ffinite-math-only>
+        $<$<AND:$<CONFIG:Release>,$<BOOL:${HCNN_FAST_MATH}>>:-fno-signed-zeros>
+        $<$<AND:$<CONFIG:Release>,$<BOOL:${HCNN_FAST_MATH}>>:-fno-trapping-math>
     )
 endif()
 
@@ -60,7 +65,6 @@ set(HCNN_PUBLIC_HEADERS
     HCNNConv.h
     HCNNPool.h
     HCNNReadout.h
-    HCNNProfile.h
     ThreadPool.h
 )
 
@@ -70,7 +74,6 @@ add_library(HypercubeCNNCore STATIC
     HCNNNetwork.cpp
     HCNNReadout.cpp
     HCNN.cpp
-    HCNNProfile.cpp
 )
 add_library(HypercubeCNN::HypercubeCNNCore ALIAS HypercubeCNNCore)
 

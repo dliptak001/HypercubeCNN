@@ -46,7 +46,6 @@ namespace hcnn {
 /// logits, and the loss becomes MSE instead of softmax + cross-entropy:
 ///
 ///     hcnn::HCNN net(6, /*num_outputs=*/1, /*input_channels=*/1,
-///                    hcnn::ReadoutType::GAP,
 ///                    hcnn::TaskType::Regression);
 ///     net.AddConv(16);
 ///     net.AddPool();
@@ -70,7 +69,6 @@ namespace hcnn {
 /// **Enums** consumed by this API are defined alongside their owning
 /// internal headers (all re-exported transitively via HCNN.h):
 ///   - `hcnn::PoolType`      (HCNNPool.h)     — MAX, AVG
-///   - `hcnn::ReadoutType`   (HCNNNetwork.h)  — GAP, FLATTEN
 ///   - `hcnn::TaskType`      (HCNNNetwork.h)  — Classification, Regression
 ///   - `hcnn::LossType`      (HCNNNetwork.h)  — Default, CrossEntropy, MSE
 ///   - `hcnn::Activation`    (HCNNConv.h)     — NONE, RELU, LEAKY_RELU, TANH
@@ -87,7 +85,6 @@ class HCNN {
 public:
     explicit HCNN(int start_dim, int num_outputs = 10,
                   int input_channels = 1,
-                  ReadoutType readout_type = ReadoutType::GAP,
                   TaskType task_type = TaskType::Classification,
                   LossType loss_type = LossType::Default,
                   size_t num_threads = 0);

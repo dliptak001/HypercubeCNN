@@ -270,7 +270,7 @@ int main() {
 
     // ----- Network -----
     //
-    // Conv(16, TANH) -> MaxPool -> Conv(16, TANH) -> MaxPool -> GAP -> Linear(16 -> 1)
+    // Conv(16, TANH) -> MaxPool -> Conv(16, TANH) -> MaxPool -> FLATTEN -> Linear(16*N_final -> 1)
     //
     // Two conv+pool stages give the model a 2-hop receptive field on the
     // hypercube.  The first conv sees DIM immediate neighbors per vertex;
@@ -288,11 +288,11 @@ int main() {
     // hypercube and keeps the larger activation, reducing DIM by 1.
     // Two pools take DIM -> DIM-2, N -> N/4.
     //
-    // GAP averages the post-pool activations across the surviving
-    // vertices and feeds the channel means into a linear projection
-    // 16 -> 1.
+    // FLATTEN treats every (channel, vertex) activation as an independent
+    // feature and feeds them all into a linear projection
+    // (16 * N_final) -> 1.  Position-sensitive -- the readout learns
+    // per-vertex weights.
     hcnn::HCNN net(DIM, /*num_outputs=*/1, /*input_channels=*/1,
-                   hcnn::ReadoutType::GAP,
                    hcnn::TaskType::Regression);
     net.AddConv(16, hcnn::Activation::TANH, /*use_bias=*/true);
     net.AddPool(hcnn::PoolType::MAX);
@@ -303,20 +303,21 @@ int main() {
 
     const int conv1_params = 1 * 16 * DIM + 16;        // 1->16 channels, K=DIM
     const int conv2_params = 16 * 16 * (DIM - 1) + 16; // 16->16 channels, K=DIM-1
-    const int readout_params = 16 + 1;                  // weight + bias
+    const int N_final = N / 4;                            // two pools: N -> N/4
+    const int readout_params = 16 * N_final * 1 + 1;     // FLATTEN: c_final * N_final * num_outputs + bias
     const int total_params = conv1_params + conv2_params + readout_params;
     std::cout << "Architecture: Conv(1->16, TANH, bias)    DIM=" << DIM << "\n";
     std::cout << "              -> MaxPool (antipodal)      DIM=" << (DIM - 1) << "\n";
     std::cout << "              -> Conv(16->16, TANH, bias) DIM=" << (DIM - 1) << "\n";
     std::cout << "              -> MaxPool (antipodal)      DIM=" << (DIM - 2) << "\n";
-    std::cout << "              -> GAP\n";
-    std::cout << "              -> Linear(16 -> 1)\n";
+    std::cout << "              -> FLATTEN\n";
+    std::cout << "              -> Linear(" << (16 * N_final) << " -> 1)\n";
     std::cout << "Parameters:   " << total_params
               << " (" << conv1_params << " conv1 + " << conv2_params
               << " conv2 + " << readout_params << " readout)\n\n";
 
     // ----- Training loop -----
-    constexpr int   epochs       = 300;
+    constexpr int   epochs       = 50;
     constexpr int   batch_size   = 32;
     constexpr float lr_max       = 0.002f;
     constexpr float lr_min       = 2e-4f;    // 10% of lr_max -- keeps learning

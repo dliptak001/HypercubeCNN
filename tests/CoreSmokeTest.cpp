@@ -19,7 +19,6 @@
 
 using hcnn::HCNN;
 using hcnn::PoolType;
-using hcnn::ReadoutType;
 using hcnn::TaskType;
 using hcnn::LossType;
 using hcnn::Activation;
@@ -286,27 +285,23 @@ static void test_forward_batch() {
     check(match, "ForwardBatch matches single-sample Embed+Forward");
 }
 
-static void test_readout_types() {
-    std::cout << "\n[Readout types]\n";
+static void test_readout() {
+    std::cout << "\n[Readout]\n";
 
-    auto run_one = [](ReadoutType type, const char* name) {
-        HCNN net(5, 4, /*input_channels=*/1, type);
-        net.AddConv(8);
-        net.RandomizeWeights();
+    HCNN net(5, 4, /*input_channels=*/1);
+    net.AddConv(8);
+    net.RandomizeWeights();
 
-        int N = net.GetStartN();
-        std::mt19937 rng(111);
-        std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
-        std::vector<float> input(N);
-        for (auto& v : input) v = dist(rng);
-        std::vector<float> emb(N), logits(net.GetNumOutputs());
-        net.Embed(input.data(), N, emb.data());
-        net.Forward(emb.data(), logits.data());
-        check(all_finite(logits.data(), net.GetNumOutputs()),
-              std::string(name) + " readout produces finite logits");
-    };
-    run_one(ReadoutType::GAP,     "GAP");
-    run_one(ReadoutType::FLATTEN, "FLATTEN");
+    int N = net.GetStartN();
+    std::mt19937 rng(111);
+    std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+    std::vector<float> input(N);
+    for (auto& v : input) v = dist(rng);
+    std::vector<float> emb(N), logits(net.GetNumOutputs());
+    net.Embed(input.data(), N, emb.data());
+    net.Forward(emb.data(), logits.data());
+    check(all_finite(logits.data(), net.GetNumOutputs()),
+          "FLATTEN readout produces finite logits");
 }
 
 static void test_pool_types() {
@@ -598,7 +593,7 @@ static void test_flatten_readout() {
 
     // FLATTEN TrainBatch (SGD)
     {
-        HCNN net(5, 4, /*input_channels=*/1, ReadoutType::FLATTEN);
+        HCNN net(5, 4, /*input_channels=*/1);
         net.AddConv(8);
         net.RandomizeWeights();
 
@@ -621,7 +616,7 @@ static void test_flatten_readout() {
 
     // FLATTEN + Adam: loss decreases
     {
-        HCNN net(5, 4, /*input_channels=*/1, ReadoutType::FLATTEN);
+        HCNN net(5, 4, /*input_channels=*/1);
         net.AddConv(8);
         net.RandomizeWeights();
         net.SetOptimizer(OptimizerType::ADAM);
@@ -923,7 +918,7 @@ static void test_regression_scalar() {
     const int num_outputs = 1;
 
     HCNN net(DIM, num_outputs, /*input_channels=*/1,
-             ReadoutType::GAP, TaskType::Regression);
+             TaskType::Regression);
     net.AddConv(16);
     net.AddPool(PoolType::MAX);
     net.AddConv(16);
@@ -998,7 +993,7 @@ static void test_regression_multi_output() {
     const int num_outputs = 3;
 
     HCNN net(DIM, num_outputs, /*input_channels=*/1,
-             ReadoutType::GAP, TaskType::Regression);
+             TaskType::Regression);
     net.AddConv(16);
     net.AddPool(PoolType::MAX);
     net.AddConv(16);
@@ -1082,7 +1077,7 @@ static void test_forward_batch_regression() {
     const int n_train = 32;
 
     auto net_p = std::make_unique<HCNN>(DIM, num_outputs, /*input_channels=*/1,
-                                        ReadoutType::GAP, TaskType::Regression);
+                                        TaskType::Regression);
     net_p->AddConv(16);
     net_p->AddPool(PoolType::MAX);
     net_p->RandomizeWeights(/*scale=*/0.0f, /*seed=*/42);
@@ -1134,7 +1129,7 @@ static void test_regression_classification_cross_misuse() {
 
     // Build a regression net and verify classification APIs throw logic_error.
     {
-        HCNN net(5, /*num_outputs=*/2, 1, ReadoutType::GAP, TaskType::Regression);
+        HCNN net(5, /*num_outputs=*/2, 1, TaskType::Regression);
         net.AddConv(8);
         net.RandomizeWeights();
 
@@ -1161,7 +1156,7 @@ static void test_regression_classification_cross_misuse() {
 
     // Build a classification net and verify regression APIs throw logic_error.
     {
-        HCNN net(5, /*num_outputs=*/2, 1, ReadoutType::GAP, TaskType::Classification);
+        HCNN net(5, /*num_outputs=*/2, 1, TaskType::Classification);
         net.AddConv(8);
         net.RandomizeWeights();
 
@@ -1193,7 +1188,7 @@ static void test_regression_invalid_construction() {
     // Classification + MSE is rejected in the constructor.
     bool threw = false;
     try {
-        HCNN net(5, 4, 1, ReadoutType::GAP, TaskType::Classification, LossType::MSE);
+        HCNN net(5, 4, 1, TaskType::Classification, LossType::MSE);
     } catch (const std::runtime_error&) {
         threw = true;
     }
@@ -1202,7 +1197,7 @@ static void test_regression_invalid_construction() {
     // Regression + CrossEntropy is rejected in the constructor.
     threw = false;
     try {
-        HCNN net(5, 4, 1, ReadoutType::GAP, TaskType::Regression, LossType::CrossEntropy);
+        HCNN net(5, 4, 1, TaskType::Regression, LossType::CrossEntropy);
     } catch (const std::runtime_error&) {
         threw = true;
     }
@@ -1210,14 +1205,14 @@ static void test_regression_invalid_construction() {
 
     // Regression + Default resolves to MSE.
     {
-        HCNN net(5, 4, 1, ReadoutType::GAP, TaskType::Regression, LossType::Default);
+        HCNN net(5, 4, 1, TaskType::Regression, LossType::Default);
         check(net.GetLossType() == LossType::MSE,
               "Regression + Default resolves to MSE");
     }
 
     // Classification + Default resolves to CrossEntropy.
     {
-        HCNN net(5, 4, 1, ReadoutType::GAP, TaskType::Classification, LossType::Default);
+        HCNN net(5, 4, 1, TaskType::Classification, LossType::Default);
         check(net.GetLossType() == LossType::CrossEntropy,
               "Classification + Default resolves to CrossEntropy");
     }
@@ -1237,7 +1232,7 @@ int main() {
     test_train_batch();
     test_train_epoch();
     test_forward_batch();
-    test_readout_types();
+    test_readout();
     test_pool_types();
     test_batchnorm();
     test_activations();

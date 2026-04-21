@@ -141,7 +141,6 @@ All enums live in `namespace hcnn`. They are scattered across the layer headers 
 | Enum | Values | Defined in | Description |
 |------|--------|------------|-------------|
 | `hcnn::PoolType`      | `MAX`, `AVG`              | HCNNPool.h     | Antipodal pooling reduction. MAX: keep the larger value. AVG: average the pair. |
-| `hcnn::ReadoutType`   | `GAP`, `FLATTEN`          | HCNNNetwork.h  | Readout strategy. GAP: global average pooling per channel (translation-invariant). FLATTEN: concatenate all channel x vertex activations (position-sensitive). |
 | `hcnn::TaskType`      | `Classification`, `Regression` | HCNNNetwork.h | Task the network is trained for. Controls the training API (integer class targets vs. float regression targets) and the interpretation of raw readout outputs. |
 | `hcnn::LossType`      | `Default`, `CrossEntropy`, `MSE` | HCNNNetwork.h | Loss function. `Default` resolves to the natural pairing for the task (CrossEntropy for Classification, MSE for Regression). Invalid pairings throw at construction. |
 | `hcnn::Activation`    | `NONE`, `RELU`, `LEAKY_RELU`, `TANH` | HCNNConv.h  | Activation function applied after conv (and optional batch normalization). `TANH` is smooth, symmetric, and bounded in (-1, 1) -- the standard activation for reservoir-computing readouts and other bounded-output architectures. |
@@ -164,7 +163,6 @@ All public methods avoid hidden per-call allocations in steady state:
 ```cpp
 explicit HCNN(int start_dim, int num_outputs = 10,
               int input_channels = 1,
-              ReadoutType readout_type = ReadoutType::GAP,
               TaskType task_type = TaskType::Classification,
               LossType loss_type = LossType::Default,
               size_t num_threads = 0);
@@ -175,7 +173,6 @@ explicit HCNN(int start_dim, int num_outputs = 10,
 | `start_dim` | Hypercube dimension. The input has N = 2^start_dim vertices. |
 | `num_outputs` | Number of readout outputs. For `TaskType::Classification` this is the class count; for `TaskType::Regression` it is the dimensionality of the target vector. |
 | `input_channels` | Number of input channels (typically 1). |
-| `readout_type` | `GAP` (default) or `FLATTEN`. See [Enums](#enums). |
 | `task_type` | `Classification` (default) or `Regression`. See [Enums](#enums) and [Task types and losses](#task-types-and-losses). |
 | `loss_type` | `Default` (default) resolves to CrossEntropy for Classification or MSE for Regression. Explicit values are `CrossEntropy` (Classification only) and `MSE` (Regression only). Invalid pairings throw `std::runtime_error` at construction. |
 | `num_threads` | Thread pool size. 0 (default) = auto-detect from hardware. |
@@ -302,7 +299,6 @@ See [examples/regression_timeseries.md](../examples/regression_timeseries.md) fo
 
 ```cpp
 hcnn::HCNN net(DIM, /*num_outputs=*/3, /*input_channels=*/1,
-               hcnn::ReadoutType::GAP,
                hcnn::TaskType::Regression);
 ```
 

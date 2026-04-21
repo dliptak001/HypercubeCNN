@@ -23,18 +23,10 @@ namespace hcnn {
  * regression predictions (fed through MSE or other continuous losses).
  * No activation, no softmax — the linear layer output is final.
  *
- * Two operating modes, selected at construction time by how the network
- * sizes the readout:
- *   - **GAP** (global average pooling): the constructor receives
- *     `input_channels = c_final`, and the readout averages each channel
- *     across all surviving vertices to produce one scalar per channel,
- *     then applies a linear `[c_final] -> [num_outputs]` map.  Used when
- *     `HCNN` is built with `ReadoutType::GAP` (the default).
- *   - **FLATTEN**: the constructor receives `input_channels = c_final * N`
- *     and the network passes `N = 1` to forward(), so the channel-wise
- *     average is a no-op and the linear layer sees every (channel, vertex)
- *     activation as an independent input.  Used when `HCNN` is built with
- *     `ReadoutType::FLATTEN`.
+ * The constructor receives `input_channels = c_final * N_final` and
+ * the network passes `N = 1` to forward(), so the internal channel-wise
+ * average is a no-op and the linear layer sees every (channel, vertex)
+ * activation as an independent input (FLATTEN readout).
  *
  * Owns: weight matrix + bias + matching first / second moment buffers
  * (Adam allocates the second moments on demand via set_optimizer).

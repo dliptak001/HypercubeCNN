@@ -108,12 +108,7 @@ On a binary hypercube, the antipodal vertex is the most information-rich pairing
 
 ## Readout (`HCNNReadout`)
 
-Selected at construction time via `ReadoutType`:
-
-- **`ReadoutType::GAP`** (default): global average pooling per channel → one scalar per channel → linear layer `[c_final] → [num_outputs]` with bias. Translation-invariant across hypercube vertices, identical to the GAP + FC readout used in modern spatial CNNs (ResNet, etc.).
-- **`ReadoutType::FLATTEN`**: every (channel, vertex) activation is treated as an independent feature → linear layer `[c_final * N_final] → [num_outputs]` with bias. Position-sensitive -- the readout learns per-vertex weights. Larger parameter count, useful when vertex identity carries information.
-
-Internally `HCNNReadout` is a single class; the FLATTEN mode is implemented by sizing the input as `c_final * N_final` and passing `N = 1` to the channel-wise average step (so the average is a no-op and the linear layer sees every activation directly).
+Every (channel, vertex) activation after the final conv/pool layer is treated as an independent feature, fed into a linear layer `[c_final * N_final] → [num_outputs]` with bias. Position-sensitive -- the readout learns per-vertex weights, which is well-suited to data where vertex identity carries information (reservoir state, molecular fingerprints, Boolean functions).
 
 The readout is **loss-agnostic and task-agnostic**. It produces `num_outputs` raw real-valued scalars and takes an upstream `grad_logits` in its backward pass. Classification and regression share the same readout class and the same forward/backward math; only the loss-gradient computation differs (see [Task type and loss](#task-type-and-loss)).
 
@@ -159,7 +154,7 @@ Key properties:
 - DIM shrinks only at pool layers. Conv layers preserve dimensionality.
 - K = DIM at each conv layer, so deeper layers have fewer kernel directions (but operate on more abstract features).
 - Channel count typically increases with depth (same as spatial CNNs).
-- The readout is automatically configured from the final channel count and the chosen `ReadoutType`.
+- The readout is automatically configured from the final channel count and vertex count.
 
 `HCNN` is non-copyable and non-movable (it owns a `HCNNNetwork`, which owns a `ThreadPool` with live worker threads and persistent per-thread scratch). Wrap it in `std::unique_ptr<HCNN>` if you need transfer-of-ownership semantics.
 
@@ -209,7 +204,7 @@ Two optimizers are available; choose per-network with `HCNN::SetOptimizer`:
 
 ### Learning rate
 
-HCNN does not own a learning rate schedule. The learning rate is a parameter on every `TrainStep`, `TrainBatch`, and `TrainEpoch` call -- the caller is responsible for computing it. Both shipped examples use cosine annealing with a floor (`lr_min + 0.5 * (lr_max - lr_min) * (1 + cos(pi * epoch / total_epochs))`), but any schedule (or constant LR) works.
+HCNN does not own a learning rate schedule. The learning rate is a parameter on every `TrainStep`, `TrainBatch`, and `TrainEpoch` call -- the caller is responsible for computing it. Both shipped examples use cosine annealing with a floor (`lr_min + 0.5 * (lr_max - lr_min) * (1 + cos(pi * epoch / total_epochs))`), but any reasonable schedule (or constant LR) works.
 
 ### Backward pass and shared training core
 
@@ -298,9 +293,9 @@ All core code is in the `HypercubeCNNCore` static library (pure C++23, no extern
 | `hcnn::HCNNNetwork` | HCNNNetwork.h/cpp | Internal pipeline orchestrator (re-exported via `HCNN.h`) |
 | `hcnn::HCNNConv` | HCNNConv.h/cpp | Single conv layer (re-exported) |
 | `hcnn::HCNNPool` | HCNNPool.h/cpp | Antipodal pooling layer (re-exported) |
-| `hcnn::HCNNReadout` | HCNNReadout.h/cpp | GAP / FLATTEN linear readout (re-exported) |
+| `hcnn::HCNNReadout` | HCNNReadout.h/cpp | Linear readout (re-exported) |
 | `hcnn::ThreadPool` | ThreadPool.h | Header-only fork-join pool (re-exported) |
 
-Public enums (all in `namespace hcnn`): `PoolType` {MAX, AVG} (HCNNPool.h), `ReadoutType` {GAP, FLATTEN} (HCNNNetwork.h), `TaskType` {Classification, Regression} (HCNNNetwork.h), `LossType` {Default, CrossEntropy, MSE} (HCNNNetwork.h), `Activation` {NONE, RELU, LEAKY_RELU, TANH} (HCNNConv.h), `OptimizerType` {SGD, ADAM} (HCNNConv.h).
+Public enums (all in `namespace hcnn`): `PoolType` {MAX, AVG} (HCNNPool.h), `TaskType` {Classification, Regression} (HCNNNetwork.h), `LossType` {Default, CrossEntropy, MSE} (HCNNNetwork.h), `Activation` {NONE, RELU, LEAKY_RELU, TANH} (HCNNConv.h), `OptimizerType` {SGD, ADAM} (HCNNConv.h).
 
 Executables are thin wrappers that link the library. This separation is intentional -- the library is the C++ SDK surface.
