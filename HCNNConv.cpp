@@ -411,7 +411,8 @@ void HCNNConv::forward(const float* in, float* out, float* pre_act,
 // ---------------------------------------------------------------------------
 void HCNNConv::backward(const float* grad_out, const float* in, const float* pre_act,
                     float* grad_in, float learning_rate, float momentum,
-                    float weight_decay, const float* bn_save, int timestep) {
+                    float weight_decay, const float* bn_save, int timestep,
+                    const float* post_act) {
     const bool use_adam = (optimizer_type_ == OptimizerType::ADAM && timestep > 0);
     const bool use_threads = thread_pool && DIM >= THREAD_DIM_THRESHOLD;
 
@@ -425,8 +426,18 @@ void HCNNConv::backward(const float* grad_out, const float* in, const float* pre
     if (static_cast<int>(backward_work_.size()) < grad_pre_size)
         backward_work_.resize(grad_pre_size);
     float* grad_pre = backward_work_.data();
-    for (int i = 0; i < grad_pre_size; ++i)
-        grad_pre[i] = grad_out[i] * activate_derivative(pre_act[i]);
+    // For TANH, derivative is 1 - tanh(x)^2 = 1 - y^2 where y is the
+    // post-activation.  When the caller supplies post_act we avoid the
+    // redundant std::tanh in activate_derivative.
+    if (activation == Activation::TANH && post_act != nullptr) {
+        for (int i = 0; i < grad_pre_size; ++i) {
+            float y = post_act[i];
+            grad_pre[i] = grad_out[i] * (1.0f - y * y);
+        }
+    } else {
+        for (int i = 0; i < grad_pre_size; ++i)
+            grad_pre[i] = grad_out[i] * activate_derivative(pre_act[i]);
+    }
 
     // BN backward: transform grad from "w.r.t. BN output" to "w.r.t. raw sum"
     if (use_batchnorm && bn_save) {
@@ -572,7 +583,8 @@ void HCNNConv::backward(const float* grad_out, const float* in, const float* pre
 void HCNNConv::compute_gradients(const float* grad_out, const float* in, const float* pre_act,
                              float* grad_in, float* kernel_grad, float* bias_grad,
                              float* work_buf, const float* bn_save,
-                             float* bn_gamma_grad, float* bn_beta_grad) const {
+                             float* bn_gamma_grad, float* bn_beta_grad,
+                             const float* post_act) const {
     const bool use_threads = thread_pool && DIM >= THREAD_DIM_THRESHOLD;
 
     // work_buf must be at least c_out * N floats if provided.
@@ -585,8 +597,19 @@ void HCNNConv::compute_gradients(const float* grad_out, const float* in, const f
         grad_pre_storage.resize(c_out * N);
         grad_pre = grad_pre_storage.data();
     }
-    for (int i = 0; i < c_out * N; ++i)
-        grad_pre[i] = grad_out[i] * activate_derivative(pre_act[i]);
+    // For TANH, derivative is 1 - tanh(x)^2 = 1 - y^2 where y is the
+    // post-activation.  When the caller supplies post_act we avoid the
+    // redundant std::tanh in activate_derivative.
+    if (activation == Activation::TANH && post_act != nullptr) {
+        const int grad_pre_size = c_out * N;
+        for (int i = 0; i < grad_pre_size; ++i) {
+            float y = post_act[i];
+            grad_pre[i] = grad_out[i] * (1.0f - y * y);
+        }
+    } else {
+        for (int i = 0; i < c_out * N; ++i)
+            grad_pre[i] = grad_out[i] * activate_derivative(pre_act[i]);
+    }
 
     // BN backward: transform grad from "w.r.t. BN output" to "w.r.t. raw sum"
     if (use_batchnorm && bn_save) {

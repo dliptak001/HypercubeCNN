@@ -687,7 +687,8 @@ void HCNNNetwork::train_step_impl(const float* raw_input, int input_length,
                                      learning_rate, momentum, weight_decay,
                                      cache[i + 1].bn_save.empty() ? nullptr
                                          : cache[i + 1].bn_save.data(),
-                                     adam_timestep_);
+                                     adam_timestep_,
+                                     cache[i + 1].activation.data());
         } else {
             --pi;
             pool_layers[pi].backward(grad_cur, grad_prev,
@@ -804,7 +805,8 @@ void HCNNNetwork::train_batch_impl(const float* flat_inputs, int input_length,
                     b.conv_work.data(),
                     b.bn_save[ci].empty() ? nullptr : b.bn_save[ci].data(),
                     b.bn_gg[ci].empty() ? nullptr : b.bn_gg[ci].data(),
-                    b.bn_bg[ci].empty() ? nullptr : b.bn_bg[ci].data());
+                    b.bn_bg[ci].empty() ? nullptr : b.bn_bg[ci].data(),
+                    b.cache[i + 1].activation.data());
 
                 for (int j = 0; j < conv_layers[ci].get_kernel_size(); ++j)
                     a.conv_kernel_grad[ci][j] += b.kg[ci][j];

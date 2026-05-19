@@ -173,11 +173,16 @@ public:
      * @param      learning_rate SGD learning rate (eta).
      * @param      momentum      SGD momentum coefficient (mu); default 0 (no momentum).
      * @param      weight_decay  L2 regularization coefficient; default 0 (no decay).
+     * @param[in]  post_act      Optional post-activation values [c_out * N] from the
+     *                           forward pass.  When supplied and activation==TANH,
+     *                           the activation derivative is computed as 1 - y^2
+     *                           from the post-activation, avoiding a redundant
+     *                           std::tanh call per element.  Numerically equivalent.
      */
     void backward(const float* grad_out, const float* in, const float* pre_act,
                   float* grad_in, float learning_rate, float momentum = 0.0f,
                   float weight_decay = 0.0f, const float* bn_save = nullptr,
-                  int timestep = 0);
+                  int timestep = 0, const float* post_act = nullptr);
 
     /**
      * @brief Compute gradients without applying an SGD update.
@@ -194,12 +199,18 @@ public:
      * @param[out] kernel_grad Gradient of loss w.r.t. kernel weights [c_out * c_in * K].
      * @param[out] bias_grad   Gradient of loss w.r.t. bias [c_out],
      *                         or nullptr if bias is disabled.
+     * @param[in]  post_act    Optional post-activation values [c_out * N] from the
+     *                         forward pass.  When supplied and activation==TANH,
+     *                         the activation derivative is computed as 1 - y^2
+     *                         from the post-activation, avoiding a redundant
+     *                         std::tanh call per element.  Numerically equivalent.
      */
     void compute_gradients(const float* grad_out, const float* in, const float* pre_act,
                            float* grad_in, float* kernel_grad, float* bias_grad,
                            float* work_buf = nullptr, const float* bn_save = nullptr,
                            float* bn_gamma_grad = nullptr,
-                           float* bn_beta_grad = nullptr) const;
+                           float* bn_beta_grad = nullptr,
+                           const float* post_act = nullptr) const;
 
     /**
      * @brief Apply externally computed gradients via momentum SGD.
