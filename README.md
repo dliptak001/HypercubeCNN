@@ -5,7 +5,7 @@
 [![C++23](https://img.shields.io/badge/C%2B%2B-23-blue.svg)]()
 [![CMake](https://img.shields.io/badge/CMake-3.21+-blue.svg)]()
 
-A convolutional neural network that operates on Boolean hypercubes instead of spatial grids -- the same XOR-addressed topology used by [HypercubeRC](https://github.com/dliptak001/HypercubeRC) and [HypercubeHopfield](https://github.com/dliptak001/HypercubeHopfield), now with learned convolution kernels and end-to-end backpropagation.
+A convolutional neural network that operates on Boolean hypercubes instead of spatial grids -- the same XOR-addressed topology used by [HypercubeRC](https://github.com/dliptak001/HypercubeRC) and [HypercubeHopfield](https://github.com/dliptak001/HypercubeHopfield), with learned convolution kernels and end-to-end backpropagation.
 
 ## What is HypercubeCNN?
 
@@ -62,6 +62,56 @@ Pool (HCNNPool) -- antipodal pairing, DIM -> DIM-1
   v
 Readout (HCNNReadout) -- flatten all (channel, vertex) activations -> linear -> output
 ```
+
+## Readout-throughput optimization roadmap
+
+When HCNN is used as the learned readout for [HypercubeRC](https://github.com/dliptak001/HypercubeRC), HCNN consumes >95% of the combined system's training compute -- the reservoir itself is essentially free in comparison. Thread parallelism inside HCNN is already saturated (block-pair auto-vectorization, vertex- and channel-level threading, per-thread gradient accumulators in `train_batch_impl`), so further wall-clock speedup must come from **algorithmic** changes rather than more threading.
+
+The RC workload that drives this roadmap: `Conv(c_in=1 -> ch, TANH, bias) + MaxPool` x `min(DIM-2, 2)` stages, Adam optimizer, regression task via `TrainEpochRegression` -> `TrainBatchRegression` -> `train_batch_impl`. DIM range 5-16, scaling target DIM=14-16. The hot path is `compute_gradients` (per-sample, parallel) followed by `apply_gradients` (once per batch, serial). At DIM=14 the second conv layer (32 ch x 16 in x K=13 x N=8192) dominates wall time, and inside that, `std::tanh` on every output element in both forward and backward is the single most expensive primitive.
+
+The options below are grouped by numerical risk. Each is independently selectable.
+
+### Group A -- Safe (bit-identical or trivially close numerics)
+
+**1. Use post-activation for the TANH derivative (the `1 - y^2` identity).**
+For `Activation::TANH`, `HCNNConv::backward` and `HCNNConv::compute_gradients` currently call `activate_derivative(pre_act[i])`, which internally re-runs `std::tanh` (`HCNNConv.cpp:782-790`). The post-activation `y = tanh(x)` is already alive in `cache[i+1].activation` throughout backward (see `HCNNNetwork.cpp:683-690, 797-807`), so the derivative can be obtained as `1 - y*y` with no transcendental call. Add an optional `const float* post_act = nullptr` parameter to the two backward entry points; use the identity when supplied and the activation is TANH, fall back to the current code otherwise. Public `HCNN` API is unchanged. Numerically equivalent to bit-identical for downstream gradient flow.
+- **Expected gain:** ~30-40% off conv-backward wall-time on TANH networks. Largest safe win available; measurable in seconds per epoch at DIM=14.
+- **Files:** `HCNNConv.h`, `HCNNConv.cpp`, `HCNNNetwork.cpp`.
+
+**2. Drop the redundant external grad zero-fills in `train_step_impl` / `train_batch_impl`.**
+`HCNNNetwork.cpp:679` and `HCNNNetwork.cpp:793` zero the gradient-input buffer before invoking the downstream `pool.backward` / `conv.backward` / `conv.compute_gradients`. All three already zero (or write) every element of their output internally -- see `conv_grad_in_full` at `HCNNConv.cpp:132`, the threaded `do_vertices` lambda at `HCNNConv.cpp:494`, and `HCNNPool::backward` at `HCNNPool.cpp:84-85`. The external fill is therefore redundant. Conservative alternative: convert the fills to debug-mode asserts that verify the post-condition.
+- **Expected gain:** Small. Bandwidth-bound; saves `c_in x N` stores per layer per sample backward (~131K stores per sample at DIM=14 Conv2). Single-digit % on backward at best.
+- **Files:** `HCNNNetwork.cpp`.
+
+### Group B -- Tradeoff (numerical changes; require A/B accuracy validation)
+
+**3. Fast TANH approximation.** Three sub-variants (independent of option 1):
+- **3a.** Exact-only -- this is option 1 above, restated here for menu coherence.
+- **3b. Opt-in fast tanh.** Add a `HCNN::SetFastActivation(bool)` runtime switch (default `false`). When enabled, `activate` / `activate_derivative` use a Pade or polynomial approximation -- `tanh(x) ~= x * (27 + x^2) / (27 + 9*x^2)` is one well-behaved choice with max abs error ~3e-4 on `[-2, 2]`. Forward and backward switch together so gradients remain consistent. Lets the user A/B against the exact path on the real RC workload before committing.
+  - Expected gain: ~1.5-2x additional conv-backward speedup on top of option 1. Numerics: ~3e-4 max abs error; gradient magnitudes preserved to ~1% over reservoir-state range.
+- **3c. Default fast tanh.** Make the approximation the default. Highest throughput, largest behavioral change. `CoreSmokeTest` tolerances will need review.
+- **Files (any variant):** `HCNNConv.cpp` (`activate` / `activate_derivative`); `HCNN.h` for the toggle (3b, 3c); `tests/CoreSmokeTest.cpp` for tolerance review (3c).
+
+**4. fp32 + Kahan compensation for kernel-gradient reduction.**
+`conv_kernel_grad_one` (`HCNNConv.cpp:97-117`) currently accumulates in fp64 throughout to match the original numerical semantics bit-for-bit. Replacing the fp64 accumulator with Kahan-compensated fp32 halves SIMD-lane cost and roughly doubles effective vector width on AVX2/AVX-512. Kahan error grows as `O(eps)` independent of N -- substantially better than naive fp32 (`O(eps * N)`) and competitive with fp64 for the bounded reservoir-state magnitudes seen in RC training. Validate with `CoreSmokeTest` and `RegressionTimeseries` before merging.
+- **Expected gain:** up to 2x on kernel-grad compute at DIM=14-16 where the fp64 reduction is hot.
+- **Files:** `HCNNConv.cpp`.
+
+### Group C -- Out of scope for this roadmap
+
+Documented so the deferral is intentional, not forgotten:
+- Simplifying `HCNNReadout` to a pure matmul (eliminating the `channel_avg` abstraction now that `N=1` always in the FLATTEN configuration).
+- Hand-rolled AVX2/AVX-512 intrinsics on the block-pair inner loops -- the auto-vectorizer is already producing tight code on these paths (see the comment block at `HCNNConv.cpp:25-45, 81-92`); manual intrinsics risk regression for marginal gain.
+- Loop fusion to reuse `grad_pre` across `c_in` in kernel-grad -- only beneficial when `grad_pre` spills L1 (`DIM >= 15` with large `c_out`); revisit if profiler shows climbing L1 miss rate.
+
+### Recommended order
+
+| # | Optimization | Group | Expected gain (RC, DIM=14) | Risk | Order |
+|---|---|---|---|---|---|
+| 1 | TANH `1 - y^2` backward | A | **~30-40% backward speedup** | None | First |
+| 3b | Opt-in fast tanh | B | Additional ~1.5-2x backward | ~3e-4 error | After 1, after benchmark |
+| 4 | fp32 + Kahan kernel-grad | B | Up to 2x kernel-grad | Needs A/B validation | After 1, independent of 3 |
+| 2 | Drop redundant zero-fills | A | <5% on backward | None | Anytime |
 
 ## Build targets
 
