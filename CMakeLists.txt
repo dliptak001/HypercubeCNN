@@ -26,8 +26,9 @@ option(HCNN_BUILD_EXAMPLES
 option(HCNN_FAST_TANH
     "Use a rational Padé approximation for tanh in HCNNConv (README option \
 3b).  ~3e-4 max abs error on [-2, 2]; output clamped to [-1, 1] beyond.  \
-Trades a small numerical accuracy hit for ~1.5–2x backward speedup on TANH \
-networks.  OFF preserves bit-identical numerics with std::tanh." OFF)
+Trades a small numerical accuracy hit for ~9% additional epoch speedup on \
+top of the option-1 backward optimization (measured at DIM=12).  Pass \
+-DHCNN_FAST_TANH=OFF to fall back to exact std::tanh." ON)
 
 # ——— Threading ———
 set(THREADS_PREFER_PTHREAD_FLAG ON)
