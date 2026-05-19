@@ -23,6 +23,11 @@ option(HCNN_WERROR
 option(HCNN_BUILD_EXAMPLES
     "Build the in-tree examples and smoke test (auto: ON when standalone)."
     ${PROJECT_IS_TOP_LEVEL})
+option(HCNN_FAST_TANH
+    "Use a rational Padé approximation for tanh in HCNNConv (README option \
+3b).  ~3e-4 max abs error on [-2, 2]; output clamped to [-1, 1] beyond.  \
+Trades a small numerical accuracy hit for ~1.5–2x backward speedup on TANH \
+networks.  OFF preserves bit-identical numerics with std::tanh." OFF)
 
 # ——— Threading ———
 set(THREADS_PREFER_PTHREAD_FLAG ON)
@@ -95,6 +100,14 @@ target_link_libraries(HypercubeCNNCore
     # $<BUILD_INTERFACE:...> prevents the install export from referencing
     # the helper target so downstream consumers never inherit our flags.
     PRIVATE $<BUILD_INTERFACE:hcnn_compile_flags>
+)
+
+# Compile-time fast tanh (README option 3b).  PRIVATE: the macro only
+# affects HCNNConv.cpp's translation unit; public headers are untouched,
+# so consumers (e.g. HypercubeRC) link against whichever variant was
+# built into libHypercubeCNNCore.a with no source change of their own.
+target_compile_definitions(HypercubeCNNCore PRIVATE
+    $<$<BOOL:${HCNN_FAST_TANH}>:HCNN_FAST_TANH>
 )
 
 # ——— Executables: only when building standalone (not via FetchContent) ———

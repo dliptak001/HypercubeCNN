@@ -789,11 +789,26 @@ void HCNNConv::update_running_stats(const float* mean, const float* var) {
     }
 }
 
+// Compile-time switch: HCNN_FAST_TANH replaces std::tanh with a rational
+// Padé/Lambert approximation.  README option 3b.  When the macro is not
+// defined the build remains bit-identical to the exact-tanh baseline.
+static inline float hcnn_tanh(float x) {
+#ifdef HCNN_FAST_TANH
+    // tanh(x) ≈ x · (27 + x²) / (27 + 9·x²).  Asymptote is x/9, not 1,
+    // so clamp the output to keep saturation correct for |x| ≳ 3.
+    const float x2 = x * x;
+    const float y  = x * (27.0f + x2) / (27.0f + 9.0f * x2);
+    return y > 1.0f ? 1.0f : (y < -1.0f ? -1.0f : y);
+#else
+    return std::tanh(x);
+#endif
+}
+
 float HCNNConv::activate(float x) const {
     switch (activation) {
         case Activation::RELU:       return (x > 0.0f) ? x : 0.0f;
         case Activation::LEAKY_RELU: return (x > 0.0f) ? x : leaky_alpha_ * x;
-        case Activation::TANH:       return std::tanh(x);
+        case Activation::TANH:       return hcnn_tanh(x);
         default:                     return x;
     }
 }
@@ -808,7 +823,7 @@ float HCNNConv::activate_derivative(float x) const {
             // pre-activation sign), so recompute tanh(x) once.  The cost is
             // one extra `tanh` per gradient element; profile-wise this is a
             // wash because the forward pass already dominates conv compute.
-            float t = std::tanh(x);
+            float t = hcnn_tanh(x);
             return 1.0f - t * t;
         }
         default:                     return 1.0f;
