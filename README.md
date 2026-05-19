@@ -63,50 +63,26 @@ Pool (HCNNPool) -- antipodal pairing, DIM -> DIM-1
 Readout (HCNNReadout) -- flatten all (channel, vertex) activations -> linear -> output
 ```
 
-## Readout-throughput optimization roadmap
+## Readout-throughput optimizations
 
-When HCNN is used as the learned readout for [HypercubeRC](https://github.com/dliptak001/HypercubeRC), HCNN consumes >95% of the combined system's training compute -- the reservoir itself is essentially free in comparison. Thread parallelism inside HCNN is already saturated (block-pair auto-vectorization, vertex- and channel-level threading, per-thread gradient accumulators in `train_batch_impl`), so further wall-clock speedup must come from **algorithmic** changes rather than more threading.
+When HCNN is used as the learned readout for [HypercubeRC](https://github.com/dliptak001/HypercubeRC), HCNN consumes >95% of the combined system's training compute. Thread parallelism is already saturated (block-pair auto-vectorization, vertex- and channel-level threading, per-thread gradient accumulators), so wall-clock speedup must come from **algorithmic** changes. The hot path is `HCNNConv::compute_gradients` per sample; inside it, `std::tanh` on every conv output -- in both forward and backward -- is the dominant primitive. The two optimizations below target it.
 
-The RC workload that drives this roadmap: `Conv(c_in=1 -> ch, TANH, bias) + MaxPool` x `min(DIM-2, 2)` stages, Adam optimizer, regression task via `TrainEpochRegression` -> `TrainBatchRegression` -> `train_batch_impl`. DIM range 5-16, scaling target DIM=14-16. The hot path is `compute_gradients` (per-sample, parallel) followed by `apply_gradients` (once per batch, serial). At DIM=14 the second conv layer (32 ch x 16 in x K=13 x N=8192) dominates wall time, and inside that, `std::tanh` on every output element in both forward and backward is the single most expensive primitive.
+Measurements are paired runs of `RegressionTimeseries` at DIM=12 (4096 vertices, 50 epochs, Adam, two `Conv(TANH) + MaxPool` stages, FLATTEN readout).
 
-The options below are grouped by numerical risk. Each is independently selectable.
+### 1. Post-activation TANH derivative (`1 - y^2` identity)
 
-### Group A -- Safe (bit-identical or trivially close numerics)
+`HCNNConv::backward` and `HCNNConv::compute_gradients` previously called `activate_derivative(pre_act[i])`, which re-ran `std::tanh`. Since `y = tanh(x)` is already cached in `cache[i+1].activation` throughout backward, the derivative is `1 - y*y` with no transcendental call. An optional `const float* post_act = nullptr` parameter on the two backward entry points selects the identity when supplied and the activation is `Activation::TANH`; the public `HCNN` API is unchanged.
 
-**1. Use post-activation for the TANH derivative (the `1 - y^2` identity).** *Implemented.*
-For `Activation::TANH`, `HCNNConv::backward` and `HCNNConv::compute_gradients` previously called `activate_derivative(pre_act[i])`, which internally re-ran `std::tanh`. The post-activation `y = tanh(x)` is already alive in `cache[i+1].activation` throughout backward, so the derivative is obtained as `1 - y*y` with no transcendental call. An optional `const float* post_act = nullptr` parameter on the two backward entry points selects the identity when supplied and the activation is TANH; the public `HCNN` API is unchanged.
-- **Measured gain:** ~15% per-epoch wall-clock reduction at DIM=12 (3.55 s -> 3.03 s on `RegressionTimeseries`). Numerics bit-identical to the prior baseline.
-- **Files:** `HCNNConv.h`, `HCNNConv.cpp`, `HCNNNetwork.cpp`.
+- **Measured:** -14.8% per-epoch wall-clock at DIM=12 (3.55 s -> 3.03 s). Numerics bit-identical.
+- **Files:** `HCNNConv.{h,cpp}`, `HCNNNetwork.cpp`.
 
+### 2. Compile-time fast TANH (`HCNN_FAST_TANH`, default ON)
 
-### Group B -- Tradeoff (numerical changes; require A/B accuracy validation)
+Both `std::tanh` call sites in `HCNNConv.cpp` -- `HCNNConv::activate` (forward) and the `post_act==nullptr` fallback in `HCNNConv::activate_derivative` -- route through a static `hcnn_tanh` helper guarded by `#ifdef HCNN_FAST_TANH`. With the macro defined, the helper uses a rational Padé approximation `tanh(x) ~= x*(27 + x^2) / (27 + 9*x^2)`, output-clamped to `[-1, 1]` since the rational form's asymptote is `x/9` rather than 1. The CMake option attaches the macro via `target_compile_definitions(HypercubeCNNCore PRIVATE ...)`, so the public include interface is untouched and downstream consumers (HypercubeRC) inherit whichever variant is built into `libHypercubeCNNCore.a`. Pass `-DHCNN_FAST_TANH=OFF` to fall back to exact `std::tanh`. Because option 1's backward branch reuses the cached post-activation, the approximation propagates from forward to backward with no separate code path.
 
-**3b. Compile-time fast TANH approximation.** *Implemented.*
-Wrapped both `std::tanh` call sites in `HCNNConv.cpp` (forward `activate` and the `post_act==nullptr` fallback in `activate_derivative`) with a static `hcnn_tanh` helper guarded by `#ifdef HCNN_FAST_TANH`. When the macro is defined the helper uses a rational Padé approximation `tanh(x) ~= x * (27 + x^2) / (27 + 9*x^2)` with the output clamped to `[-1, 1]` (the rational form's asymptote is `x/9`, not 1, so a clamp is required for `|x| >~ 3`). The CMake option `HCNN_FAST_TANH` (default **ON**) attaches the macro as a `PRIVATE` `target_compile_definitions` on `HypercubeCNNCore`, so the public include interface is untouched and downstream consumers (e.g. HypercubeRC) inherit whichever variant is built into `libHypercubeCNNCore.a`. Pass `-DHCNN_FAST_TANH=OFF` to fall back to exact `std::tanh`. Because option 1's backward branch reuses the cached post-activation, the approximation propagates from forward to backward consistently with no separate code path.
-- **Measured gain:** ~9% additional per-epoch wall-clock reduction at DIM=12 on top of option 1 (3.03 s -> 2.76 s on `RegressionTimeseries`); cumulative ~22% vs the pre-roadmap baseline.
-- **Numerics:** final test 1-R^2 shifted from 9.92e-08 to 1.20e-07 on the DIM=12 timeseries fit -- still "seven nines of variance explained", well past any practical regression threshold.
+- **Measured:** -8.8% per-epoch wall-clock on top of #1 (3.03 s -> 2.76 s); cumulative -22% vs pre-optimization baseline.
+- **Numerics:** final test 1-R^2 shifts 9.92e-08 -> 1.20e-07 -- still seven nines of variance explained.
 - **Files:** `HCNNConv.cpp`, `CMakeLists.txt`.
-
-**4. fp32 + Kahan compensation for kernel-gradient reduction.**
-`conv_kernel_grad_one` (`HCNNConv.cpp:97-117`) currently accumulates in fp64 throughout to match the original numerical semantics bit-for-bit. Replacing the fp64 accumulator with Kahan-compensated fp32 halves SIMD-lane cost and roughly doubles effective vector width on AVX2/AVX-512. Kahan error grows as `O(eps)` independent of N -- substantially better than naive fp32 (`O(eps * N)`) and competitive with fp64 for the bounded reservoir-state magnitudes seen in RC training. Validate with `CoreSmokeTest` and `RegressionTimeseries` before merging.
-- **Expected gain:** up to 2x on kernel-grad compute at DIM=14-16 where the fp64 reduction is hot.
-- **Files:** `HCNNConv.cpp`.
-
-### Group C -- Out of scope for this roadmap
-
-Documented so the deferral is intentional, not forgotten:
-- Simplifying `HCNNReadout` to a pure matmul (eliminating the `channel_avg` abstraction now that `N=1` always in the FLATTEN configuration).
-- Hand-rolled AVX2/AVX-512 intrinsics on the block-pair inner loops -- the auto-vectorizer is already producing tight code on these paths (see the comment block at `HCNNConv.cpp:25-45, 81-92`); manual intrinsics risk regression for marginal gain.
-- Loop fusion to reuse `grad_pre` across `c_in` in kernel-grad -- only beneficial when `grad_pre` spills L1 (`DIM >= 15` with large `c_out`); revisit if profiler shows climbing L1 miss rate.
-
-### Status and measured gains (RC, DIM=12)
-
-| # | Optimization | Group | Status | Per-epoch wall-clock |
-|---|---|---|---|---|
-| 1 | TANH `1 - y^2` backward | A | **Shipped** | -14.8% vs baseline (3.55 s -> 3.03 s) |
-| 3b | Compile-time fast tanh (`HCNN_FAST_TANH`, default ON) | B | **Shipped** | -8.8% on top of 1 (3.03 s -> 2.76 s); cumulative -22% |
-| 2 | Drop redundant zero-fills | A | Tried, reverted | No measurable gain at DIM=12 |
-| 4 | fp32 + Kahan kernel-grad | B | Open | Predicted up to 2x on kernel-grad at DIM=14-16 |
 
 ## Build targets
 
