@@ -19,7 +19,7 @@
 // MNIST geometry → dense DIM=11 input (N = 2048)
 //
 // Loader still yields 28×28 in [-1, 1].  Before the network we:
-//   (train only) shift ±2 px, light Gaussian noise
+//   (train only) rotate ±12°, scale [0.9,1.1], shift ±2 px, Gaussian noise
 //   pack: 32×32 bilinear image  ‖  32×32 |∇|   → 2048 floats, no zero pad
 // ---------------------------------------------------------------------------
 
@@ -72,17 +72,30 @@ static float sample_bilinear_28(const float* img, float y, float x) {
     return v0 * (1.0f - wy) + v1 * wy;
 }
 
-// Integer translate; empty border filled with background (-1).
-// Content moves by (+dx, +dy): dst[y,x] = src[y-dy, x-dx].
-static void shift_28(const float* src, float* dst, int dy, int dx) {
+// Similarity about image center, then integer shift, via inverse bilinear warp.
+// Forward content map: scale (about center) → rotate (about center) → shift.
+// OOB samples → background (-1).  deg in degrees; scale is linear size factor.
+static void affine_28(const float* src, float* dst,
+                      float deg, float scale, int dy, int dx) {
+    constexpr float kCenter = 0.5f * static_cast<float>(kImgSide - 1);  // 13.5
+    const float s = (scale > 1e-6f) ? scale : 1.0f;
+    const float rad = deg * (static_cast<float>(std::numbers::pi) / 180.0f);
+    // Inverse: unshift → unrotate → unscale
+    const float c = std::cos(-rad);
+    const float sn = std::sin(-rad);
+    const float inv_s = 1.0f / s;
+    const float fdy = static_cast<float>(dy);
+    const float fdx = static_cast<float>(dx);
+
     for (int y = 0; y < kImgSide; ++y) {
         for (int x = 0; x < kImgSide; ++x) {
-            const int sy = y - dy;
-            const int sx = x - dx;
-            if (sy < 0 || sx < 0 || sy >= kImgSide || sx >= kImgSide)
-                dst[y * kImgSide + x] = kBackground;
-            else
-                dst[y * kImgSide + x] = src[sy * kImgSide + sx];
+            const float yy = static_cast<float>(y) - fdy - kCenter;
+            const float xx = static_cast<float>(x) - fdx - kCenter;
+            const float xr = c * xx - sn * yy;
+            const float yr = sn * xx + c * yy;
+            const float sx = xr * inv_s + kCenter;
+            const float sy = yr * inv_s + kCenter;
+            dst[y * kImgSide + x] = sample_bilinear_28(src, sy, sx);
         }
     }
 }
@@ -155,17 +168,21 @@ struct FlatDataset {
     }
 };
 
-// Pack every sample to 2048 floats.  If augment: random shift ±shift_max and
-// Gaussian noise (sigma) on the 28×28 plane before packing.  seed controls
-// reproducibility; use a different seed each epoch for fresh aug.
+// Pack every sample to 2048 floats.  If augment: random rotate (±rot_deg_max),
+// scale [scale_min, scale_max], shift ±shift_max, then Gaussian noise on the
+// 28×28 plane before packing.  seed controls reproducibility; use a different
+// seed each epoch for fresh aug.  Test path: augment=false (identity pack).
 static void fill_packed_dataset(const HCNNDataset& ds, FlatDataset& out,
                                 bool augment, int shift_max, float noise_sigma,
+                                float rot_deg_max, float scale_min, float scale_max,
                                 unsigned seed) {
     const int n = static_cast<int>(ds.size());
     out.reset(n, kPackedLen);
 
     std::mt19937 rng(seed);
     std::uniform_int_distribution<int> shift_dist(-shift_max, shift_max);
+    std::uniform_real_distribution<float> rot_dist(-rot_deg_max, rot_deg_max);
+    std::uniform_real_distribution<float> scale_dist(scale_min, scale_max);
 
     std::vector<float> work(static_cast<size_t>(kImgPixels));
 
@@ -177,9 +194,16 @@ static void fill_packed_dataset(const HCNNDataset& ds, FlatDataset& out,
 
         const float* img = s.input.data();
         if (augment) {
+            const float deg = (rot_deg_max > 0.0f) ? rot_dist(rng) : 0.0f;
+            const float sc  = (scale_max > scale_min) ? scale_dist(rng)
+                            : ((scale_min > 0.0f) ? scale_min : 1.0f);
             const int dy = shift_dist(rng);
             const int dx = shift_dist(rng);
-            shift_28(s.input.data(), work.data(), dy, dx);
+            // Identity affine degenerates cleanly when deg=0, sc=1, shift=0.
+            if (deg != 0.0f || sc != 1.0f || dy != 0 || dx != 0)
+                affine_28(s.input.data(), work.data(), deg, sc, dy, dx);
+            else
+                std::copy(s.input.begin(), s.input.end(), work.begin());
             add_gaussian_noise_28(work.data(), noise_sigma, rng);
             img = work.data();
         }
@@ -234,15 +258,20 @@ static void train_and_evaluate(const char* name, hcnn::HCNN& net,
     const float lr_max = lr;
     const float lr_min = lr_max * 0.1f;
     const float momentum = 0.9f;
-    constexpr int   kShiftMax   = 2;
-    constexpr float kNoiseSigma = 0.03f;
+    constexpr int   kShiftMax    = 2;
+    constexpr float kNoiseSigma  = 0.03f;
+    constexpr float kRotDegMax   = 12.0f;   // uniform in [-12, +12] degrees
+    constexpr float kScaleMin    = 0.9f;
+    constexpr float kScaleMax    = 1.1f;
 
     std::cout << "\n=== " << name << " (lr_max=" << lr_max
               << ", lr_min=" << lr_min
               << ", batch=" << batch_size
               << ", wd=" << weight_decay
               << ", epochs=" << epochs
-              << ", aug=shift+/-" << kShiftMax
+              << ", aug=rot+/-" << kRotDegMax
+              << "+scale[" << kScaleMin << "," << kScaleMax << "]"
+              << "+shift+/-" << kShiftMax
               << "+N(0," << kNoiseSigma << ")) ===\n";
     evaluate(net, test_ds, "Initial test");
 
@@ -269,6 +298,7 @@ static void train_and_evaluate(const char* name, hcnn::HCNN& net,
         auto t0 = std::chrono::steady_clock::now();
         fill_packed_dataset(train_raw, train_ds, /*augment=*/true,
                             kShiftMax, kNoiseSigma,
+                            kRotDegMax, kScaleMin, kScaleMax,
                             /*seed=*/static_cast<unsigned>(0xC0FFEEu + epoch * 9973u));
         net.TrainEpoch(train_ds.inputs.data(), train_ds.input_length,
                        train_ds.targets.data(), train_ds.count, batch_size,
@@ -348,47 +378,57 @@ int main() {
     // Test: pack only (no aug).  Train: re-packed with aug each epoch.
     FlatDataset test_flat;
     fill_packed_dataset(test_raw, test_flat, /*augment=*/false,
-                        /*shift_max=*/0, /*noise_sigma=*/0.0f, /*seed=*/0);
+                        /*shift_max=*/0, /*noise_sigma=*/0.0f,
+                        /*rot_deg_max=*/0.0f, /*scale_min=*/1.0f, /*scale_max=*/1.0f,
+                        /*seed=*/0);
 
     std::cout << "Input pack: 28x28 -> 32x32 image || 32x32 |grad| "
               << "(length " << kPackedLen << ", full N=" << kPackedLen << ")\n";
-    std::cout << "Train aug:  shift +/-2 px, Gaussian noise sigma=0.03 "
-              << "(train only, refreshed each epoch)\n";
+    std::cout << "Train aug:  rot +/-12 deg, scale [0.9,1.1], shift +/-2 px, "
+              << "Gaussian noise sigma=0.03 (train only, refreshed each epoch)\n";
 
     constexpr int DIM = 11;
     constexpr int N   = 1 << DIM;
     static_assert(N == kPackedLen, "DIM=11 N must match dense pack length 2048");
 
     // Weight-init seed only (aug / shuffle seeds are fixed separately).
-    // Documented default: best of 3 measured seeds (98.71% best-acc).
-    // Other seeds: 42 → 98.56%, 983247375 → 98.68%. Mean best-acc ~98.65%.
+    // Documented run: 99.08% best-acc with shift+noise only (seed 398479293);
+    // re-measure after rotate+scale aug.
     constexpr unsigned weight_seed = 398479293;
 
+    // 2-layer no-pool: 16 -> 16 at full N=2048 (no antipodal pool).
+    // FLATTEN head 32768->10. No BN (instance-over-N is a poor match here).
+    constexpr int C1 = 16;
+    constexpr int C2 = 16;
+    constexpr bool kUseBN = false;
+
     hcnn::HCNN net(DIM, /*num_outputs=*/10, /*input_channels=*/1);
-    net.AddConv(16);                           // 1->16 ch, K=11 (DIM=11)
-    net.AddPool(hcnn::PoolType::MAX);          // DIM 11->10, N 2048->1024
-    net.AddConv(16);                           // 16->16 ch, K=10 (DIM=10)
+    net.AddConv(C1, hcnn::Activation::RELU, /*use_bias=*/true, kUseBN);
+    net.AddConv(C2, hcnn::Activation::RELU, /*use_bias=*/true, kUseBN);
     net.RandomizeWeights(/*scale=*/0.0f, weight_seed);
     net.SetOptimizer(hcnn::OptimizerType::ADAM);
 
     std::cout << "Weight init seed: " << weight_seed << "\n";
 
-    constexpr int N_final = N / 2;
-    const int conv1_params   = 1 * 16 * DIM + 16;
-    const int conv2_params   = 16 * 16 * (DIM - 1) + 16;
-    const int readout_params = 16 * N_final * 10 + 10;
+    // No pool: DIM stays 11, N stays 2048; both convs use K=11.
+    constexpr int N_final = N;
+    const int conv1_params   = 1 * C1 * DIM + C1;                 // K=11
+    const int conv2_params   = C1 * C2 * DIM + C2;                // K=11
+    const int readout_params = C2 * N_final * 10 + 10;            // 16*2048*10
     const int total_params   = conv1_params + conv2_params + readout_params;
-    std::cout << "\nArchitecture: Conv(1->16, RELU, bias)   DIM=" << DIM
+    std::cout << "\nArchitecture: Conv(1->" << C1 << ", RELU, bias"
+              << (kUseBN ? ", BN" : "") << ")  DIM=" << DIM
               << "  N=" << N << "\n"
-              << "              -> MaxPool (antipodal)    DIM=" << (DIM - 1) << "\n"
-              << "              -> Conv(16->16, RELU, bias) DIM=" << (DIM - 1) << "\n"
+              << "              -> Conv(" << C1 << "->" << C2 << ", RELU, bias"
+              << (kUseBN ? ", BN" : "") << ") DIM=" << DIM << "\n"
               << "              -> FLATTEN\n"
-              << "              -> Linear(" << (16 * N_final) << " -> 10)\n"
+              << "              -> Linear(" << (C2 * N_final) << " -> 10)\n"
               << "Parameters:   " << total_params
               << " (" << conv1_params << " conv1 + " << conv2_params
               << " conv2 + " << readout_params << " readout)\n\n";
 
-    train_and_evaluate("HCNN", net, train_raw, test_flat, 0.001f, 256, 1e-3f);
+    // Same baseline schedule; larger head may want more WD if overfit appears.
+    train_and_evaluate("HCNN", net, train_raw, test_flat, /*lr=*/0.001f, 256, 1e-3f);
 
     return 0;
 }
