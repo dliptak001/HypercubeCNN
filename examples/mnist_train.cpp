@@ -10,8 +10,25 @@
 #include <iostream>
 #include <limits>
 #include <numbers>
+#include <random>
+#include <stdexcept>
 #include <thread>
 #include <vector>
+
+// ---------------------------------------------------------------------------
+// MNIST geometry → dense DIM=11 input (N = 2048)
+//
+// Loader still yields 28×28 in [-1, 1].  Before the network we:
+//   (train only) shift ±2 px, light Gaussian noise
+//   pack: 32×32 bilinear image  ‖  32×32 |∇|   → 2048 floats, no zero pad
+// ---------------------------------------------------------------------------
+
+static constexpr int kImgSide     = 28;
+static constexpr int kImgPixels   = kImgSide * kImgSide;  // 784
+static constexpr int kPlaneSide   = 32;
+static constexpr int kPlanePixels = kPlaneSide * kPlaneSide;  // 1024
+static constexpr int kPackedLen   = 2 * kPlanePixels;         // 2048 == 2^11
+static constexpr float kBackground = -1.0f;  // MNIST "ink off" after loader norm
 
 static float cross_entropy_loss(const float* logits, int K, int target) {
     double max_l = logits[0];
@@ -27,30 +44,150 @@ static int argmax(const float* v, int n) {
     return best;
 }
 
-// Contiguous flat-buffer view of a dataset, suitable for HCNN's flat
-// training and inference APIs.  Built once per dataset and reused across
-// epochs.  Flattens the per-sample vectors in HCNNDataset into a single
-// contiguous buffer.
+static float clampf(float v, float lo, float hi) {
+    return std::max(lo, std::min(hi, v));
+}
+
+// Sample 28×28 with bilinear interpolation.  Out-of-bounds → background.
+static float sample_bilinear_28(const float* img, float y, float x) {
+    const int y0 = static_cast<int>(std::floor(y));
+    const int x0 = static_cast<int>(std::floor(x));
+    const int y1 = y0 + 1;
+    const int x1 = x0 + 1;
+    const float wy = y - static_cast<float>(y0);
+    const float wx = x - static_cast<float>(x0);
+
+    auto at = [img](int yy, int xx) -> float {
+        if (yy < 0 || xx < 0 || yy >= kImgSide || xx >= kImgSide)
+            return kBackground;
+        return img[yy * kImgSide + xx];
+    };
+
+    const float v00 = at(y0, x0);
+    const float v01 = at(y0, x1);
+    const float v10 = at(y1, x0);
+    const float v11 = at(y1, x1);
+    const float v0 = v00 * (1.0f - wx) + v01 * wx;
+    const float v1 = v10 * (1.0f - wx) + v11 * wx;
+    return v0 * (1.0f - wy) + v1 * wy;
+}
+
+// Integer translate; empty border filled with background (-1).
+// Content moves by (+dx, +dy): dst[y,x] = src[y-dy, x-dx].
+static void shift_28(const float* src, float* dst, int dy, int dx) {
+    for (int y = 0; y < kImgSide; ++y) {
+        for (int x = 0; x < kImgSide; ++x) {
+            const int sy = y - dy;
+            const int sx = x - dx;
+            if (sy < 0 || sx < 0 || sy >= kImgSide || sx >= kImgSide)
+                dst[y * kImgSide + x] = kBackground;
+            else
+                dst[y * kImgSide + x] = src[sy * kImgSide + sx];
+        }
+    }
+}
+
+static void add_gaussian_noise_28(float* img, float sigma, std::mt19937& rng) {
+    if (sigma <= 0.0f) return;
+    std::normal_distribution<float> dist(0.0f, sigma);
+    for (int i = 0; i < kImgPixels; ++i)
+        img[i] = clampf(img[i] + dist(rng), -1.0f, 1.0f);
+}
+
+// Half-pixel-aligned bilinear resize 28×28 → 32×32.
+static void resize_28_to_32(const float* src28, float* dst32) {
+    constexpr float scale = static_cast<float>(kImgSide) / static_cast<float>(kPlaneSide);
+    for (int y = 0; y < kPlaneSide; ++y) {
+        for (int x = 0; x < kPlaneSide; ++x) {
+            const float sy = (static_cast<float>(y) + 0.5f) * scale - 0.5f;
+            const float sx = (static_cast<float>(x) + 0.5f) * scale - 0.5f;
+            dst32[y * kPlaneSide + x] = sample_bilinear_28(src28, sy, sx);
+        }
+    }
+}
+
+// Finite-difference gradient magnitude on 32×32; per-image max-norm → [-1, 1].
+// Replicate edge for the forward difference at the last row/col.
+static void grad_magnitude_32(const float* img32, float* out32) {
+    float gmax = 0.0f;
+    for (int y = 0; y < kPlaneSide; ++y) {
+        for (int x = 0; x < kPlaneSide; ++x) {
+            const int x1 = (x + 1 < kPlaneSide) ? x + 1 : x;
+            const int y1 = (y + 1 < kPlaneSide) ? y + 1 : y;
+            const float c  = img32[y * kPlaneSide + x];
+            const float dx = img32[y * kPlaneSide + x1] - c;
+            const float dy = img32[y1 * kPlaneSide + x] - c;
+            const float g  = std::sqrt(dx * dx + dy * dy);
+            out32[y * kPlaneSide + x] = g;
+            if (g > gmax) gmax = g;
+        }
+    }
+    if (gmax < 1e-8f) {
+        // Blank / constant image: no edges → same as background plane.
+        std::fill(out32, out32 + kPlanePixels, kBackground);
+        return;
+    }
+    const float inv = 1.0f / gmax;
+    for (int i = 0; i < kPlanePixels; ++i) {
+        const float u = out32[i] * inv;           // [0, 1]
+        out32[i] = 2.0f * u - 1.0f;               // [-1, 1]
+    }
+}
+
+// Dense pack: out[0:1024] = 32×32 image, out[1024:2048] = 32×32 |∇|.
+static void pack_mnist_2048(const float* img28, float* out2048) {
+    resize_28_to_32(img28, out2048);
+    grad_magnitude_32(out2048, out2048 + kPlanePixels);
+}
+
+// Contiguous flat-buffer view for HCNN TrainEpoch / ForwardBatch.
 struct FlatDataset {
-    std::vector<float> inputs;   // count * input_length contiguous floats
-    std::vector<int>   targets;  // count class indices
+    std::vector<float> inputs;   // count * input_length
+    std::vector<int>   targets;
     int count = 0;
     int input_length = 0;
 
-    explicit FlatDataset(const HCNNDataset& ds) {
-        count = static_cast<int>(ds.size());
-        if (count == 0) return;
-        input_length = static_cast<int>(ds.get(0).input.size());
-        inputs.resize(static_cast<size_t>(count) * input_length);
-        targets.resize(count);
-        for (int i = 0; i < count; ++i) {
-            const auto& s = ds.get(i);
-            std::copy(s.input.begin(), s.input.end(),
-                      inputs.begin() + i * input_length);
-            targets[i] = s.target_class;
-        }
+    void reset(int n, int len) {
+        count = n;
+        input_length = len;
+        inputs.resize(static_cast<size_t>(n) * static_cast<size_t>(len));
+        targets.resize(static_cast<size_t>(n));
     }
 };
+
+// Pack every sample to 2048 floats.  If augment: random shift ±shift_max and
+// Gaussian noise (sigma) on the 28×28 plane before packing.  seed controls
+// reproducibility; use a different seed each epoch for fresh aug.
+static void fill_packed_dataset(const HCNNDataset& ds, FlatDataset& out,
+                                bool augment, int shift_max, float noise_sigma,
+                                unsigned seed) {
+    const int n = static_cast<int>(ds.size());
+    out.reset(n, kPackedLen);
+
+    std::mt19937 rng(seed);
+    std::uniform_int_distribution<int> shift_dist(-shift_max, shift_max);
+
+    std::vector<float> work(static_cast<size_t>(kImgPixels));
+
+    for (int i = 0; i < n; ++i) {
+        const auto& s = ds.get(static_cast<size_t>(i));
+        if (static_cast<int>(s.input.size()) != kImgPixels) {
+            throw std::runtime_error("fill_packed_dataset: expected 28x28 MNIST input");
+        }
+
+        const float* img = s.input.data();
+        if (augment) {
+            const int dy = shift_dist(rng);
+            const int dx = shift_dist(rng);
+            shift_28(s.input.data(), work.data(), dy, dx);
+            add_gaussian_noise_28(work.data(), noise_sigma, rng);
+            img = work.data();
+        }
+
+        pack_mnist_2048(img, out.inputs.data() + static_cast<size_t>(i) * kPackedLen);
+        out.targets[static_cast<size_t>(i)] = s.target_class;
+    }
+}
 
 struct EvalResult {
     float loss = 0.0f;
@@ -86,50 +223,53 @@ static EvalResult evaluate(hcnn::HCNN& net, const FlatDataset& ds,
     return r;
 }
 
-// Dual checkpoint: track best test loss (calibration) and best test accuracy
-// (top-1) independently.  Late training often improves acc while CE rises;
-// reporting only the final epoch hides the healthier loss checkpoint.
+// Dual checkpoint: best test loss and best test accuracy independently.
+// Each epoch rebuilds the train buffer with a fresh augment seed.
 static void train_and_evaluate(const char* name, hcnn::HCNN& net,
-                               const FlatDataset& train_ds,
+                               const HCNNDataset& train_raw,
                                const FlatDataset& test_ds,
                                float lr = 0.01f, int batch_size = 32,
                                float weight_decay = 0.0f) {
-    // Cosine LR: peak at lr_max on epoch 1, floor at lr_min = 10% of peak on
-    // the final epoch.  The floor is a fraction of the call-site `lr`, not a
-    // hard-coded constant -- previously lr_min was fixed at 1e-3 while lr was
-    // 2e-3, so the schedule only halved LR (50% floor) and late epochs kept
-    // stomping the readout after test loss had already bottomed out.
     const int epochs = 40;
     const float lr_max = lr;
     const float lr_min = lr_max * 0.1f;
     const float momentum = 0.9f;
+    constexpr int   kShiftMax   = 2;
+    constexpr float kNoiseSigma = 0.03f;
 
     std::cout << "\n=== " << name << " (lr_max=" << lr_max
               << ", lr_min=" << lr_min
               << ", batch=" << batch_size
               << ", wd=" << weight_decay
-              << ", epochs=" << epochs << ") ===\n";
+              << ", epochs=" << epochs
+              << ", aug=shift±" << kShiftMax
+              << "+N(0," << kNoiseSigma << ")) ===\n";
     evaluate(net, test_ds, "Initial test");
 
+    FlatDataset train_ds;
     std::vector<float> best_loss_weights;
     std::vector<float> best_acc_weights;
     float best_loss = std::numeric_limits<float>::infinity();
     float best_acc = -1.0f;
-    float best_loss_acc = -1.0f;   // acc at the best-loss epoch
-    float best_acc_loss = std::numeric_limits<float>::infinity();  // loss at best-acc
+    float best_loss_acc = -1.0f;
+    float best_acc_loss = std::numeric_limits<float>::infinity();
     int best_loss_epoch = 0;
     int best_acc_epoch = 0;
 
     for (int epoch = 0; epoch < epochs; ++epoch) {
-        // progress in [0, 1]: use (epochs-1) so the last epoch lands exactly
-        // on lr_min (epoch/epochs would stop short at (T-1)/T).
         const float progress = (epochs > 1)
             ? static_cast<float>(epoch) / static_cast<float>(epochs - 1)
             : 0.0f;
         const float current_lr = lr_min + 0.5f * (lr_max - lr_min)
             * (1.0f + std::cos(static_cast<float>(std::numbers::pi) * progress));
 
+        // Fresh train-time aug each epoch; seed mixes epoch so runs are reproducible.
+        // Timer includes pack+aug rebuild (wall-clock cost of the epoch, not only
+        // the optimizer step).
         auto t0 = std::chrono::steady_clock::now();
+        fill_packed_dataset(train_raw, train_ds, /*augment=*/true,
+                            kShiftMax, kNoiseSigma,
+                            /*seed=*/static_cast<unsigned>(0xC0FFEEu + epoch * 9973u));
         net.TrainEpoch(train_ds.inputs.data(), train_ds.input_length,
                        train_ds.targets.data(), train_ds.count, batch_size,
                        current_lr, momentum, weight_decay,
@@ -145,7 +285,6 @@ static void train_and_evaluate(const char* name, hcnn::HCNN& net,
         bool new_best_loss = false;
         bool new_best_acc = false;
 
-        // Prefer lower loss; on equal loss keep the higher accuracy.
         if (r.loss < best_loss
             || (r.loss == best_loss && r.accuracy > best_loss_acc)) {
             best_loss = r.loss;
@@ -154,7 +293,6 @@ static void train_and_evaluate(const char* name, hcnn::HCNN& net,
             best_loss_weights = net.GetWeights();
             new_best_loss = true;
         }
-        // Prefer higher accuracy; on equal accuracy keep the lower loss.
         if (r.accuracy > best_acc
             || (r.accuracy == best_acc && r.loss < best_acc_loss)) {
             best_acc = r.accuracy;
@@ -192,40 +330,46 @@ static void train_and_evaluate(const char* name, hcnn::HCNN& net,
         net.SetWeights(best_acc_weights);
         evaluate(net, test_ds, "Restored best-acc");
     }
-    // Leave the network at the best-accuracy weights (leaderboard default).
 }
 
 int main() {
-    // Resolve data path relative to source file location
     auto src_dir = std::filesystem::path(__FILE__).parent_path().parent_path();
     auto data_dir = src_dir / "data";
 
     std::cout << "Loading MNIST from " << data_dir << "...\n";
-    auto train_data = load_mnist((data_dir / "train-images-idx3-ubyte").string(),
-                                 (data_dir / "train-labels-idx1-ubyte").string(), 60000);
-    auto test_data  = load_mnist((data_dir / "t10k-images-idx3-ubyte").string(),
-                                 (data_dir / "t10k-labels-idx1-ubyte").string(), 10000);
-    std::cout << "Train: " << train_data.size() << " samples, "
-              << "Test: " << test_data.size() << " samples\n";
+    auto train_raw = load_mnist((data_dir / "train-images-idx3-ubyte").string(),
+                                (data_dir / "train-labels-idx1-ubyte").string(), 60000);
+    auto test_raw  = load_mnist((data_dir / "t10k-images-idx3-ubyte").string(),
+                                (data_dir / "t10k-labels-idx1-ubyte").string(), 10000);
+    std::cout << "Train: " << train_raw.size() << " samples, "
+              << "Test: " << test_raw.size() << " samples\n";
     std::cout << "Threads: " << std::thread::hardware_concurrency() << "\n";
 
-    FlatDataset train_flat(train_data);
-    FlatDataset test_flat(test_data);
+    // Test: pack only (no aug).  Train: re-packed with aug each epoch.
+    FlatDataset test_flat;
+    fill_packed_dataset(test_raw, test_flat, /*augment=*/false,
+                        /*shift_max=*/0, /*noise_sigma=*/0.0f, /*seed=*/0);
 
-    // --- 2-layer with pooling: conv + pool + conv + FLATTEN ---
+    std::cout << "Input pack: 28x28 -> 32x32 image || 32x32 |grad| "
+              << "(length " << kPackedLen << ", full N=" << kPackedLen << ")\n";
+    std::cout << "Train aug:  shift +/-2 px, Gaussian noise sigma=0.03 "
+              << "(train only, refreshed each epoch)\n";
+
     constexpr int DIM = 11;
     constexpr int N   = 1 << DIM;
+    static_assert(N == kPackedLen, "DIM=11 N must match dense pack length 2048");
+
     hcnn::HCNN net(DIM, /*num_outputs=*/10, /*input_channels=*/1);
-    net.AddConv(16);                           // 1->16 ch, K=10 (DIM=10)
-    net.AddPool(hcnn::PoolType::MAX);          // DIM 10->9, N 1024->512
-    net.AddConv(16);                           // 16->16 ch, K=9  (DIM=9)
+    net.AddConv(16);                           // 1->16 ch, K=11 (DIM=11)
+    net.AddPool(hcnn::PoolType::MAX);          // DIM 11->10, N 2048->1024
+    net.AddConv(16);                           // 16->16 ch, K=10 (DIM=10)
     net.RandomizeWeights();
     net.SetOptimizer(hcnn::OptimizerType::ADAM);
 
-    constexpr int N_final = N / 2;             // one pool: N -> N/2
-    const int conv1_params   = 1 * 16 * DIM + 16;         // kernel + bias
-    const int conv2_params   = 16 * 16 * (DIM - 1) + 16;  // kernel + bias
-    const int readout_params = 16 * N_final * 10 + 10;   // FLATTEN: c_final * N_final * num_outputs + bias
+    constexpr int N_final = N / 2;
+    const int conv1_params   = 1 * 16 * DIM + 16;
+    const int conv2_params   = 16 * 16 * (DIM - 1) + 16;
+    const int readout_params = 16 * N_final * 10 + 10;
     const int total_params   = conv1_params + conv2_params + readout_params;
     std::cout << "\nArchitecture: Conv(1->16, RELU, bias)   DIM=" << DIM
               << "  N=" << N << "\n"
@@ -237,30 +381,7 @@ int main() {
               << " (" << conv1_params << " conv1 + " << conv2_params
               << " conv2 + " << readout_params << " readout)\n\n";
 
-    // --- Shallow (commented out): 1 conv + FLATTEN, 16 ch ---
-    // hcnn::HCNN net(10, /*num_outputs=*/10, /*input_channels=*/1);
-    // net.AddConv(16);                           // 1->16 ch, K=10 (DIM=10)
-    // net.RandomizeWeights();
-    // train_and_evaluate("HCNN", net, train_flat, test_flat, 0.015f, 256, 1e-4f);
-
-    // Stronger regularization for the readout-heavy FLATTEN model (~97% of
-    // params in the linear head): half the old peak LR (0.002 -> 0.001) so
-    // cosine floors at 1e-4, and 2x weight decay (5e-4 -> 1e-3) on kernels
-    // and readout weights.  Batch size unchanged.
-    train_and_evaluate("HCNN", net, train_flat, test_flat, 0.001f, 256, 1e-3f);
-
-    // --- Deep (commented out for now): 4 conv+pool + FLATTEN ---
-    // hcnn::HCNN net(10, /*num_outputs=*/10, /*input_channels=*/1);
-    // net.AddConv(32);                          // 1->32 ch,    K=10 (DIM=10)
-    // net.AddPool(hcnn::PoolType::MAX);         // DIM 10->9,   N 1024->512
-    // net.AddConv(64);                          // 32->64 ch,   K=9  (DIM=9)
-    // net.AddPool(hcnn::PoolType::MAX);         // DIM 9->8,    N 512->256
-    // net.AddConv(128);                         // 64->128 ch,  K=8  (DIM=8)
-    // net.AddPool(hcnn::PoolType::MAX);         // DIM 8->7,    N 256->128
-    // net.AddConv(128);                         // 128->128 ch, K=7  (DIM=7)
-    // net.AddPool(hcnn::PoolType::MAX);         // DIM 7->6,    N 128->64
-    // net.RandomizeWeights();
-    // train_and_evaluate("HCNN", net, train_flat, test_flat, 0.06f, 256, 1e-4f);
+    train_and_evaluate("HCNN", net, train_raw, test_flat, 0.001f, 256, 1e-3f);
 
     return 0;
 }
