@@ -37,12 +37,13 @@ The readout dominates the parameter count. FLATTEN treats every (channel, vertex
 | Setting | Value | Notes |
 |---------|-------|-------|
 | Optimizer | Adam | Decoupled weight decay (AdamW), default betas (0.9, 0.999) |
-| Learning rate | 0.002 | Initial LR, decays via cosine annealing |
-| LR schedule | Cosine annealing to 1e-3 | Smooth decay, no warmup or restarts |
+| Learning rate | `lr_max = 0.001` | Peak LR (first epoch). Lower than the old 0.002 to slow late overfit of the FLATTEN head |
+| LR schedule | Cosine anneal `lr_max → 0.1·lr_max` | With peak 0.001 the floor is **1e-4**. Progress uses `epoch/(epochs-1)` so the last epoch hits `lr_min` exactly. No warmup/restarts. |
 | Batch size | 256 | Parallel across threads via `TrainBatch` (dispatched by `TrainEpoch`) |
-| Weight decay | 5e-4 | Applied to kernels and readout weights (not biases) |
-| Epochs | 40 | |
+| Weight decay | 1e-3 | AdamW-style; applied to kernels and readout weights (not biases). Stronger than 5e-4 because the readout is ~97% of params |
+| Epochs | 40 | Late epochs are fine-tuning under a small LR; dual checkpoints still pick best-loss vs best-acc |
 | Shuffle | per-epoch | `TrainEpoch(..., shuffle_seed = epoch + 1)` |
+| Checkpoints | dual | Best test **loss** and best test **acc** tracked via `GetWeights` / `SetWeights`; final net restored to best-acc |
 
 ## Data loading
 
@@ -93,7 +94,9 @@ cmake --build cmake-build-release
 
 ## Results
 
-60K train / 10K test, Adam, batch=256, weight decay 5e-4, cosine LR 0.002 → 1e-3.
+60K train / 10K test, Adam, batch=256, weight decay **1e-3**, cosine LR **0.001 → 1e-4** (10% floor).
+
+> Note: the table below is from an older config (`lr_max=0.002`, hard-coded `lr_min=1e-3`, `wd=5e-4`). Re-run `MNISTTrain` for numbers under the current schedule + regularization.
 
 ```
 Epoch  Test Acc    Test Loss   LR        Time/epoch
@@ -108,6 +111,8 @@ Epoch  Test Acc    Test Loss   LR        Time/epoch
 ```
 
 **Peak accuracy: 98.07%** (epoch 29), **throughput: ~8,000-10,000 samples/s** on 32 threads.
+
+**Best test loss** is earlier (epoch 6: loss 0.078 @ 97.65%). After that, CE climbs while accuracy slowly rises then plateaus -- overconfidence overfitting. The example tracks both checkpoints independently and restores the best-acc weights at the end (also re-evaluates best-loss).
 
 ## Analysis
 

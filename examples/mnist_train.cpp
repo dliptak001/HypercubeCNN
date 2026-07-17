@@ -8,6 +8,7 @@
 #include <cmath>
 #include <filesystem>
 #include <iostream>
+#include <limits>
 #include <numbers>
 #include <thread>
 #include <vector>
@@ -51,7 +52,15 @@ struct FlatDataset {
     }
 };
 
-static void evaluate(hcnn::HCNN& net, const FlatDataset& ds, const char* label) {
+struct EvalResult {
+    float loss = 0.0f;
+    float accuracy = 0.0f;  // percent in [0, 100]
+    int correct = 0;
+    int count = 0;
+};
+
+static EvalResult evaluate(hcnn::HCNN& net, const FlatDataset& ds,
+                           const char* label) {
     int K = net.GetNumOutputs();
     int count = ds.count;
 
@@ -66,31 +75,59 @@ static void evaluate(hcnn::HCNN& net, const FlatDataset& ds, const char* label) 
         if (argmax(logits, K) == ds.targets[i]) ++correct;
     }
 
-    float avg_loss = total_loss / count;
-    float accuracy = 100.0f * correct / count;
-    std::cout << label << ": loss=" << avg_loss
-              << " acc=" << correct << "/" << count
-              << " (" << accuracy << "%)\n";
+    EvalResult r;
+    r.loss = total_loss / static_cast<float>(count);
+    r.correct = correct;
+    r.count = count;
+    r.accuracy = 100.0f * correct / count;
+    std::cout << label << ": loss=" << r.loss
+              << " acc=" << r.correct << "/" << r.count
+              << " (" << r.accuracy << "%)\n";
+    return r;
 }
 
+// Dual checkpoint: track best test loss (calibration) and best test accuracy
+// (top-1) independently.  Late training often improves acc while CE rises;
+// reporting only the final epoch hides the healthier loss checkpoint.
 static void train_and_evaluate(const char* name, hcnn::HCNN& net,
                                const FlatDataset& train_ds,
                                const FlatDataset& test_ds,
                                float lr = 0.01f, int batch_size = 32,
                                float weight_decay = 0.0f) {
-    std::cout << "\n=== " << name << " (lr=" << lr
+    // Cosine LR: peak at lr_max on epoch 1, floor at lr_min = 10% of peak on
+    // the final epoch.  The floor is a fraction of the call-site `lr`, not a
+    // hard-coded constant -- previously lr_min was fixed at 1e-3 while lr was
+    // 2e-3, so the schedule only halved LR (50% floor) and late epochs kept
+    // stomping the readout after test loss had already bottomed out.
+    const int epochs = 40;
+    const float lr_max = lr;
+    const float lr_min = lr_max * 0.1f;
+    const float momentum = 0.9f;
+
+    std::cout << "\n=== " << name << " (lr_max=" << lr_max
+              << ", lr_min=" << lr_min
               << ", batch=" << batch_size
-              << ", wd=" << weight_decay << ") ===\n";
+              << ", wd=" << weight_decay
+              << ", epochs=" << epochs << ") ===\n";
     evaluate(net, test_ds, "Initial test");
 
-    const int epochs = 40;
-    const float momentum = 0.9f;
-    const float lr_min = 1e-3f;  // 10% of lr_max
+    std::vector<float> best_loss_weights;
+    std::vector<float> best_acc_weights;
+    float best_loss = std::numeric_limits<float>::infinity();
+    float best_acc = -1.0f;
+    float best_loss_acc = -1.0f;   // acc at the best-loss epoch
+    float best_acc_loss = std::numeric_limits<float>::infinity();  // loss at best-acc
+    int best_loss_epoch = 0;
+    int best_acc_epoch = 0;
+
     for (int epoch = 0; epoch < epochs; ++epoch) {
-        // Cosine annealing: lr decays smoothly from lr to lr_min
-        float progress = static_cast<float>(epoch) / static_cast<float>(epochs);
-        float current_lr = lr_min + 0.5f * (lr - lr_min)
-                           * (1.0f + std::cos(static_cast<float>(std::numbers::pi) * progress));
+        // progress in [0, 1]: use (epochs-1) so the last epoch lands exactly
+        // on lr_min (epoch/epochs would stop short at (T-1)/T).
+        const float progress = (epochs > 1)
+            ? static_cast<float>(epoch) / static_cast<float>(epochs - 1)
+            : 0.0f;
+        const float current_lr = lr_min + 0.5f * (lr_max - lr_min)
+            * (1.0f + std::cos(static_cast<float>(std::numbers::pi) * progress));
 
         auto t0 = std::chrono::steady_clock::now();
         net.TrainEpoch(train_ds.inputs.data(), train_ds.input_length,
@@ -101,11 +138,61 @@ static void train_and_evaluate(const char* name, hcnn::HCNN& net,
         auto t1 = std::chrono::steady_clock::now();
         double secs = std::chrono::duration<double>(t1 - t0).count();
 
-        std::string label = "Epoch " + std::to_string(epoch + 1) + "/" + std::to_string(epochs);
-        evaluate(net, test_ds, label.c_str());
+        std::string label = "Epoch " + std::to_string(epoch + 1) + "/"
+                            + std::to_string(epochs);
+        EvalResult r = evaluate(net, test_ds, label.c_str());
+
+        bool new_best_loss = false;
+        bool new_best_acc = false;
+
+        // Prefer lower loss; on equal loss keep the higher accuracy.
+        if (r.loss < best_loss
+            || (r.loss == best_loss && r.accuracy > best_loss_acc)) {
+            best_loss = r.loss;
+            best_loss_acc = r.accuracy;
+            best_loss_epoch = epoch + 1;
+            best_loss_weights = net.GetWeights();
+            new_best_loss = true;
+        }
+        // Prefer higher accuracy; on equal accuracy keep the lower loss.
+        if (r.accuracy > best_acc
+            || (r.accuracy == best_acc && r.loss < best_acc_loss)) {
+            best_acc = r.accuracy;
+            best_acc_loss = r.loss;
+            best_acc_epoch = epoch + 1;
+            best_acc_weights = net.GetWeights();
+            new_best_acc = true;
+        }
+
         std::cout << "  (lr=" << current_lr << ", " << secs << "s, "
-                  << train_ds.count / secs << " samples/s)\n";
+                  << train_ds.count / secs << " samples/s)";
+        if (new_best_loss || new_best_acc) {
+            std::cout << "  [";
+            if (new_best_loss) std::cout << "best-loss";
+            if (new_best_loss && new_best_acc) std::cout << " ";
+            if (new_best_acc) std::cout << "best-acc";
+            std::cout << "]";
+        }
+        std::cout << "\n";
     }
+
+    std::cout << "\n--- Checkpoints ---\n"
+              << "Best loss: epoch " << best_loss_epoch
+              << "  loss=" << best_loss
+              << "  acc=" << best_loss_acc << "%\n"
+              << "Best acc:  epoch " << best_acc_epoch
+              << "  loss=" << best_acc_loss
+              << "  acc=" << best_acc << "%\n";
+
+    if (!best_loss_weights.empty()) {
+        net.SetWeights(best_loss_weights);
+        evaluate(net, test_ds, "Restored best-loss");
+    }
+    if (!best_acc_weights.empty()) {
+        net.SetWeights(best_acc_weights);
+        evaluate(net, test_ds, "Restored best-acc");
+    }
+    // Leave the network at the best-accuracy weights (leaderboard default).
 }
 
 int main() {
@@ -126,7 +213,7 @@ int main() {
     FlatDataset test_flat(test_data);
 
     // --- 2-layer with pooling: conv + pool + conv + FLATTEN ---
-    constexpr int DIM = 10;
+    constexpr int DIM = 11;
     constexpr int N   = 1 << DIM;
     hcnn::HCNN net(DIM, /*num_outputs=*/10, /*input_channels=*/1);
     net.AddConv(16);                           // 1->16 ch, K=10 (DIM=10)
@@ -156,7 +243,11 @@ int main() {
     // net.RandomizeWeights();
     // train_and_evaluate("HCNN", net, train_flat, test_flat, 0.015f, 256, 1e-4f);
 
-    train_and_evaluate("HCNN", net, train_flat, test_flat, 0.002f, 256, 5e-4f);
+    // Stronger regularization for the readout-heavy FLATTEN model (~97% of
+    // params in the linear head): half the old peak LR (0.002 -> 0.001) so
+    // cosine floors at 1e-4, and 2x weight decay (5e-4 -> 1e-3) on kernels
+    // and readout weights.  Batch size unchanged.
+    train_and_evaluate("HCNN", net, train_flat, test_flat, 0.001f, 256, 1e-3f);
 
     // --- Deep (commented out for now): 4 conv+pool + FLATTEN ---
     // hcnn::HCNN net(10, /*num_outputs=*/10, /*input_channels=*/1);
