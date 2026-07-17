@@ -360,8 +360,8 @@ int main() {
     static_assert(N == kPackedLen, "DIM=11 N must match dense pack length 2048");
 
     // Weight-init seed only (aug / shuffle seeds are fixed separately).
-    // Change this between multi-seed runs; it is printed below.
-    // Documented default from multi-seed search (best-acc 98.68% on this recipe).
+    // Documented default: best of 3 measured seeds (98.71% best-acc).
+    // Other seeds: 42 → 98.56%, 983247375 → 98.68%. Mean best-acc ~98.65%.
     constexpr unsigned weight_seed = 398479293;
 
     hcnn::HCNN net(DIM, /*num_outputs=*/10, /*input_channels=*/1);
