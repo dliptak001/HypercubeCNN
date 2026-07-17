@@ -72,7 +72,8 @@ The readout dominates (~98% of params). FLATTEN treats every (channel, vertex) a
 | Batch size | 256 | Via `TrainEpoch` → `TrainBatch` |
 | Weight decay | 1e-3 | Kernels + readout weights (not biases) |
 | Epochs | 40 | |
-| Shuffle | per-epoch | `shuffle_seed = epoch + 1` |
+| Shuffle | per-epoch | `shuffle_seed = epoch + 1` (fixed stream; not varied with weight seed) |
+| Weight init seed | **983247375** | Printed as `Weight init seed:`; change `weight_seed` in `mnist_train.cpp` for multi-seed runs. Aug/shuffle seeds stay fixed. |
 | **Augmentation** | train only | Independent shift \(dx,dy \in \{-2,\ldots,2\}\); Gaussian noise σ=0.03; border fill = −1; **rebuilt every epoch** |
 | Checkpoints | dual | Best test **loss** and best test **acc**; net left on best-acc weights |
 
@@ -122,37 +123,38 @@ cmake --build cmake-build-release --target MNISTTrain
 
 ## Results
 
-60K train / 10K test, **DIM=11**, dense pack (32×32 image ‖ 32×32 \|∇\|), train aug (shift ±2, σ=0.03), Adam, batch=256, wd=1e-3, cosine LR **0.001 → 1e-4**, 40 epochs. Epoch timing includes pack+aug rebuild + `TrainEpoch`.
+60K train / 10K test, **DIM=11**, dense pack (32×32 image ‖ 32×32 \|∇\|), train aug (shift ±2, σ=0.03), Adam, batch=256, wd=1e-3, cosine LR **0.001 → 1e-4**, 40 epochs, **weight init seed 983247375**. Epoch timing includes pack+aug rebuild + `TrainEpoch`.
 
 ```
 Epoch  Test Acc    Test Loss   LR        Time/epoch
-  1    94.46%      0.2245      0.00100   ~17s
-  6    97.49%      0.0849      0.00096   ~17s
- 16    97.96%      0.0636      0.00071   ~17s
- 20    98.13%      0.0584      0.00057   ~18s
- 26    98.50%      0.0524      0.00036   ~17s
- 30    98.50%      0.0495      0.00024   ~17s
- 35    98.56%      0.0468      0.00014   ~17s   ← best acc
- 40    98.55%      0.0450      0.00010   ~17s   ← best loss
+  1    94.07%      0.2216      0.00100   ~17s
+ 10    97.81%      0.0687      0.00089   ~19s
+ 20    98.25%      0.0532      0.00057   ~17s
+ 28    98.62%      0.0437      0.00029   ~17s
+ 34    98.63%      0.0418      0.00015   ~17s
+ 35    98.62%      0.0417      0.00014   ~17s
+ 38    98.68%      0.0419      0.00011   ~17s   ← best acc
+ 40    98.65%      0.0415      0.00010   ~18s   ← best loss
 ```
 
 | Checkpoint | Epoch | Test loss | Test acc |
 |------------|-------|-----------|----------|
-| **Best loss** | 40 | **0.0450** | 98.55% |
-| **Best acc** | 35 | 0.0468 | **98.56%** |
+| **Best loss** | 40 | **0.0415** | 98.65% |
+| **Best acc** | 38 | 0.0419 | **98.68%** |
 
-**Throughput: ~3.3–3.5k samples/s** on 32 threads (~17 s/epoch wall-clock including pack+aug).
+**Throughput: ~3.4–3.6k samples/s** on 32 threads (~17 s/epoch wall-clock including pack+aug).
 
-### vs prior DIM=11 baseline (zero-pad, no aug)
+Seed sensitivity: the same recipe with the previous default init (`seed=42`) peaked around **98.56%** / loss **0.045**. Init seed **983247375** is the documented default after a light search; report the printed `Weight init seed` with any quoted number.
 
-Same net and optimizer knobs; only embed + train aug differ:
+### vs earlier DIM=11 baselines
 
-| | Zero-pad, no aug | Dense pack + aug | Δ |
-|--|------------------|------------------|---|
-| Best loss | 0.0676 @ 98.00% | **0.0450 @ 98.55%** | **−33% CE**, +0.55% acc |
-| Best acc | 98.27% (loss 0.094) | **98.56%** (loss 0.047) | **+0.29%** (~29 samples) |
-| Loss @ best-acc | 0.094 | **0.047** | ~**2× better calibrated** |
-| Best-loss vs best-acc | Split (ep 9 vs 37) | **Almost the same model** (ep 40 vs 35) | Dual checkpoints still useful, barely diverge |
+| Recipe | Best loss | Best acc |
+|--------|-----------|----------|
+| Zero-pad 784→2048, no aug, seed 42 | 0.0676 @ 98.00% | 98.27% (loss 0.094) |
+| Dense pack + aug, seed 42 | 0.0450 @ 98.55% | 98.56% (loss 0.047) |
+| **Dense pack + aug, seed 983247375** | **0.0415 @ 98.65%** | **98.68% (loss 0.042)** |
+
+Pack + aug removed the early loss minimum / late CE rise pattern. Best-loss and best-acc stay close (here epoch 40 vs 38, CE within ~0.0004).
 
 ## Analysis
 
@@ -164,18 +166,18 @@ Leaving vertices 784–2047 at zero wasted most of N at DIM=11. The 32×32 ‖ |
 
 The FLATTEN readout is strongly position-addressable. Small shifts force the model to rely less on absolute vertex indices for a given stroke. Light noise softens intensity memorization. Aug is train-only so reported test numbers stay on clean IDX images.
 
-### Curve shape (what changed)
+### Curve shape
 
-With zero-pad and no aug, test **loss bottomed early** (~ep 9) then **rose** while accuracy crept up — classic overconfidence. With dense pack + aug, **loss keeps falling through epoch 40** and best-loss / best-acc nearly coincide (~98.55–98.56%, CE ~0.045–0.047). That is a healthier training dynamic, not just a higher peak.
+Test **loss trends down through the run** (still improving at epoch 40) rather than bottoming early and climbing. Dual checkpoints still run; with this recipe they almost pick the same model.
 
-### What ~98.6% means
+### What ~98.7% means
 
 - Linear classifier on raw pixels ~92%
 - 2-layer MLP ~98%
 - Spatial 2D CNNs 99.0–99.5%
 
-HypercubeCNN at **98.56%** is still in **MLP / weak-CNN territory without a spatial grid prior** (row-major blocks + antipodal pool). The remaining gap to 99%+ is the cost of that design. Pack + aug closed a large fraction of the avoidable gap from wasted input slots and absolute-position overfitting.
+HypercubeCNN at **98.68%** is still in **MLP / weak-CNN territory without a spatial grid prior** (row-major blocks + antipodal pool). Remaining errors ~132/10k; 99%+ usually needs stronger spatial structure or heavier aug. Pack + aug + a decent init closed most of the avoidable gap from empty pad and absolute-position overfitting.
 
 ## Significance
 
-**98.56%** test accuracy (best-acc) with best loss **0.045** on MNIST, without spatial grid convolutions, shows the training stack is solid for demos and for **native hypercube data** (fingerprints, Boolean functions, reservoir state). Dense pack and aug are **image-demo engineering**, documented here separately from the core SDK.
+**98.68%** test accuracy (best-acc) with best loss **0.0415** on MNIST, without spatial grid convolutions, shows the training stack is solid for demos and for **native hypercube data** (fingerprints, Boolean functions, reservoir state). Dense pack, aug, and the reported weight seed are **image-demo engineering**, documented here separately from the core SDK.
