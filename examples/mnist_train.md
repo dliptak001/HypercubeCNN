@@ -122,24 +122,37 @@ cmake --build cmake-build-release --target MNISTTrain
 
 ## Results
 
-### Prior baseline (DIM=11, zero-pad 784→2048, no aug)
+60K train / 10K test, **DIM=11**, dense pack (32×32 image ‖ 32×32 \|∇\|), train aug (shift ±2, σ=0.03), Adam, batch=256, wd=1e-3, cosine LR **0.001 → 1e-4**, 40 epochs. Epoch timing includes pack+aug rebuild + `TrainEpoch`.
 
-Same architecture and train knobs (Adam, batch=256, wd=1e-3, cosine 0.001→1e-4, 40 epochs), **without** dense pack or augmentation:
+```
+Epoch  Test Acc    Test Loss   LR        Time/epoch
+  1    94.46%      0.2245      0.00100   ~17s
+  6    97.49%      0.0849      0.00096   ~17s
+ 16    97.96%      0.0636      0.00071   ~17s
+ 20    98.13%      0.0584      0.00057   ~18s
+ 26    98.50%      0.0524      0.00036   ~17s
+ 30    98.50%      0.0495      0.00024   ~17s
+ 35    98.56%      0.0468      0.00014   ~17s   ← best acc
+ 40    98.55%      0.0450      0.00010   ~17s   ← best loss
+```
 
 | Checkpoint | Epoch | Test loss | Test acc |
 |------------|-------|-----------|----------|
-| Best loss | 9 | 0.0676 | 98.00% |
-| Best acc | 37 | 0.0939 | **98.27%** |
+| **Best loss** | 40 | **0.0450** | 98.55% |
+| **Best acc** | 35 | 0.0468 | **98.56%** |
 
-Throughput ~3.4–3.8k samples/s (~16–17 s/epoch) on 32 threads.
+**Throughput: ~3.3–3.5k samples/s** on 32 threads (~17 s/epoch wall-clock including pack+aug).
 
-### Current recipe (dense pack + train aug)
+### vs prior DIM=11 baseline (zero-pad, no aug)
 
-Re-run `MNISTTrain` after this change and replace the table below with the new checkpoint summary. Epoch timing includes **pack+aug rebuild + TrainEpoch**.
+Same net and optimizer knobs; only embed + train aug differ:
 
-```
-(pending — run MNISTTrain and paste best-loss / best-acc here)
-```
+| | Zero-pad, no aug | Dense pack + aug | Δ |
+|--|------------------|------------------|---|
+| Best loss | 0.0676 @ 98.00% | **0.0450 @ 98.55%** | **−33% CE**, +0.55% acc |
+| Best acc | 98.27% (loss 0.094) | **98.56%** (loss 0.047) | **+0.29%** (~29 samples) |
+| Loss @ best-acc | 0.094 | **0.047** | ~**2× better calibrated** |
+| Best-loss vs best-acc | Split (ep 9 vs 37) | **Almost the same model** (ep 40 vs 35) | Dual checkpoints still useful, barely diverge |
 
 ## Analysis
 
@@ -149,16 +162,20 @@ Leaving vertices 784–2047 at zero wasted most of N at DIM=11. The 32×32 ‖ |
 
 ### Why augmentation
 
-The FLATTEN readout is strongly position-addressable. Small shifts force the model to rely less on absolute vertex indices for a given stroke. Light noise softens intensity memorization. Aug is train-only so reported test numbers stay comparable to clean IDX evaluation.
+The FLATTEN readout is strongly position-addressable. Small shifts force the model to rely less on absolute vertex indices for a given stroke. Light noise softens intensity memorization. Aug is train-only so reported test numbers stay on clean IDX images.
 
-### What ~98% means
+### Curve shape (what changed)
+
+With zero-pad and no aug, test **loss bottomed early** (~ep 9) then **rose** while accuracy crept up — classic overconfidence. With dense pack + aug, **loss keeps falling through epoch 40** and best-loss / best-acc nearly coincide (~98.55–98.56%, CE ~0.045–0.047). That is a healthier training dynamic, not just a higher peak.
+
+### What ~98.6% means
 
 - Linear classifier on raw pixels ~92%
 - 2-layer MLP ~98%
 - Spatial 2D CNNs 99.0–99.5%
 
-HypercubeCNN in this regime is **MLP-class without a spatial grid CNN prior**. Remaining gap to 99%+ is expected while antipodal pool and non-spatial layout remain.
+HypercubeCNN at **98.56%** is still in **MLP / weak-CNN territory without a spatial grid prior** (row-major blocks + antipodal pool). The remaining gap to 99%+ is the cost of that design. Pack + aug closed a large fraction of the avoidable gap from wasted input slots and absolute-position overfitting.
 
 ## Significance
 
-Strong MNIST accuracy with a hypercube conv stack validates the training pipeline for **native hypercube data** (fingerprints, Boolean functions, reservoir state), where Hamming geometry is a feature rather than a handicap. The dense pack and aug here are **image-demo engineering**, documented separately from the core SDK.
+**98.56%** test accuracy (best-acc) with best loss **0.045** on MNIST, without spatial grid convolutions, shows the training stack is solid for demos and for **native hypercube data** (fingerprints, Boolean functions, reservoir state). Dense pack and aug are **image-demo engineering**, documented here separately from the core SDK.

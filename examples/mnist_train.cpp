@@ -359,12 +359,18 @@ int main() {
     constexpr int N   = 1 << DIM;
     static_assert(N == kPackedLen, "DIM=11 N must match dense pack length 2048");
 
+    // Weight-init seed only (aug / shuffle seeds are fixed separately).
+    // Change this between multi-seed runs; it is printed below.
+    constexpr unsigned weight_seed = 983247598375;  //42;
+
     hcnn::HCNN net(DIM, /*num_outputs=*/10, /*input_channels=*/1);
     net.AddConv(16);                           // 1->16 ch, K=11 (DIM=11)
     net.AddPool(hcnn::PoolType::MAX);          // DIM 11->10, N 2048->1024
     net.AddConv(16);                           // 16->16 ch, K=10 (DIM=10)
-    net.RandomizeWeights();
+    net.RandomizeWeights(/*scale=*/0.0f, weight_seed);
     net.SetOptimizer(hcnn::OptimizerType::ADAM);
+
+    std::cout << "Weight init seed: " << weight_seed << "\n";
 
     constexpr int N_final = N / 2;
     const int conv1_params   = 1 * 16 * DIM + 16;
