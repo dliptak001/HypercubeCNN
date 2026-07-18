@@ -7,7 +7,7 @@ Demonstrates end-to-end training and evaluation of a HypercubeCNN on the MNIST h
 - Loading real MNIST data from IDX binary files
 - **Core spatial preprocess**: `HCNNSpatialAugmenter` (train) → `HCNNSpatialEmbedder` DualPlaneResize (DIM=11, full N=2048)
 - **Train-time augmentation**: rotate ±12°, scale [0.9, 1.1], shift ±2 px, light Gaussian noise
-- 2-conv stack **without pooling** (16-wide, full N=2048) and FLATTEN readout
+- Config-driven stack (`ArchConfig` / `ArchLayer` in the example): default 2-conv **without pooling** (16-wide, full N=2048) and FLATTEN readout; edit the layer list and the printed architecture + param counts follow
 - Mini-batch Adam, cosine LR annealing, weight decay
 - Dual checkpoints: best test loss and best test accuracy (`GetWeights` / `SetWeights`)
 - Parallel batch inference for evaluation
@@ -48,8 +48,12 @@ Test-set packing uses the **same** embed path with **no** augmentation (`HCNNSpa
 
 ## Architecture
 
+Topology is an **`ArchConfig`** in `mnist_train.cpp` (layer list of `ArchLayer::Conv` / `ArchLayer::Pool`). `apply_arch` builds the net; `print_arch` / `summarize_arch` derive the stack printout and parameter counts (checked against `HCNN::GetWeightCount`).
+
+**Default** (`ArchConfig::MnistDefault()`):
+
 ```
-Input: dense pack 2048 floats (DIM=11, 1 channel)
+Input: SpatialEmbed DualPlane 2048 floats (DIM=11, 1 channel)
   |
 Conv1: 1 -> 16 channels, K=11, ReLU, bias
 Conv2: 16 -> 16 channels, K=11, ReLU, bias
@@ -59,7 +63,9 @@ Readout: FLATTEN -> linear 32768->10 -> logits
 
 Total parameters: **330,714** (192 conv1 + 2,832 conv2 + 327,690 readout).
 
-**No antipodal pool** — DIM stays 11 and N stays 2048 for both convs, so the FLATTEN head sees every packed vertex (`32768→10`). Antipodal MAX pairs ink-half with grad-half indices on this pack and halves addressable positions; skipping pool is the default for this MNIST recipe. FLATTEN treats every (channel, vertex) activation as an independent feature.
+To try another stack, edit `arch.layers` (examples are commented in `main`). Pools reduce DIM by 1 and shrink the FLATTEN head; BN is available per conv but is not the documented MNIST recipe.
+
+**No antipodal pool (default)** — DIM stays 11 and N stays 2048 for both convs, so the FLATTEN head sees every packed vertex (`32768→10`). Antipodal MAX pairs ink-half with grad-half indices on this pack and halves addressable positions; skipping pool is the default for this MNIST recipe. FLATTEN treats every (channel, vertex) activation as an independent feature.
 
 ## Training configuration
 
