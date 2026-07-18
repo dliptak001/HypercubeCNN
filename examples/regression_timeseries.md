@@ -1,21 +1,24 @@
 # Regression Timeseries -- Next-Step Prediction
 
-End-to-end **regression** teaching demo for HypercubeCNN. Trains a config-driven
-conv+pool stack with `TaskType::Regression` and MSE loss to predict the next
-value of a sine wave from a high-dimensional synthetic reservoir state vector.
+End-to-end **regression** teaching demo for HypercubeCNN
+(`examples/regression_timeseries.cpp`). Trains a config-driven stack with
+`TaskType::Regression` and MSE loss to predict the next value of a sine wave
+from a length-N synthetic reservoir state.
 
 ### What it proves vs what it does not
 
+Matches the binary banner (`Proves:` / `Does not:`):
+
 | Proves | Does **not** prove |
 |--------|---------------------|
-| Regression API (MSE, `TrainEpochRegression`) | Real HypercubeRC / ESN dynamics |
-| TANH + antipodal pool + FLATTEN at DIM=12 scale | Hard multi-step / chaotic forecasting |
-| Cosine LR, target centering, **best test-MSE restore** | That near-perfect R^2 transfers to production RC |
-| Thin teaching loop aligned with `mnist_train` | Coupled reservoir / spectral-radius stories |
+| Regression API (`TrainEpochRegression`, MSE) | Real HypercubeRC / ESN dynamics |
+| RELU/TANH + full-N FLATTEN at DIM=10 | Hard multi-step / chaotic forecasting |
+| Cosine LR, target centering, best-MSE restore | Production RC skill |
+| Thin teaching loop aligned with `mnist_train` | That near-perfect R² transfers off this sine task |
 
 The synthetic reservoir is **uncoupled** (independent leaky tanh units). That is
 intentional for an API smoke test; it is a weak stand-in for live RC state.
-Near-perfect R^2 on next-step sine is an expected smoke signal once capacity
+Near-perfect R² on next-step sine is an expected smoke signal once capacity
 is enough -- not a HypercubeRC accuracy claim.
 
 No external data files -- the example synthesizes its own series every run.
@@ -26,151 +29,189 @@ shared **`examples/demo_arch.h`**, and auto-printed architecture / param counts.
 ## What this example shows
 
 - **`DemoConfig` at the top of `regression_timeseries.cpp`**: dim, layers,
-  data sizes, seeds, schedule, logging -- edit knobs there only
-- Shared **`demo_arch.h`** (`ArchLayer`, `summarize_arch`, `print_arch`, `apply_arch`)
-- `hcnn::HCNN` with `TaskType::Regression` and default MSE loss
-- Config-driven stack; param counts checked against `GetWeightCount`
-- FLATTEN readout (position-sensitive per-vertex weights)
-- Contiguous `TrainEpochRegression` + `hcnn::evaluate_regression` (MSE / R^2)
-- `hcnn::cosine_lr` and **`HCNNBestMetricCheckpoint`** (best test MSE)
-- Target centering (subtract train-set mean before training)
-- Default DIM=12 (N=4,096; **19,425** parameters)
+  data sizes, seeds, schedule, logging -- one place to edit; architecture print
+  + param counts follow
+- Shared **`demo_arch.h`**: `ArchLayer`, `summarize_arch`, `print_arch`, `apply_arch`
+- `hcnn::HCNN` with `TaskType::Regression` (default loss MSE)
+- Param count checked against `HCNN::GetWeightCount()` at startup
+- Contiguous `TrainEpochRegression` + `hcnn::evaluate_regression` (MSE / R²)
+- `hcnn::cosine_lr` and **`HCNNBestMetricCheckpoint`** (minimize test MSE)
+- Target centering (train-set mean subtracted from train **and** test targets)
+- Default DIM=10 (N=1024; **19,137** parameters)
 
 ## Developer config (`DemoConfig`)
 
 All developer-facing knobs live in one struct near the top of the `.cpp`.
-`main` is `const DemoConfig cfg{}`.
+`main` uses `const DemoConfig cfg{}`.
 
 | Group | Fields (defaults) | Notes |
 |-------|-------------------|--------|
-| Hypercube / task | `dim=12`, `num_outputs=1`, `input_channels=1` | `N = 2^dim` is the state length |
-| Layers | Conv16 TANH, MaxPool, Conv16 TANH, MaxPool | Edit `layers` vector |
-| Synthetic data | `n_warmup=200`, `n_train=4096`, `n_test=1024`, `horizon=1`, `input_freq=0.1`, `reservoir_seed=77` | Time-ordered train then test (no shuffle of the series) |
-| Init / opt | `weight_seed=42`, `optimizer=ADAM` | |
-| Schedule | `epochs=50`, `lr_max=0.002`, `lr_min_ratio=0.1`, `batch_size=32`, `weight_decay=0`, `momentum=0` | `lr_min = lr_max * lr_min_ratio` |
-| Logging | `log_first_epochs=5`, `log_every=10`, `n_sample_preds=8` | Full train+test eval on logged epochs only |
+| Hypercube / task | `dim=10`, `num_outputs=1`, `input_channels=1` | `N = 1 << dim` |
+| Layers | `Conv(16, RELU)`, `Conv(16, TANH)` | No pool; full N into FLATTEN |
+| Synthetic data | `n_warmup=200`, `n_train=4096`, `n_test=1024`, `horizon=1`, `input_freq=0.1`, `reservoir_seed=77` | Time-ordered: train then test (no series shuffle) |
+| Init / opt | `weight_seed=42`, `optimizer=ADAM` | `RandomizeWeights(0.0, weight_seed)` |
+| Schedule | `epochs=50`, `lr_max=0.002`, `lr_min_ratio=0.1`, `batch_size=32`, `weight_decay=0`, `momentum=0` | `lr_min = lr_max * lr_min_ratio` → **2e-4** |
+| Logging | `log_first_epochs=5`, `log_every=10`, `n_sample_preds=8` | See [Logging](#logging) |
 
-Examples of edits: raise `dim` to 14/16 for scale stress; add a third
-conv+pool pair; change `n_train` for a faster smoke run.
+Helpers on the struct: `cfg.N()`, `cfg.lr_min()`.
+
+Examples of edits: raise `dim` to 12/14; uncomment `ArchLayer::Pool` in the
+layer list; swap activations; shrink `n_train` for a faster smoke run.
 
 ## The synthetic task
 
-A synthetic reservoir of **N independent** leaky tanh integrators is driven by
-`sin(input_freq * t)`. Each vertex has its own leak rate (U[0.05, 0.45]),
-input weight (U[-1, 1]), and bias (U[-0.5, 0.5]), so different vertices capture
-the input at different timescales. After `n_warmup` steps of burn-in, the
-example collects (state, target) pairs where
+`make_reservoir` draws per-vertex parameters (seed `reservoir_seed`):
+
+| Param | Distribution |
+|-------|----------------|
+| leak `α` | U[0.05, 0.45] |
+| `w_in` | U[-1, 1] |
+| `bias` | U[-0.5, 0.5] |
+
+Drive and state update (same as the binary):
 
 ```text
-target = sin(input_freq * (t + horizon))   // default: one step ahead
+u(t)     = sin(input_freq * t)
+drive_i  = tanh(u(t) * w_in_i + bias_i)
+state_i ← (1 - α_i) * state_i + α_i * drive_i
 ```
 
-**No exact solution exists.** The target is a nonlinear function of input
-history; the model must learn which timescale combinations predict the next
-step. This is a real regression problem, not sparse recovery.
+After `n_warmup` discarded steps, each collected sample is:
+
+```text
+input  = state(t)          // length N
+target = sin(input_freq * (t + horizon))   // default horizon=1
+```
+
+**No exact closed form** maps the uncoupled state vector to the next sine
+sample; the net must learn which timescale combinations predict the target.
 
 **Uncoupled reservoir (intentional).** Vertices do not see each other -- only
-the scalar drive. That simplifies the readout test: learn combinations of
-timescales, not how to undo cross-vertex coupling.
+the scalar drive. The readout test is "combine timescales," not "undo
+cross-vertex coupling."
 
 ## Architecture
 
-Edit `DemoConfig::layers` / `dim` in the `.cpp`. **Default** (`dim=12`):
+Edit `DemoConfig::layers` / `dim` in the `.cpp`. **Default** matches
+`print_arch` / the binary:
 
 ```text
-Input: N=4096 floats -> N vertices (DIM=12, 1 channel)
-  |
-Conv1: 1 -> 16, K=12, TANH, bias     DIM=12  N=4096
-Pool1: MAX antipodal                 DIM 12->11  N 4096->2048
-  |
-Conv2: 16 -> 16, K=11, TANH, bias    DIM=11  N=2048
-Pool2: MAX antipodal                 DIM 11->10  N 2048->1024
-  |
-Readout: FLATTEN -> Linear(16384 -> 1) -> prediction
+Architecture: Conv(1->16, RELU, bias)  DIM=10  N=1024
+              -> Conv(16->16, TANH, bias)  DIM=10  N=1024
+              -> FLATTEN
+              -> Linear(16384 -> 1)
+Parameters:   19137 (176 conv1 + 2576 conv2 + 16385 readout)
 ```
 
-| Component | Parameters |
-|-----------|------------|
-| Conv1 kernel (1 x 16 x 12) + bias | 208 |
-| Conv2 kernel (16 x 16 x 11) + bias | 2,832 |
-| Readout weights (16,384 -> 1) + bias | 16,385 |
-| **Total** | **19,425** |
+| Component | Count |
+|-----------|------:|
+| Conv1 (1×16×10 kernel + 16 bias) | 176 |
+| Conv2 (16×16×10 kernel + 16 bias) | 2,576 |
+| Readout (16×1024 → 1 + bias) | 16,385 |
+| **Total** | **19,137** |
 
-Startup checks that this total equals `HCNN::GetWeightCount()` (kernel + bias;
+Startup throws if `summarize_arch` total ≠ `GetWeightCount()` (kernel + bias;
 BN gamma/beta are not in the weight blob if you enable BN).
 
 FLATTEN treats every (channel, vertex) activation as an independent feature.
 Vertex identity is informative: each reservoir unit encodes a different
-timescale.
+timescale. No antipodal pool on the default recipe -- DIM and N stay 1024
+through both convs into the head.
 
 ### Architectural choices
 
 | Choice | Reason |
 |--------|--------|
-| Two conv+pool stages | 2-hop receptive field on the hypercube |
-| `Activation::TANH` | Smooth, symmetric, bounded; matches reservoir nonlinearity; Xavier/Glorot init |
-| `PoolType::MAX` (antipodal) | Keep stronger of complement pair; reduces DIM by 1 per pool |
+| Two convs, no pool | Full-N features into FLATTEN; pool is optional via `ArchLayer::Pool` |
+| First-layer `RELU` | Sparse half-wave features; **beats dual-TANH** on seed 42 for this task |
+| Second-layer `TANH` | Smooth, bounded bottleneck before the linear head |
 | FLATTEN readout | Per-vertex weights for timescale identity |
-| 16 channels | Capacity for a target that is not exactly one-channel expressible |
+| 16 channels | Capacity beyond a single linear combination of units |
+| DIM=10 (N=1024) | Enough capacity for this sine smoke; ~1 min wall on 32 threads |
 
 ## Training configuration
 
 | Setting | Value | Notes |
 |---------|-------|-------|
 | Task | `TaskType::Regression` | Loss defaults to `LossType::MSE` |
-| Optimizer | Adam | Default betas |
-| `lr_max` / floor | 0.002 / **2e-4** (10%) | `lr_min_ratio = 0.1` |
-| LR schedule | `hcnn::cosine_lr` | Progress `epoch / (epochs - 1)`; last epoch hits `lr_min` |
+| Optimizer | Adam (`SetOptimizer`) | Default betas |
+| `lr_max` / floor | 0.002 / **2e-4** | `lr_min_ratio = 0.1` |
+| LR schedule | `hcnn::cosine_lr(lr_max, lr_min, e, epochs)` | Progress `e/(epochs-1)`; last epoch hits `lr_min` |
 | Batch size | 32 | |
-| Weight decay | 0.0 | No L2 by default |
+| Weight decay | 0.0 | |
+| Momentum | 0.0 | Passed through; Adam ignores |
 | Epochs | 50 | |
-| Shuffle | per-epoch | `shuffle_seed = epoch + 1` (within train set only) |
-| Target centering | Train-set mean subtracted from train **and** test | Mean taken on train only |
-| Weight init seed | **42** | Printed at startup |
-| Reservoir seed | **77** | Fixed synthetic dynamics |
+| Shuffle | per-epoch | `shuffle_seed = e + 1` (train set only) |
+| Target centering | Train mean on train **and** test | Mean from train only; added back for sample preds |
+| Weight init seed | **42** | Printed as `Weight init seed:` |
+| Reservoir seed | **77** | Printed in `Reservoir:` line |
+| Checkpoint | `HCNNBestMetricCheckpoint` | Every epoch: observe test MSE; restore best at end |
 
 ### Logging
 
-- Epochs **1..log_first_epochs**, every **log_every**, and the **last** epoch
-  print train MSE, test MSE, test R^2, wall time, and samples/s
-- Other epochs train only (no full eval) to keep wall time down
-- End: final test metrics, MSE reduction vs initial, and evenly spaced sample
-  predictions on **original** target scale (mean added back)
+`should_log_epoch` prints on epochs **1..log_first_epochs**, every
+**log_every**, and the **last** epoch (defaults: 1–5, 10, 20, 30, 40, 50).
+
+On **every** epoch (logged or not):
+
+1. `TrainEpochRegression` on the centered train set
+2. `evaluate_regression` on the **test** set
+3. `best_mse.observe(net, test_mse, epoch)` for the best-MSE snapshot
+
+On **logged** epochs only: also evaluate **train** MSE and print
+`lr`, `train_mse`, `test_mse`, `test_R^2`, wall seconds, samples/s, and
+`[best-mse]` when the snapshot updates.
+
+End of run:
+
+- Print best epoch + metric; `restore` those weights
+- Re-eval test (`Restored best-mse` / `Final`)
+- MSE reduction vs initial, total train wall time
+- `n_sample_preds` evenly spaced predictions on **original** target scale
+  (mean added back)
 
 ### Exit code
 
-Process returns **0** if final test **R^2 > 0.9**, else **1** (CI smoke).
+Returns **0** if final (restored) test **R² > 0.9**, else **1** (CI smoke).
 
 ## Key API patterns
 
-### Contiguous data
+### Contiguous data (as used by the demo)
 
 ```cpp
-// Training: flat_inputs is sample_count * N floats, flat_targets is sample_count floats
-net.TrainEpochRegression(flat_inputs.data(), N,
-                         flat_targets.data(),
-                         sample_count, batch_size,
+// Training
+net.TrainEpochRegression(train_flat.inputs.data(), N,
+                         train_flat.targets.data(),
+                         train_flat.count, batch_size,
                          lr, momentum, weight_decay,
                          shuffle_seed);
 
-// Inference: flat_inputs is count * N floats, preds is count floats
-net.ForwardBatch(flat_inputs.data(), N, count, preds.data());
+// Metrics (core helper -> ForwardBatch under the hood)
+hcnn::HCNNRegEval r = hcnn::evaluate_regression(
+    net, flat.inputs.data(), flat.input_length,
+    flat.targets.data(), flat.count, /*num_outputs=*/1);
+
+// Best test MSE
+hcnn::HCNNBestMetricCheckpoint best_mse;
+best_mse.observe(net, static_cast<float>(r.mse), epoch_1based);
+best_mse.restore(net);
 ```
 
-Local packing: `FlatRegDataset` in the example. Core helpers used:
-`evaluate_regression`, `cosine_lr`, `HCNNBestMetricCheckpoint`. Architecture
-types live in `examples/demo_arch.h` (not installed SDK).
+Local packing: `FlatRegDataset` in the example. Architecture types live in
+`examples/demo_arch.h` (not installed SDK). Core helpers:
+`evaluate_regression`, `cosine_lr`, `HCNNBestMetricCheckpoint`.
 
 ### Classification vs regression
 
 | Step | Classification (`mnist_train`) | Regression (this example) |
 |------|--------------------------------|---------------------------|
-| Construction | `HCNN(DIM, 10)` | `HCNN(DIM, 1, 1, TaskType::Regression)` |
+| Construction | `HCNN(dim, 10)` (class count) | `HCNN(dim, 1, 1, TaskType::Regression)` |
 | Targets | `const int*` class indices | `const float*` contiguous |
 | Training | `TrainEpoch` | `TrainEpochRegression` |
 | Loss | Softmax + CE | MSE |
 | Forward output | Logits | Raw predictions |
-| Shared helpers | class metrics, dual-ckpt, Spatial* | reg metrics, best-MSE ckpt, `cosine_lr` |
+| Metrics helper | `evaluate_classification` | `evaluate_regression` |
+| Checkpoint | `HCNNDualCheckpoint` | `HCNNBestMetricCheckpoint` |
 | Shared demo arch | `demo_arch.h` | `demo_arch.h` |
 
 Conv/pool stack, forward, weight init, optimizer, and batch parallelism are
@@ -185,48 +226,95 @@ cmake --build cmake-build-release --target RegressionTimeseries
 ./cmake-build-release/RegressionTimeseries
 ```
 
-No data download. At default DIM=12, expect on the order of a few minutes for
-50 epochs (hardware-dependent; throughput is printed per logged epoch).
+No data download. At default DIM=10, expect ~**55 s** for 50 epochs on a
+32-thread box (hardware-dependent; samples/s printed on logged epochs).
 
 ## Results
 
-Default recipe after DemoConfig + `hcnn::cosine_lr` wiring. Hardware: Windows,
-MinGW g++, 32 threads. Wall time ~**3.8 min** (50 epochs). Exit code 0.
+Documented default after DemoConfig wiring. Hardware: Windows, MinGW g++,
+**32 threads**. Weight seed **42**, reservoir seed **77**. Train target mean
+subtracted: **2.674e-03**. Exit code **0**.
+
+### Startup (architecture)
 
 ```text
-Initial test: mse=5.45e-01  R^2=-0.10
-Epoch  1  test_mse=2.19e-04  test_R^2=0.9996  (~4.6s)
-Epoch  5  test_mse=3.56e-06  test_R^2=1.0000
-Epoch 10  test_mse=8.45e-07
-Epoch 20  test_mse=5.75e-07
-Epoch 30  test_mse=5.84e-06   (small-batch bump; recovered)
-Epoch 40  test_mse=8.56e-08
-Epoch 50  test_mse=7.75e-08  test_R^2=1.0000  lr=2e-4
-Final: mse=7.75e-08  1-R^2~0  MSE reduction ~100%
+Architecture: Conv(1->16, RELU, bias)  DIM=10  N=1024
+              -> Conv(16->16, TANH, bias)  DIM=10  N=1024
+              -> FLATTEN
+              -> Linear(16384 -> 1)
+Parameters:   19137 (176 conv1 + 2576 conv2 + 16385 readout)
 ```
+
+### Curve (logged epochs)
+
+```text
+Initial test: mse=5.2473e-01  target_var=4.9564e-01  R^2=-0.0587  (1-R^2=1.0587)
+
+Epoch  1  lr=0.002000  train_mse=7.5631e-05  test_mse=7.5625e-05  R^2=0.9998  [best-mse]
+Epoch  2  lr=0.001998  train_mse=1.9695e-05  test_mse=1.9764e-05  R^2=1.0000  [best-mse]
+Epoch  3  lr=0.001993  train_mse=8.0038e-06  test_mse=8.0079e-06  R^2=1.0000  [best-mse]
+Epoch  4  lr=0.001983  train_mse=4.2062e-06  test_mse=4.1957e-06  R^2=1.0000  [best-mse]
+Epoch  5  lr=0.001971  train_mse=3.8355e-06  test_mse=3.8264e-06  R^2=1.0000  [best-mse]
+Epoch 10  lr=0.001854  train_mse=3.0068e-06  test_mse=2.9931e-06  R^2=1.0000
+Epoch 20  lr=0.001411  train_mse=1.7928e-05  test_mse=1.7880e-05  R^2=1.0000   ← mid-run bump
+Epoch 30  lr=0.000844  train_mse=8.7874e-08  test_mse=8.7727e-08  R^2=1.0000  [best-mse]
+Epoch 40  lr=0.000379  train_mse=9.5826e-08  test_mse=9.7693e-08  R^2=1.0000
+Epoch 50  lr=0.000200  train_mse=7.0045e-08  test_mse=7.0764e-08  R^2=1.0000
+
+Best test MSE: epoch 49  mse=3.2532e-08
+Restored best-mse: mse=3.2532e-08  target_var=4.9564e-01  R^2=1.0000  (1-R^2=0.0000)
+Total train wall time: 54.72s
+```
+
+Throughput on logged epochs: ~3.7k–4.5k samples/s (~0.9–1.1 s/epoch).
+
+### Summary table
 
 | Metric | Value |
 |--------|-------|
-| Parameters | 19,425 |
-| Initial test MSE | 5.452e-01 |
-| Final test MSE | **7.754e-08** |
-| Final test R^2 | **~1.0** (1-R^2 ~ 1.6e-7) |
+| Parameters | **19,137** |
+| Initial test MSE | 5.247e-01 |
+| Initial test R² | −0.0587 |
+| Target variance (centered) | 4.956e-01 |
+| **Best** test MSE | **3.253e-08** @ epoch **49** |
+| Final (restored) R² | **1.0000** (1-R² ≈ 0) |
 | MSE reduction vs initial | 100.00% |
-| Throughput (logged epochs) | ~780–1100 samples/s |
+| Total train wall | **54.72 s** |
 
-Sample predictions (test, original scale) stay within ~6e-4 absolute error
-across the sine cycle (see binary output for the full table).
+### Sample predictions (test, original scale)
+
+| step | target | pred | err |
+|-----:|-------:|-----:|----:|
+| 0 | +0.642826 | +0.642853 | +2.8e-05 |
+| 128 | +0.448033 | +0.447714 | −3.2e-04 |
+| 256 | +0.228870 | +0.228954 | +8.4e-05 |
+| 384 | −0.002701 | −0.003048 | −3.5e-04 |
+| 512 | −0.234124 | −0.234301 | −1.8e-04 |
+| 640 | −0.452856 | −0.452838 | +1.8e-05 |
+| 768 | −0.646954 | −0.647101 | −1.5e-04 |
+| 896 | −0.805903 | −0.805813 | +9.1e-05 |
+
+Absolute errors stay within ~3.5e-4 across the sine cycle.
+
+### vs prior recipes (same task / weight seed 42)
+
+| Recipe | Test MSE | Notes |
+|--------|----------|--------|
+| **DIM=10, RELU→TANH, no pool** (current) | **3.25e-08** best | Documented default |
+| DIM=10, TANH→TANH, no pool | worse than above | Same seed A/B |
+| Older DIM=12, TANH + MaxPool ×2 | ~7.75e-08 final | Heavier N; no best-MSE restore in that older writeup |
 
 ### Key observations
 
-1. **Train and test MSE track closely** at convergence -- hypercube inductive
-   bias regularizes without weight decay on this task.
-2. **Small-batch noise** can produce non-monotone MSE mid-run (e.g. epoch 30);
-   cosine floor damps late epochs.
-3. **Near-perfect fit is possible** on this synthetic task -- high R^2 is a
+1. **Best-MSE restore matters** -- last epoch (50, test MSE 7.08e-08) is not
+   the best; epoch **49** holds **3.25e-08**.
+2. **Train and test MSE track closely** at convergence -- no weight decay needed
+   on this task.
+3. **Small-batch noise** can raise MSE mid-run (epoch 20); cosine floor recovers.
+4. **Near-perfect fit is possible** on this synthetic task -- high R² is a
    smoke signal, not a claim about real RC workloads.
-4. **Sample predictions** cover peaks, troughs, and zeros across the test
-   window on original scale.
+5. **First-layer RELU > dual TANH** on this seed for the no-pool DIM=10 stack;
+   second-layer TANH remains a smooth head-facing nonlinearity.
 
 ## Adapting for your own data
 
@@ -243,4 +331,4 @@ across the sine cycle (see binary output for the full table).
 This example supports the Phase B premise: HCNN can learn a useful projection
 from a high-dimensional reservoir-like state to a continuous target without
 hand-crafted features. Production RC coupling will still need real reservoir
-dynamics, multi-output heads, and domain metrics beyond synthetic R^2.
+dynamics, multi-output heads, and domain metrics beyond synthetic R².

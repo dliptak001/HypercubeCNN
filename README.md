@@ -134,7 +134,7 @@ HypercubeCNN/
 | [docs/CPP_SDK.md](docs/CPP_SDK.md) | C++ SDK API reference and integration guide |
 | [docs/architecture.md](docs/architecture.md) | Full technical architecture |
 | [examples/mnist_train.md](examples/mnist_train.md) | MNIST classification example, benchmark results, and analysis |
-| [examples/regression_timeseries.md](examples/regression_timeseries.md) | Regression example, DIM=12 results, and HypercubeRC integration notes |
+| [examples/regression_timeseries.md](examples/regression_timeseries.md) | Regression example, DIM=10 results, and HypercubeRC integration notes |
 
 ## Results
 
@@ -142,7 +142,7 @@ Both benchmarks validate that hypercube convolution learns meaningful features v
 
 **Classification -- MNIST** (no spatial inductive bias): **98.07%** test accuracy with ~84K parameters, 2 conv layers + 1 pool stage, Adam optimizer, cosine LR annealing. The network learns digit features from hypercube topology alone -- no 2D spatial locality is encoded. See [examples/mnist_train.md](examples/mnist_train.md).
 
-**Regression -- time-series prediction** (DIM=12, N=4,096 vertices): **1-R² = 9.9e-8** (seven nines of variance explained) predicting the next value of a sine wave from a 4,096-dimensional synthetic reservoir state, with 19,425 parameters. Validates HCNN as a learned readout layer for reservoir computing. See [examples/regression_timeseries.md](examples/regression_timeseries.md).
+**Regression -- time-series prediction** (DIM=10, N=1,024 vertices): best test MSE **~3.3e-8** (R² ~1.0) predicting the next value of a sine wave from a 1,024-dimensional synthetic reservoir state, with **19,137** parameters (Conv16 RELU → Conv16 TANH, no pool). Validates HCNN as a learned readout layer for reservoir computing. See [examples/regression_timeseries.md](examples/regression_timeseries.md).
 
 ## License
 

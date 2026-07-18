@@ -131,20 +131,25 @@ cmake --build cmake-build-release --target MNISTTrain
 
 ## Results
 
-60K train / 10K test, **DIM=11**, **3× Conv 16** (no antipodal pool), dense pack (32×32 image ‖ 32×32 \|∇\|), train aug (**rot ±12°**, **scale [0.9, 1.1]**, shift ±2, σ=0.03), Adam, batch=256, wd=1e-3, cosine LR **0.001 → 1e-4**, **60 epochs**. Aug and shuffle streams fixed; numbers below are the **documented default weight seed** only. Epoch timing includes pack+aug rebuild + `TrainEpoch`. Throughput ~1.1k samples/s on 32 threads (~54–56 s/epoch).
+60K train / 10K test, **DIM=11**, **3× Conv 16** (no antipodal pool), dense pack (32×32 image ‖ 32×32 \|∇\|), train aug (**rot ±12°**, **scale [0.9, 1.1]**, shift ±2, σ=0.03), Adam, batch=256, wd=1e-3, cosine LR **0.001 → 1e-4**, **60 epochs**. Only the **weight init seed** varies; aug and shuffle streams are fixed. Epoch timing includes pack+aug rebuild + `TrainEpoch`. Throughput ~1.1k samples/s on 32 threads (~54–56 s/epoch). Parameters: **333,546**.
 
-Prior 2-conv multi-seed tables are **retired** (that stack peaked at 99.27% best-acc on this seed). Multi-seed mean for the 3-conv recipe is **TBD**.
+Prior 2-conv multi-seed tables are **retired**. Same weight seeds as before for a fair re-test of the 3-conv stack.
 
-### Seed 398479293 (default) — first recorded 3-conv run
+### Multi-seed (weight init only)
 
-| Metric | Value |
-|--------|--------|
-| Best acc | **99.31%** (9931/10000) @ epoch **53**, loss **0.02177** |
-| Best loss | **0.02135** @ epoch **60**, acc **99.23%** (9923/10000) |
-| Parameters | **333,546** |
-| First ≥99% | epoch **27** (99.09%) |
+| Weight seed | Best acc | Loss @ best-acc | Best loss | Acc @ best-loss |
+|-------------|----------|-----------------|-----------|-----------------|
+| **398479293** | **99.31%** | 0.0218 @ ep 53 | **0.0213** @ ep 60 | 99.23% |
+| 287821292 | *TBD* | *TBD* | *TBD* | *TBD* |
+| 498279213 | *TBD* | *TBD* | *TBD* | *TBD* |
 
-Quote with the printed `Weight init seed`. Prefer re-running more seeds before claiming a multi-seed mean.
+| Statistic (best-acc) | Value |
+|----------------------|--------|
+| Mean (3 seeds) | *TBD* (1/3 filled) |
+| Range | *TBD* |
+| Mean best-loss CE | *TBD* |
+
+Set `weight_seed` in `DemoConfig` to each of the two open seeds and fill the row + checkpoint block after the run. Prefer quoting a multi-seed **mean** once all three are filled; quote a single seed only with the printed `Weight init seed`.
 
 ### Checkpoints — seed 398479293 (default)
 
@@ -153,7 +158,25 @@ Quote with the printed `Weight init seed`. Prefer re-running more seeds before c
 | **Best loss** | 60 | **0.02135** | 99.23% (9923/10000) |
 | **Best acc** | 53 | 0.02177 | **99.31%** (9931/10000) |
 
-Dual restore confirmed both snapshots at end of run.
+First ≥99% at epoch **27** (99.09%). Dual restore confirmed both snapshots.
+
+### Checkpoints — seed 287821292
+
+| Checkpoint | Epoch | Test loss | Test acc |
+|------------|-------|-----------|----------|
+| **Best loss** | *TBD* | *TBD* | *TBD* |
+| **Best acc** | *TBD* | *TBD* | *TBD* |
+
+First ≥99%: *TBD*.
+
+### Checkpoints — seed 498279213
+
+| Checkpoint | Epoch | Test loss | Test acc |
+|------------|-------|-----------|----------|
+| **Best loss** | *TBD* | *TBD* | *TBD* |
+| **Best acc** | *TBD* | *TBD* | *TBD* |
+
+First ≥99%: *TBD*.
 
 ### Curve (seed 398479293)
 

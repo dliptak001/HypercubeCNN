@@ -16,7 +16,7 @@
 //
 // What this demo proves
 //   - Regression API (TaskType::Regression, MSE, TrainEpochRegression)
-//   - TANH + antipodal pool + FLATTEN at real scale (default DIM=12)
+//   - Mixed activations + full-N FLATTEN at DIM=10 (N=1024)
 //   - Train-loop hygiene: cosine LR, target centering, best-MSE restore
 //
 // What this demo does NOT prove
@@ -48,22 +48,24 @@ using hcnn_demo::ArchParamSummary;
 // DEVELOPER CONFIG - edit knobs here; the rest of the file follows
 // =============================================================================
 //
-// Default: DIM=12 (N=4096), two conv+pool TANH stages, Adam, cosine LR
-// 0.002 -> 2e-4, 50 epochs. Bump dim / channels / depth to stress scale.
+// Documented default (seed 42): DIM=10 (N=1024), Conv16 RELU -> Conv16 TANH,
+// no pool, Adam, cosine LR 0.002 -> 2e-4, 50 epochs. Best test MSE ~3.25e-8.
+// First-layer RELU beat dual-TANH on this seed; raise dim / depth to stress scale.
 // =============================================================================
 
 struct DemoConfig {
     // ----- Hypercube / task -----
-    int dim = 12;                 // N = 2^dim vertices (state length)
+    int dim = 10;                 // N = 2^dim vertices (state length)
     int num_outputs = 1;          // scalar regression
     int input_channels = 1;
 
-    // Default: Conv16 TANH -> MaxPool -> Conv16 TANH -> MaxPool -> FLATTEN
+    // Documented recipe: RELU head + TANH second conv, full N (no pool).
     std::vector<ArchLayer> layers = {
+        ArchLayer::Conv(16, hcnn::Activation::RELU, /*bias=*/true, /*bn=*/false),
         ArchLayer::Conv(16, hcnn::Activation::TANH, /*bias=*/true, /*bn=*/false),
-        ArchLayer::Pool(hcnn::PoolType::MAX),
-        ArchLayer::Conv(16, hcnn::Activation::TANH, /*bias=*/true, /*bn=*/false),
-        ArchLayer::Pool(hcnn::PoolType::MAX),
+        // Examples:
+        // ArchLayer::Pool(hcnn::PoolType::MAX),
+        // ArchLayer::Conv(16, hcnn::Activation::TANH),
     };
 
     // ----- Synthetic data -----
@@ -232,7 +234,7 @@ int main() {
               << ")\n";
     std::cout << "      Synthetic uncoupled leaky-tanh integrators; no HypercubeRC.\n";
     std::cout << "\n";
-    std::cout << "Proves:    regression API, TANH+pool+FLATTEN scale, train hygiene\n";
+    std::cout << "Proves:    regression API, RELU/TANH+FLATTEN, train hygiene\n";
     std::cout << "Does not:  real RC dynamics, hard forecasting, production RC skill\n";
     std::cout << "           (near-perfect R^2 on this sine task is expected smoke).\n";
 
