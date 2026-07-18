@@ -127,16 +127,17 @@ cmake --build cmake-build-release --target MNISTTrain
 
 | Weight seed | Best acc | Loss @ best-acc | Best loss | Acc @ best-loss |
 |-------------|----------|-----------------|-----------|-----------------|
-| **398479293** | **99.27%** | 0.0243 @ ep 59 | **0.0238** @ ep 50 | 99.26% |
+| **398479293** | **99.27%** | 0.0243 @ ep 59 | 0.0238 @ ep 50 | 99.26% |
+| 287821292 | 99.23% | 0.0248 @ ep 55 | **0.0235** @ ep 58 | 99.20% |
 | 187831793 | 99.19% | 0.0251 @ ep 60 | 0.0250 @ ep 50 | 99.17% |
 
 | Statistic (best-acc) | Value |
 |----------------------|--------|
-| Mean (2 seeds) | **99.23%** |
+| Mean (3 seeds) | **99.23%** |
 | Range | 99.19% – 99.27% (0.08 pp) |
 | Mean best-loss CE | **~0.024** |
 
-Prefer quoting **mean ~99.23% over seeds** for claims; quote a single seed only with the printed `Weight init seed`. **Documented default seed:** `398479293` (best of the two so far). Both seeds clear **99.1%+** best-acc and best-loss.
+Prefer quoting **mean ~99.23% over seeds** for claims; quote a single seed only with the printed `Weight init seed`. **Documented default seed:** `398479293` (best of the three). All three seeds clear **99.1%+** best-acc and best-loss.
 
 ### Checkpoints — seed 398479293 (default)
 
@@ -147,6 +148,15 @@ Prefer quoting **mean ~99.23% over seeds** for claims; quote a single seed only 
 
 First ≥99% at epoch **33** (99.05%).
 
+### Checkpoints — seed 287821292
+
+| Checkpoint | Epoch | Test loss | Test acc |
+|------------|-------|-----------|----------|
+| **Best loss** | 58 | **0.02354** | 99.20% (9920/10000) |
+| **Best acc** | 55 | 0.02481 | **99.23%** (9923/10000) |
+
+First ≥99% at epoch **28** (99.05%). Best-loss CE is the lowest of the three seeds.
+
 ### Checkpoints — seed 187831793
 
 | Checkpoint | Epoch | Test loss | Test acc |
@@ -154,7 +164,7 @@ First ≥99% at epoch **33** (99.05%).
 | **Best loss** | 50 | **0.02497** | 99.17% (9917/10000) |
 | **Best acc** | 60 | 0.02512 | **99.19%** (9919/10000) |
 
-First ≥99% at epoch **37** (99.05%). Slightly slower start (ep1 **95.96%** vs **96.99%**); still finishes in the same band.
+First ≥99% at epoch **37** (99.05%). Slightly slower start (ep1 **95.96%**); still finishes in the same band.
 
 ### Curve (seed 398479293)
 
@@ -186,7 +196,7 @@ The FLATTEN readout is strongly position-addressable. Rotation and mild scale (p
 
 ### Curve shape
 
-Fast start (~96–97% after epoch 1), then a long climb under cosine decay. Across seeds, best loss clusters near epoch **50**; best acc is late (ep 59–60). Dual checkpoints stay within ~0.01 CE. Init seed moves accuracy by about **±0.04 pp** on the two seeds so far — real but small.
+Fast start (~96–97% after epoch 1), then a long climb under cosine decay. Across seeds, best loss is late (ep **50–58**); best acc is late (ep **55–60**). Dual checkpoints stay within ~0.01 CE. Init seed moves accuracy by about **±0.04 pp** over three seeds — real but small.
 
 ### What ~99.2% means
 
@@ -194,8 +204,8 @@ Fast start (~96–97% after epoch 1), then a long climb under cosine decay. Acro
 - 2-layer MLP ~98%
 - Spatial 2D CNNs typically 99.0–99.5%+
 
-HypercubeCNN at **~99.23% mean best-acc** (peak **99.27%** seed 398479293) sits in **light spatial-CNN territory** without a grid prior (row-major pack + Hamming kernels + FLATTEN). Remaining errors ~73–81/10k. Optional next levers: more seeds, elastic/shear aug, or locality-aware packing — not antipodal pooling on this demo pack.
+HypercubeCNN at **~99.23% mean best-acc** (peak **99.27%** seed 398479293) sits in **light spatial-CNN territory** without a grid prior (row-major pack + Hamming kernels + FLATTEN). Remaining errors ~73–81/10k. Optional next levers: elastic/shear aug or locality-aware packing — not antipodal pooling on this demo pack.
 
 ## Significance
 
-**~99.23% mean test accuracy** over two weight-init seeds (peak **99.27%**; best-loss CE ~0.024) on MNIST with a 2-conv no-pool HypercubeCNN, dense pack, and geometric train aug shows the training stack is solid for demos and that **full-N FLATTEN + invariance-inducing aug** matter when the input is an engineered image embedding rather than native hypercube data. Pack, aug, schedule, and reported weight seeds are **image-demo engineering**, documented here separately from the core SDK (fingerprints, Boolean functions, reservoir state).
+**~99.23% mean test accuracy** over three weight-init seeds (peak **99.27%**; best-loss CE ~0.024) on MNIST with a 2-conv no-pool HypercubeCNN, dense pack, and geometric train aug shows the training stack is solid for demos and that **full-N FLATTEN + invariance-inducing aug** matter when the input is an engineered image embedding rather than native hypercube data. Pack, aug, schedule, and reported weight seeds are **image-demo engineering**, documented here separately from the core SDK (fingerprints, Boolean functions, reservoir state).
