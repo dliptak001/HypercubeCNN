@@ -2,13 +2,13 @@
 // Copyright 2026 David Liptak
 
 #include "HCNN.h"
+#include "HCNNTrainHelpers.h"
 #include "HCNNDataset.h"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <iostream>
-#include <limits>
 #include <numbers>
 #include <random>
 #include <stdexcept>
@@ -29,20 +29,6 @@ static constexpr int kPlaneSide   = 32;
 static constexpr int kPlanePixels = kPlaneSide * kPlaneSide;  // 1024
 static constexpr int kPackedLen   = 2 * kPlanePixels;         // 2048 == 2^11
 static constexpr float kBackground = -1.0f;  // MNIST "ink off" after loader norm
-
-static float cross_entropy_loss(const float* logits, int K, int target) {
-    double max_l = logits[0];
-    for (int i = 1; i < K; ++i) if (logits[i] > max_l) max_l = logits[i];
-    double sum_exp = 0.0;
-    for (int i = 0; i < K; ++i) sum_exp += std::exp(logits[i] - max_l);
-    return static_cast<float>(-(logits[target] - max_l) + std::log(sum_exp));
-}
-
-static int argmax(const float* v, int n) {
-    int best = 0;
-    for (int i = 1; i < n; ++i) if (v[i] > v[best]) best = i;
-    return best;
-}
 
 static float clampf(float v, float lo, float hi) {
     return std::max(lo, std::min(hi, v));
@@ -153,26 +139,14 @@ static void pack_mnist_2048(const float* img28, float* out2048) {
     grad_magnitude_32(out2048, out2048 + kPlanePixels);
 }
 
-// Contiguous flat-buffer view for HCNN TrainEpoch / ForwardBatch.
-struct FlatDataset {
-    std::vector<float> inputs;   // count * input_length
-    std::vector<int>   targets;
-    int count = 0;
-    int input_length = 0;
-
-    void reset(int n, int len) {
-        count = n;
-        input_length = len;
-        inputs.resize(static_cast<size_t>(n) * static_cast<size_t>(len));
-        targets.resize(static_cast<size_t>(n));
-    }
-};
-
 // Pack every sample to 2048 floats.  If augment: random rotate (±rot_deg_max),
 // scale [scale_min, scale_max], shift ±shift_max, then Gaussian noise on the
 // 28×28 plane before packing.  seed controls reproducibility; use a different
 // seed each epoch for fresh aug.  Test path: augment=false (identity pack).
-static void fill_packed_dataset(const HCNNDataset& ds, FlatDataset& out,
+//
+// Uses hcnn::HCNNFlatDataset (core train helper).  Geometric pack is still
+// local here; SpatialAug/SpatialEmbed wiring is a separate step.
+static void fill_packed_dataset(const HCNNDataset& ds, hcnn::HCNNFlatDataset& out,
                                 bool augment, int shift_max, float noise_sigma,
                                 float rot_deg_max, float scale_min, float scale_max,
                                 unsigned seed) {
@@ -213,45 +187,17 @@ static void fill_packed_dataset(const HCNNDataset& ds, FlatDataset& out,
     }
 }
 
-struct EvalResult {
-    float loss = 0.0f;
-    float accuracy = 0.0f;  // percent in [0, 100]
-    int correct = 0;
-    int count = 0;
-};
-
-static EvalResult evaluate(hcnn::HCNN& net, const FlatDataset& ds,
-                           const char* label) {
-    int K = net.GetNumOutputs();
-    int count = ds.count;
-
-    std::vector<float> all_logits(static_cast<size_t>(count) * K);
-    net.ForwardBatch(ds.inputs.data(), ds.input_length, count, all_logits.data());
-
-    float total_loss = 0.0f;
-    int correct = 0;
-    for (int i = 0; i < count; ++i) {
-        const float* logits = all_logits.data() + i * K;
-        total_loss += cross_entropy_loss(logits, K, ds.targets[i]);
-        if (argmax(logits, K) == ds.targets[i]) ++correct;
-    }
-
-    EvalResult r;
-    r.loss = total_loss / static_cast<float>(count);
-    r.correct = correct;
-    r.count = count;
-    r.accuracy = 100.0f * correct / count;
+static void print_eval(const char* label, const hcnn::HCNNClassEval& r) {
     std::cout << label << ": loss=" << r.loss
               << " acc=" << r.correct << "/" << r.count
               << " (" << r.accuracy << "%)\n";
-    return r;
 }
 
-// Dual checkpoint: best test loss and best test accuracy independently.
+// Dual checkpoint (best test loss / best test accuracy) via HCNNDualCheckpoint.
 // Each epoch rebuilds the train buffer with a fresh augment seed.
 static void train_and_evaluate(const char* name, hcnn::HCNN& net,
                                const HCNNDataset& train_raw,
-                               const FlatDataset& test_ds,
+                               const hcnn::HCNNFlatDataset& test_ds,
                                float lr = 0.01f, int batch_size = 32,
                                float weight_decay = 0.0f) {
     const int epochs = 60;
@@ -273,24 +219,13 @@ static void train_and_evaluate(const char* name, hcnn::HCNN& net,
               << "+scale[" << kScaleMin << "," << kScaleMax << "]"
               << "+shift+/-" << kShiftMax
               << "+N(0," << kNoiseSigma << ")) ===\n";
-    evaluate(net, test_ds, "Initial test");
+    print_eval("Initial test", hcnn::evaluate_classification(net, test_ds));
 
-    FlatDataset train_ds;
-    std::vector<float> best_loss_weights;
-    std::vector<float> best_acc_weights;
-    float best_loss = std::numeric_limits<float>::infinity();
-    float best_acc = -1.0f;
-    float best_loss_acc = -1.0f;
-    float best_acc_loss = std::numeric_limits<float>::infinity();
-    int best_loss_epoch = 0;
-    int best_acc_epoch = 0;
+    hcnn::HCNNFlatDataset train_ds;
+    hcnn::HCNNDualCheckpoint ckpt;
 
     for (int epoch = 0; epoch < epochs; ++epoch) {
-        const float progress = (epochs > 1)
-            ? static_cast<float>(epoch) / static_cast<float>(epochs - 1)
-            : 0.0f;
-        const float current_lr = lr_min + 0.5f * (lr_max - lr_min)
-            * (1.0f + std::cos(static_cast<float>(std::numbers::pi) * progress));
+        const float current_lr = hcnn::cosine_lr(lr_max, lr_min, epoch, epochs);
 
         // Fresh train-time aug each epoch; seed mixes epoch so runs are reproducible.
         // Timer includes pack+aug rebuild (wall-clock cost of the epoch, not only
@@ -310,55 +245,40 @@ static void train_and_evaluate(const char* name, hcnn::HCNN& net,
 
         std::string label = "Epoch " + std::to_string(epoch + 1) + "/"
                             + std::to_string(epochs);
-        EvalResult r = evaluate(net, test_ds, label.c_str());
+        hcnn::HCNNClassEval r = hcnn::evaluate_classification(net, test_ds);
+        print_eval(label.c_str(), r);
 
-        bool new_best_loss = false;
-        bool new_best_acc = false;
-
-        if (r.loss < best_loss
-            || (r.loss == best_loss && r.accuracy > best_loss_acc)) {
-            best_loss = r.loss;
-            best_loss_acc = r.accuracy;
-            best_loss_epoch = epoch + 1;
-            best_loss_weights = net.GetWeights();
-            new_best_loss = true;
-        }
-        if (r.accuracy > best_acc
-            || (r.accuracy == best_acc && r.loss < best_acc_loss)) {
-            best_acc = r.accuracy;
-            best_acc_loss = r.loss;
-            best_acc_epoch = epoch + 1;
-            best_acc_weights = net.GetWeights();
-            new_best_acc = true;
-        }
+        auto upd = ckpt.observe(net, r.loss, r.accuracy, epoch + 1);
 
         std::cout << "  (lr=" << current_lr << ", " << secs << "s, "
                   << train_ds.count / secs << " samples/s)";
-        if (new_best_loss || new_best_acc) {
+        if (upd.any()) {
             std::cout << "  [";
-            if (new_best_loss) std::cout << "best-loss";
-            if (new_best_loss && new_best_acc) std::cout << " ";
-            if (new_best_acc) std::cout << "best-acc";
+            if (upd.new_best_loss) std::cout << "best-loss";
+            if (upd.new_best_loss && upd.new_best_acc) std::cout << " ";
+            if (upd.new_best_acc) std::cout << "best-acc";
             std::cout << "]";
         }
         std::cout << "\n";
     }
 
     std::cout << "\n--- Checkpoints ---\n"
-              << "Best loss: epoch " << best_loss_epoch
-              << "  loss=" << best_loss
-              << "  acc=" << best_loss_acc << "%\n"
-              << "Best acc:  epoch " << best_acc_epoch
-              << "  loss=" << best_acc_loss
-              << "  acc=" << best_acc << "%\n";
+              << "Best loss: epoch " << ckpt.best_loss_epoch()
+              << "  loss=" << ckpt.best_loss()
+              << "  acc=" << ckpt.best_loss_acc() << "%\n"
+              << "Best acc:  epoch " << ckpt.best_acc_epoch()
+              << "  loss=" << ckpt.best_acc_loss()
+              << "  acc=" << ckpt.best_acc() << "%\n";
 
-    if (!best_loss_weights.empty()) {
-        net.SetWeights(best_loss_weights);
-        evaluate(net, test_ds, "Restored best-loss");
+    if (ckpt.has_best_loss()) {
+        ckpt.restore_best_loss(net);
+        print_eval("Restored best-loss",
+                   hcnn::evaluate_classification(net, test_ds));
     }
-    if (!best_acc_weights.empty()) {
-        net.SetWeights(best_acc_weights);
-        evaluate(net, test_ds, "Restored best-acc");
+    if (ckpt.has_best_acc()) {
+        ckpt.restore_best_acc(net);
+        print_eval("Restored best-acc",
+                   hcnn::evaluate_classification(net, test_ds));
     }
 }
 
@@ -376,7 +296,7 @@ int main() {
     std::cout << "Threads: " << std::thread::hardware_concurrency() << "\n";
 
     // Test: pack only (no aug).  Train: re-packed with aug each epoch.
-    FlatDataset test_flat;
+    hcnn::HCNNFlatDataset test_flat;
     fill_packed_dataset(test_raw, test_flat, /*augment=*/false,
                         /*shift_max=*/0, /*noise_sigma=*/0.0f,
                         /*rot_deg_max=*/0.0f, /*scale_min=*/1.0f, /*scale_max=*/1.0f,

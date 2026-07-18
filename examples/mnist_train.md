@@ -11,6 +11,7 @@ Demonstrates end-to-end training and evaluation of a HypercubeCNN on the MNIST h
 - Mini-batch Adam, cosine LR annealing, weight decay
 - Dual checkpoints: best test loss and best test accuracy (`GetWeights` / `SetWeights`)
 - Parallel batch inference for evaluation
+- Core train helpers (`HCNNTrainHelpers.h`): `cosine_lr`, `evaluate_classification`, `HCNNDualCheckpoint`, `HCNNFlatDataset` — geometric pack is still local in this example until Spatial* wiring
 
 ## How MNIST maps onto the hypercube
 

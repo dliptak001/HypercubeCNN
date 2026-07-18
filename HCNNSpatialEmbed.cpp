@@ -31,18 +31,19 @@ void HCNNSpatialEmbedConfig::validate() const {
         throw std::runtime_error("HCNNSpatialEmbedConfig: plane_side must be >= 0");
     }
     if (plane_side > 0) {
+        const long long S = plane_side;
         if (mode == HCNNSpatialEmbedMode::ResizeToFit) {
-            if (plane_side * plane_side > N) {
+            if (S * S > static_cast<long long>(N)) {
                 throw std::runtime_error(
                     "HCNNSpatialEmbedConfig: plane_side*plane_side exceeds N=2^dim");
             }
         } else if (mode == HCNNSpatialEmbedMode::DualPlaneResize) {
-            if (2 * plane_side * plane_side > N) {
+            if (2 * S * S > static_cast<long long>(N)) {
                 throw std::runtime_error(
                     "HCNNSpatialEmbedConfig: 2*plane_side*plane_side exceeds N=2^dim");
             }
         }
-        // RowMajorPad ignores plane_side
+        // RowMajorPad ignores plane_side (no error).
     }
 }
 
@@ -53,14 +54,14 @@ void HCNNSpatialEmbedConfig::validate() const {
 int HCNNSpatialEmbedder::max_square_side(int N) {
     if (N < 1) return 0;
     int s = static_cast<int>(std::floor(std::sqrt(static_cast<double>(N))));
-    while (s > 0 && s * s > N) --s;
+    while (s > 0 && static_cast<long long>(s) * s > N) --s;
     return s;
 }
 
 int HCNNSpatialEmbedder::max_dual_plane_side(int N) {
     if (N < 2) return 0;
     int s = static_cast<int>(std::floor(std::sqrt(static_cast<double>(N) / 2.0)));
-    while (s > 0 && 2 * s * s > N) --s;
+    while (s > 0 && 2LL * s * s > N) --s;
     return s;
 }
 
@@ -92,7 +93,7 @@ static float sample_bilinear(const float* img, int height, int width,
     return v0 * (1.0f - wy) + v1 * wy;
 }
 
-// Half-pixel aligned resize src (h×w) → dst (S×S).
+// Half-pixel aligned resize src (h x w) -> dst (S x S).
 static void resize_to_square(const float* src, int height, int width,
                              float* dst, int S, float border) {
     if (S < 1) return;
@@ -107,8 +108,8 @@ static void resize_to_square(const float* src, int height, int width,
     }
 }
 
-// Finite-difference |∇| on S×S; per-image max-norm → roughly [-1, 1].
-// Blank / constant → fill with pad_value.
+// Finite-difference |grad| on SxS; per-image max-norm -> roughly [-1, 1].
+// Blank / constant -> fill with pad_value.
 static void grad_magnitude_plane(const float* img, float* out, int S, float pad_value) {
     float gmax = 0.0f;
     for (int y = 0; y < S; ++y) {
@@ -166,7 +167,8 @@ int HCNNSpatialEmbedder::resolve_plane_side(int N) const {
 HCNNSpatialEmbedPlan HCNNSpatialEmbedder::plan(int height, int width) const {
     cfg_.validate();
     if (height < 1 || width < 1) {
-        throw std::runtime_error("HCNNSpatialEmbedder::plan: height and width must be >= 1");
+        throw std::runtime_error(
+            "HCNNSpatialEmbedder::plan: height and width must be >= 1");
     }
 
     HCNNSpatialEmbedPlan p;
@@ -178,7 +180,8 @@ HCNNSpatialEmbedPlan HCNNSpatialEmbedder::plan(int height, int width) const {
 
     switch (cfg_.mode) {
     case HCNNSpatialEmbedMode::RowMajorPad: {
-        const long long need = static_cast<long long>(height) * width;
+        const long long need =
+            static_cast<long long>(height) * static_cast<long long>(width);
         if (need > p.N) {
             throw std::runtime_error(
                 "HCNNSpatialEmbedder::plan: H*W=" + std::to_string(need)
@@ -192,7 +195,8 @@ HCNNSpatialEmbedPlan HCNNSpatialEmbedder::plan(int height, int width) const {
     case HCNNSpatialEmbedMode::ResizeToFit: {
         p.plane_side = resolve_plane_side(p.N);
         if (p.plane_side < 1) {
-            throw std::runtime_error("HCNNSpatialEmbedder::plan: ResizeToFit needs N >= 1");
+            throw std::runtime_error(
+                "HCNNSpatialEmbedder::plan: ResizeToFit needs N >= 1");
         }
         p.pattern_length = p.plane_side * p.plane_side;
         break;
@@ -203,7 +207,13 @@ HCNNSpatialEmbedPlan HCNNSpatialEmbedder::plan(int height, int width) const {
             throw std::runtime_error(
                 "HCNNSpatialEmbedder::plan: DualPlaneResize needs N >= 2");
         }
-        p.pattern_length = 2 * p.plane_side * p.plane_side;
+        const long long two_planes =
+            2LL * static_cast<long long>(p.plane_side) * p.plane_side;
+        if (two_planes > p.N) {
+            throw std::runtime_error(
+                "HCNNSpatialEmbedder::plan: dual plane layout exceeds N");
+        }
+        p.pattern_length = static_cast<int>(two_planes);
         break;
     }
     }
@@ -225,19 +235,24 @@ void HCNNSpatialEmbedder::embed(const float* in, int height, int width,
 
     switch (cfg_.mode) {
     case HCNNSpatialEmbedMode::RowMajorPad: {
-        const int n = height * width;
-        std::memcpy(out, in, static_cast<size_t>(n) * sizeof(float));
+        const std::size_t n =
+            static_cast<std::size_t>(height) * static_cast<std::size_t>(width);
+        std::memcpy(out, in, n * sizeof(float));
         break;
     }
     case HCNNSpatialEmbedMode::ResizeToFit: {
         const int S = p.plane_side;
         resize_to_square(in, height, width, out, S, pad);
-        // tail already pad
         break;
     }
     case HCNNSpatialEmbedMode::DualPlaneResize: {
         const int S = p.plane_side;
         const int plane = S * S;
+        // Safety: grad plane must not overlap ink (plan already enforces 2*S*S <= N).
+        if (static_cast<long long>(plane) * 2 > N) {
+            throw std::runtime_error(
+                "HCNNSpatialEmbedder::embed: dual plane overflow (internal)");
+        }
         resize_to_square(in, height, width, out, S, pad);
         grad_magnitude_plane(out, out + plane, S, pad);
         break;
@@ -249,14 +264,20 @@ void HCNNSpatialEmbedder::embed_batch(const float* in, int batch,
                                       int height, int width,
                                       float* out) const {
     if (batch < 0) {
-        throw std::runtime_error("HCNNSpatialEmbedder::embed_batch: batch must be >= 0");
+        throw std::runtime_error(
+            "HCNNSpatialEmbedder::embed_batch: batch must be >= 0");
+    }
+    if (!in || !out) {
+        throw std::runtime_error("HCNNSpatialEmbedder::embed_batch: null buffer");
     }
     const int N = capacity();
-    const int plane = height * width;
+    const std::size_t src_plane =
+        static_cast<std::size_t>(height) * static_cast<std::size_t>(width);
+    const std::size_t dst_stride = static_cast<std::size_t>(N);
     for (int b = 0; b < batch; ++b) {
-        embed(in + static_cast<size_t>(b) * plane,
+        embed(in + static_cast<std::size_t>(b) * src_plane,
               height, width,
-              out + static_cast<size_t>(b) * N);
+              out + static_cast<std::size_t>(b) * dst_stride);
     }
 }
 

@@ -204,7 +204,7 @@ Two optimizers are available; choose per-network with `HCNN::SetOptimizer`:
 
 ### Learning rate
 
-HCNN does not own a learning rate schedule. The learning rate is a parameter on every `TrainStep`, `TrainBatch`, and `TrainEpoch` call -- the caller is responsible for computing it. Both shipped examples use cosine annealing with a floor (`lr_min + 0.5 * (lr_max - lr_min) * (1 + cos(pi * epoch / total_epochs))`), but any reasonable schedule (or constant LR) works.
+HCNN does not own a learning rate schedule. The learning rate is a parameter on every `TrainStep`, `TrainBatch`, and `TrainEpoch` call -- the caller is responsible for computing it. Optional helper `hcnn::cosine_lr` in `HCNNTrainHelpers.h` implements the cosine schedule with a floor used by the MNIST demo (`lr_min + 0.5 * (lr_max - lr_min) * (1 + cos(pi * epoch / (epochs-1)))`); any reasonable schedule (or constant LR) works.
 
 ### Backward pass and shared training core
 

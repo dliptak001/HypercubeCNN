@@ -11,45 +11,51 @@ namespace hcnn {
 /**
  * @brief Configuration for optional 2D spatial augmentation.
  *
- * Operates on single-channel row-major images of any height × width.
- * Independent of hypercube DIM / vertex count — callers map augmented
- * patterns onto the network input separately (pad, pack, multi-view, etc.).
+ * Operates on single-channel row-major images of any height x width.
+ * Independent of hypercube DIM / vertex count -- callers map augmented
+ * patterns onto the network input separately (see HCNNSpatialEmbed).
  *
  * Geometry (rotate, scale, shift) is applied as **one** inverse bilinear
  * warp when any geometric term is active. Gaussian noise is applied after
- * the warp and values are clipped to [value_min, value_max].
+ * the warp; values are clipped to [value_min, value_max] when noise runs
+ * (geometry-only paths do not clip).
  *
- * Defaults are all identity (no augmentation). Use `enabled = false` as a
- * master off switch even if other fields are non-zero.
+ * Defaults are identity (no augmentation). `None()` sets `enabled = false`
+ * (master off; apply is a pure copy and draws no RNG).
  */
 struct HCNNSpatialAugConfig {
-    /// Uniform rotation in degrees over [-rot_deg_max, +rot_deg_max]. 0 = off.
+    /// Uniform rotation in degrees over [-|rot_deg_max|, +|rot_deg_max|]. 0 = off.
     float rot_deg_max = 0.0f;
 
-    /// Uniform scale factor over [scale_min, scale_max]. Both 1 = off.
+    /// Uniform scale factor over [scale_min, scale_max] (order-independent).
+    /// Both 1 = off. Non-positive bounds are clamped to a tiny positive floor.
     float scale_min = 1.0f;
     float scale_max = 1.0f;
 
-    /// Integer pixel translation: dy, dx ~ U{-shift_max,...,+shift_max}. 0 = off.
+    /// Integer pixel translation: dy, dx ~ U{-|s|,...,+|s|} with s = |shift_max|.
+    /// 0 = off.
     int shift_max = 0;
 
     /// Additive Gaussian noise N(0, noise_sigma^2) after warp. 0 = off.
     float noise_sigma = 0.0f;
 
-    /// Clip range after noise (and identity path does not clip unless noise runs).
+    /// Clip range after noise. Must satisfy value_min <= value_max (validated).
     float value_min = -1.0f;
     float value_max =  1.0f;
 
     /// Sampled value for bilinear out-of-bounds lookups.
     float border_value = 0.0f;
 
-    /// Master switch. false => apply() copies in→out (no RNG draws).
+    /// Master switch. false => apply() copies in->out (no RNG draws).
     bool enabled = true;
 
-    /// True when apply() is a pure copy under this config.
+    /// True when apply() is a pure copy under this config (no RNG).
     bool is_identity() const;
 
-    /// All fields at identity; enabled remains true but ops are no-ops.
+    /// Validate field ranges; throws std::runtime_error if invalid.
+    void validate() const;
+
+    /// Master off: enabled = false (apply is memcpy, no RNG).
     static HCNNSpatialAugConfig None();
 };
 
@@ -77,22 +83,23 @@ struct HCNNSpatialAugConfig {
  */
 class HCNNSpatialAugmenter {
 public:
+    /// Constructs and validates `cfg` (throws if invalid).
     explicit HCNNSpatialAugmenter(HCNNSpatialAugConfig cfg = {});
 
+    /// Replaces config after validate() (throws if invalid).
     void set_config(const HCNNSpatialAugConfig& cfg);
     const HCNNSpatialAugConfig& config() const { return cfg_; }
 
     /**
      * Augment one row-major image.
      *
-     * @param in      Source buffer, length height*width (may equal out only
-     *                when is_identity(); geometric warp needs distinct buffers
-     *                or a temp — if in == out and geometry is active, behavior
-     *                is undefined; use apply with separate buffers).
+     * @param in      Source, length height*width. May equal out only when
+     *                the config is identity or noise-only (no geometry).
+     *                Geometric warp requires in != out.
      * @param out     Destination, length height*width.
-     * @param height  Image rows (> 0).
-     * @param width   Image cols (> 0).
-     * @param rng     Caller-owned RNG; advanced by this call when not identity.
+     * @param height  Image rows (>= 1).
+     * @param width   Image cols (>= 1).
+     * @param rng     Caller-owned RNG; advanced when not identity.
      */
     void apply(const float* in, float* out,
                int height, int width,

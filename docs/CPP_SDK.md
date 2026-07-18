@@ -32,6 +32,7 @@ After installation, the SDK contains:
     HCNNReadout.h      -- Readout layer (re-exported via HCNNNetwork.h)
     HCNNSpatialAug.h   -- Optional 2D spatial augmentation (preprocess; not DIM-coupled)
     HCNNSpatialEmbed.h -- Optional 2D → length-N embed (P ≤ N = 2^dim)
+    HCNNTrainHelpers.h -- Optional metrics, cosine LR, dual checkpoint, flat dataset
     ThreadPool.h       -- Internal threading (re-exported via HCNNNetwork.h)
   lib/
     libHypercubeCNNCore.a
@@ -45,10 +46,16 @@ Consumers include `"HCNN.h"` and link against `HypercubeCNNCore`. `HCNN` is the 
 
 **Spatial preprocess** (optional, image demos):
 
-- **`HCNNSpatialAug.h`** — 2D geometric aug on any \(H\times W\) (DIM-agnostic): rotate / scale / shift + noise.
-- **`HCNNSpatialEmbed.h`** — map a 2D image into a length-\(N=2^{\mathrm{dim}}\) buffer with pattern length \(P\le N\): row-major pad, resize-to-fit square, or dual-plane (ink ‖ \|∇\|).
+- **`HCNNSpatialAug.h`** — 2D geometric aug on any **H×W** grid (DIM-agnostic): rotate / scale / shift + noise.
+- **`HCNNSpatialEmbed.h`** — map a 2D image into a length **N = 2^dim** buffer with pattern length **P ≤ N**: row-major pad, resize-to-fit square, or dual-plane (ink ‖ |grad|).
 
-Typical order: aug at native resolution → embed into \(N\) → `HCNN` train/infer. Full guide: [`docs/spatial_preprocess.md`](spatial_preprocess.md).
+Typical order: aug at native resolution → embed into N → `HCNN` train/infer. Full guide: [`docs/spatial_preprocess.md`](spatial_preprocess.md).
+
+**Training helpers** (optional, thin loops):
+
+- **`HCNNTrainHelpers.h`** — classification metrics (`evaluate_classification`), `cosine_lr`, `HCNNDualCheckpoint` (best loss / best acc), and `HCNNFlatDataset` for contiguous TrainEpoch buffers.
+
+`HCNN` still does not own a learning-rate schedule; helpers only provide the math and bookkeeping the demos used to reimplement. Guide: [`docs/train_helpers.md`](train_helpers.md).
 
 All public symbols live in the `hcnn::` namespace (`hcnn::HCNN`, `hcnn::PoolType`, etc.).
 
@@ -358,6 +365,8 @@ readout bias       (num_outputs floats)
 ```
 
 `GetWeights` and `SetWeights` are exact inverses: `SetWeights(GetWeights())` is an identity operation. The blob format is portable across runs and can be used for checkpointing, weight transfer between networks with identical architectures, or external optimization (e.g. evolutionary strategies).
+
+**Not in the blob today:** batch-norm scale/shift (γ/β), and any optimizer state (SGD velocity / Adam m,v / timestep). `HCNNDualCheckpoint` and other weight-blob tools inherit those gaps — see [`train_helpers.md`](train_helpers.md).
 
 ### Internals (re-exported)
 

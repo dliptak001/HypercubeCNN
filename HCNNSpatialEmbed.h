@@ -9,65 +9,75 @@ namespace hcnn {
 
 /**
  * @brief How to map a 2D single-channel image onto a length-N hypercube input
- *        with N = 2^dim and pattern length P ≤ N.
+ *        with N = 2^dim and pattern length P <= N.
  *
- * This module is **optional convenience** for spatial → hypercube demos.
- * It does not run the network. Pair with `HCNNSpatialAugmenter` (2D only)
- * and `HCNN::TrainEpoch` / `Embed` as needed.
+ * Optional convenience for spatial -> hypercube demos. Does not run the
+ * network. Pair with HCNNSpatialAugmenter (2D only) and HCNN train/infer.
  *
  * Pipeline (typical):
  * @code
  *   HxW image  --(optional aug)-->  HxW
  *              --HCNNSpatialEmbedder-->  length N = 2^dim
- *              --HCNN (input_channels=1)-->
+ *              --HCNN TrainEpoch(input_length = N)-->
  * @endcode
  *
- * Layout is always a flat `float[N]` for **one** input channel (vertex-major).
- * Multi-channel networks are out of scope here; use separate embeds or custom
- * packing if you need c_in > 1.
+ * **Caller contract:** after embed(), pass **input_length = capacity()** (= N)
+ * into HCNN. Do not pass a short pattern_length and rely on HCNN::Embed to
+ * pad: network Embed always zero-pads the tail, which would **overwrite** a
+ * non-zero pad_value for unused vertices.
+ *
+ * Layout is always a flat float[N] for **one** input channel (vertex-major).
+ * Multi-channel networks are out of scope; use custom packing for c_in > 1.
+ *
+ * Bilinear OOB samples use pad_value (set to image background for digit-like
+ * data, e.g. -1). Resize modes force a **square** SxS (aspect ratio not
+ * preserved).
  */
 enum class HCNNSpatialEmbedMode {
     /**
-     * Write row-major H×W into out[0 .. H*W). Fill out[H*W .. N) with pad_value.
-     * Requires H*W ≤ N. No resize.
+     * Write row-major HxW into out[0 .. H*W). Fill out[H*W .. N) with pad_value.
+     * Requires H*W <= N. No resize. plane_side is ignored.
      */
     RowMajorPad,
 
     /**
-     * Bilinear-resize the image to an S×S square with S = floor(sqrt(N)),
-     * write row-major into out[0 .. S*S), pad the rest with pad_value.
-     * Always fits: S*S ≤ N.
+     * Bilinear-resize the image to an SxS square with S = floor(sqrt(N))
+     * (or plane_side if set), write row-major into out[0 .. S*S), pad the rest.
+     * Always fits: S*S <= N. Non-square inputs are distorted to square.
      */
     ResizeToFit,
 
     /**
-     * Bilinear-resize to S×S with S = floor(sqrt(N/2)) so 2*S*S ≤ N.
+     * Bilinear-resize to SxS with S = floor(sqrt(N/2)) so 2*S*S <= N
+     * (or plane_side if set).
      * out[0 .. S*S)       = resized intensity (ink)
-     * out[S*S .. 2*S*S)   = per-image max-normalized |∇| of that plane, in
-     *                       approximately [-1, 1] (blank plane → pad_value)
+     * out[S*S .. 2*S*S)   = per-image max-normalized |grad| of that plane,
+     *                       approximately [-1, 1] (blank plane -> pad_value)
      * out[2*S*S .. N)     = pad_value
-     * Full occupancy when N is even and S is chosen as above (e.g. N=512→S=16,
-     * N=2048→S=32).
+     * Full occupancy when 2*S*S == N (e.g. N=512 -> S=16, N=2048 -> S=32).
+     * Ink plane is not range-clipped; only |grad| is max-normalized.
      */
     DualPlaneResize,
 };
 
 /**
- * @brief Configuration for spatial → length-N embedding.
+ * @brief Configuration for spatial -> length-N embedding.
  */
 struct HCNNSpatialEmbedConfig {
-    /// Hypercube dimension. Capacity N = 2^dim. Must be in [1, 30] for size_t safety.
+    /// Hypercube dimension. Capacity N = 2^dim. Must be in [1, 30].
     int dim = 10;
 
     HCNNSpatialEmbedMode mode = HCNNSpatialEmbedMode::RowMajorPad;
 
-    /// Fill value for unused vertices (and dual-plane blank gradients).
+    /// Fill value for unused vertices, bilinear OOB, and blank dual-plane grads.
+    /// For MNIST-like [-1,1] ink, use -1 (background), not the default 0.
     float pad_value = 0.0f;
 
     /**
      * Optional override for target square side S (ResizeToFit / DualPlaneResize).
      * 0 = automatic: floor(sqrt(N)) or floor(sqrt(N/2)) respectively.
-     * If non-zero, must satisfy mode capacity (S*S ≤ N or 2*S*S ≤ N).
+     * If non-zero, must satisfy S*S <= N or 2*S*S <= N for the mode.
+     * Ignored for RowMajorPad.
      */
     int plane_side = 0;
 
@@ -93,7 +103,7 @@ struct HCNNSpatialEmbedPlan {
 
 /**
  * @class HCNNSpatialEmbedder
- * @brief Maps 2D images into a length-N vertex buffer for HCNN (P ≤ N).
+ * @brief Maps 2D images into a length-N vertex buffer for HCNN (P <= N).
  *
  * Stateless aside from config. Thread-safe for concurrent embed() with a
  * fixed config.
@@ -107,7 +117,7 @@ struct HCNNSpatialEmbedPlan {
  * hcnn::HCNNSpatialEmbedder emb(cfg);
  * std::vector<float> out(emb.capacity());
  * emb.embed(img28, 28, 28, out.data());
- * // out.size() == 2048; ready as input_length for TrainEpoch with DIM=11
+ * // Train with input_length = emb.capacity() (== N), not pattern_length alone
  * @endcode
  */
 class HCNNSpatialEmbedder {
@@ -127,12 +137,12 @@ public:
     HCNNSpatialEmbedPlan plan(int height, int width) const;
 
     /**
-     * Embed one row-major image into out[0 .. N).
+     * Embed one row-major image into out[0 .. N). Always fully written.
      *
      * @param in      Source, length height*width
-     * @param height  Rows (≥ 1)
-     * @param width   Cols (≥ 1)
-     * @param out     Destination, length capacity() (= N). Always fully written.
+     * @param height  Rows (>= 1)
+     * @param width   Cols (>= 1)
+     * @param out     Destination, length capacity() (= N)
      */
     void embed(const float* in, int height, int width, float* out) const;
 
@@ -143,12 +153,10 @@ public:
     void embed_batch(const float* in, int batch, int height, int width,
                      float* out) const;
 
-    // --- Static helpers (also useful without constructing an embedder) ---
-
-    /// Largest S with S*S ≤ N.
+    /// Largest S with S*S <= N.
     static int max_square_side(int N);
 
-    /// Largest S with 2*S*S ≤ N.
+    /// Largest S with 2*S*S <= N.
     static int max_dual_plane_side(int N);
 
 private:

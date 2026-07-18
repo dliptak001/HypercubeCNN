@@ -10,6 +10,7 @@
 #include "HCNN.h"
 #include "HCNNSpatialAug.h"
 #include "HCNNSpatialEmbed.h"
+#include "HCNNTrainHelpers.h"
 
 #include <algorithm>
 #include <cmath>
@@ -30,6 +31,12 @@ using hcnn::HCNNSpatialAugmenter;
 using hcnn::HCNNSpatialEmbedConfig;
 using hcnn::HCNNSpatialEmbedMode;
 using hcnn::HCNNSpatialEmbedder;
+using hcnn::HCNNFlatDataset;
+using hcnn::HCNNDualCheckpoint;
+using hcnn::argmax;
+using hcnn::softmax_cross_entropy;
+using hcnn::evaluate_classification;
+using hcnn::cosine_lr;
 
 static int failures = 0;
 
@@ -1384,6 +1391,36 @@ static void test_spatial_aug() {
         catch (const std::runtime_error&) { threw = true; }
         check(threw, "geometric aug rejects in == out");
     }
+
+    // value_min > value_max rejected
+    {
+        HCNNSpatialAugConfig cfg;
+        cfg.value_min = 1.0f;
+        cfg.value_max = -1.0f;
+        bool threw = false;
+        try { HCNNSpatialAugmenter aug(cfg); (void)aug; }
+        catch (const std::runtime_error&) { threw = true; }
+        check(threw, "value_min > value_max rejected");
+    }
+
+    // Negative rot_deg_max uses absolute magnitude (still non-identity)
+    {
+        HCNNSpatialAugConfig cfg;
+        cfg.rot_deg_max = -12.0f;
+        check(!cfg.is_identity(), "negative rot_deg_max is not identity");
+        HCNNSpatialAugmenter aug(cfg);
+        check(true, "negative rot_deg_max accepted at construct");
+    }
+
+    // Negative noise_sigma rejected
+    {
+        HCNNSpatialAugConfig cfg;
+        cfg.noise_sigma = -0.1f;
+        bool threw = false;
+        try { HCNNSpatialAugmenter aug(cfg); (void)aug; }
+        catch (const std::runtime_error&) { threw = true; }
+        check(threw, "negative noise_sigma rejected");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1551,7 +1588,7 @@ static void test_spatial_embed() {
         check(out[H * W] == 0.0f, "embed_batch pads each sample");
     }
 
-    // Works with HCNN Embed path (length N)
+    // Works with HCNN train path (input_length = N)
     {
         HCNNSpatialEmbedConfig cfg;
         cfg.dim = 6;
@@ -1564,11 +1601,232 @@ static void test_spatial_embed() {
         net.AddConv(4);
         net.RandomizeWeights(0.0f, 1);
         std::vector<float> logits(2);
-        // TrainEpoch-style: input_length = N
+        // Contract: input_length = capacity() (== N), not pattern_length alone
         net.TrainStep(packed.data(), emb.capacity(), 0, 0.01f, 0.9f, 0.0f);
         net.ForwardBatch(packed.data(), emb.capacity(), 1, logits.data());
         check(std::isfinite(logits[0]) && std::isfinite(logits[1]),
               "embedded vector trains/infers on HCNN");
+    }
+
+    // Aug then embed chain
+    {
+        HCNNSpatialAugConfig acfg;
+        acfg.rot_deg_max = 5.0f;
+        acfg.border_value = -1.0f;
+        HCNNSpatialAugmenter aug(acfg);
+
+        HCNNSpatialEmbedConfig ecfg;
+        ecfg.dim = 9;
+        ecfg.mode = HCNNSpatialEmbedMode::DualPlaneResize;
+        ecfg.pad_value = -1.0f;
+        HCNNSpatialEmbedder emb(ecfg);
+
+        const int H = 28, W = 28;
+        std::vector<float> src(H * W, 0.2f), work(H * W), packed(emb.capacity());
+        std::mt19937 rng(42);
+        aug.apply(src.data(), work.data(), H, W, rng);
+        emb.embed(work.data(), H, W, packed.data());
+        bool finite = true;
+        for (float v : packed) if (!std::isfinite(v)) finite = false;
+        check(finite, "aug then DualPlane embed is finite");
+        check(emb.plan(H, W).pattern_length == emb.capacity(),
+              "dim9 dual full occupancy after chain");
+    }
+
+    // HCNN::Embed zero-pads short length (do not use short input_length with pad_value)
+    {
+        HCNNSpatialEmbedConfig cfg;
+        cfg.dim = 6;  // N=64
+        cfg.mode = HCNNSpatialEmbedMode::RowMajorPad;
+        cfg.pad_value = -1.0f;
+        HCNNSpatialEmbedder emb(cfg);
+        std::vector<float> src(4 * 4, 0.5f), packed(emb.capacity());
+        emb.embed(src.data(), 4, 4, packed.data());
+        check(packed[16] == -1.0f, "spatial embed pad_value on unused verts");
+
+        HCNN net(6, 2);
+        std::vector<float> embedded(net.GetStartN());
+        // If caller wrongly passes only pattern_length, Embed zeros the tail
+        net.Embed(packed.data(), 16, embedded.data());
+        check(embedded[16] == 0.0f,
+              "HCNN::Embed zero-pads short length (overrides non-zero pad)");
+    }
+}
+
+// ---------------------------------------------------------------------------
+//  Training helpers (metrics, cosine LR, dual-ckpt, flat dataset)
+// ---------------------------------------------------------------------------
+
+static void test_train_helpers() {
+    std::cout << "\n[Train helpers]\n";
+
+    // --- argmax / softmax CE ---
+    {
+        float v[] = {0.1f, 0.9f, 0.3f};
+        check(argmax(v, 3) == 1, "argmax picks max index");
+
+        float logits[] = {0.0f, 2.0f, 0.0f};
+        // CE for target=1: -log(softmax_1); should be small
+        float ce_good = softmax_cross_entropy(logits, 3, 1);
+        float ce_bad  = softmax_cross_entropy(logits, 3, 0);
+        check(std::isfinite(ce_good) && ce_good > 0.0f, "CE finite and positive");
+        check(ce_good < ce_bad, "CE lower for correct class");
+    }
+
+    // --- cosine_lr endpoints ---
+    {
+        const float lo = cosine_lr(1e-3f, 1e-4f, 0, 60);
+        const float mid = cosine_lr(1e-3f, 1e-4f, 30, 60);
+        const float hi = cosine_lr(1e-3f, 1e-4f, 59, 60);
+        check(std::abs(lo - 1e-3f) < 1e-7f, "cosine_lr epoch 0 == lr_max");
+        check(std::abs(hi - 1e-4f) < 1e-7f, "cosine_lr last epoch == lr_min");
+        check(mid > hi && mid < lo, "cosine_lr mid between endpoints");
+        check(std::abs(cosine_lr(0.01f, 0.001f, 0, 1) - 0.01f) < 1e-9f,
+              "cosine_lr num_epochs<=1 returns lr_max");
+    }
+
+    // --- Negative paths: empty FlatDataset, size drift, OOR target ---
+    {
+        auto throws = [](auto&& fn) {
+            try { fn(); } catch (const std::exception&) { return true; }
+            return false;
+        };
+
+        HCNN net(5, 4);
+        net.AddConv(8);
+        net.RandomizeWeights(/*scale=*/0.0f, /*seed=*/3);
+
+        HCNNFlatDataset empty_ds;
+        check(throws([&] { (void)evaluate_classification(net, empty_ds); }),
+              "evaluate empty FlatDataset throws");
+
+        HCNNFlatDataset bad;
+        bad.reset(4, net.GetStartN());
+        bad.count = 8;  // drift public field past buffer size
+        check(throws([&] { (void)evaluate_classification(net, bad); }),
+              "evaluate size-drifted FlatDataset throws");
+
+        float logits[] = {0.0f, 1.0f, 0.0f};
+        check(throws([&] { (void)softmax_cross_entropy(logits, 3, /*target=*/3); }),
+              "softmax_cross_entropy OOR target throws");
+        check(throws([&] { (void)softmax_cross_entropy(logits, 3, /*target=*/-1); }),
+              "softmax_cross_entropy negative target throws");
+    }
+
+    // --- Dual-ckpt tie-breaks (pure observe sequence; no training needed) ---
+    {
+        HCNN net(5, 4);
+        net.AddConv(8);
+        net.RandomizeWeights(/*scale=*/0.0f, /*seed=*/11);
+
+        HCNNDualCheckpoint ckpt;
+        auto u1 = ckpt.observe(net, /*loss=*/1.0f, /*accuracy=*/50.0f, /*epoch=*/1);
+        check(u1.new_best_loss && u1.new_best_acc, "tie: first observe both bests");
+        check(ckpt.best_loss_epoch() == 1 && ckpt.best_acc_epoch() == 1,
+              "tie: first epochs == 1");
+
+        // Equal loss, higher acc → best-loss updates; higher acc → best-acc updates.
+        auto u2 = ckpt.observe(net, 1.0f, 55.0f, 2);
+        check(u2.new_best_loss && u2.new_best_acc,
+              "tie: equal loss higher acc updates both");
+        check(ckpt.best_loss_epoch() == 2 && ckpt.best_loss_acc() == 55.0f,
+              "tie: best-loss epoch/acc after higher-acc tie-break");
+        check(ckpt.best_acc_epoch() == 2 && ckpt.best_acc() == 55.0f,
+              "tie: best-acc epoch after higher acc");
+
+        // Equal loss and equal acc → neither slot updates.
+        auto u3 = ckpt.observe(net, 1.0f, 55.0f, 3);
+        check(!u3.any(), "tie: equal loss and acc is no-op");
+        check(ckpt.best_loss_epoch() == 2 && ckpt.best_acc_epoch() == 2,
+              "tie: epochs unchanged on no-op");
+
+        // Equal acc, lower loss → best-acc updates (lower-loss tie-break);
+        // strictly lower loss → best-loss updates too.
+        auto u4 = ckpt.observe(net, 0.95f, 55.0f, 4);
+        check(u4.new_best_loss && u4.new_best_acc,
+              "tie: lower loss updates both (acc equal uses lower loss)");
+        check(ckpt.best_acc_loss() == 0.95f && ckpt.best_acc_epoch() == 4,
+              "tie: best-acc secondary loss and epoch");
+        check(ckpt.best_loss() == 0.95f && ckpt.best_loss_epoch() == 4,
+              "tie: best-loss after lower loss");
+
+        // Equal loss, lower acc → best-loss does NOT update.
+        auto u5 = ckpt.observe(net, 0.95f, 54.0f, 5);
+        check(!u5.new_best_loss, "tie: equal loss lower acc skips best-loss");
+        // Acc went down → no best-acc either.
+        check(!u5.new_best_acc, "tie: lower acc skips best-acc");
+        check(ckpt.best_loss_epoch() == 4, "tie: best-loss epoch stays 4");
+    }
+
+    // --- FlatDataset + evaluate_classification + dual checkpoint train loop ---
+    {
+        HCNN net(5, 4);
+        net.AddConv(8);
+        net.RandomizeWeights(/*scale=*/0.0f, /*seed=*/7);
+        net.SetOptimizer(OptimizerType::ADAM);
+
+        const int N = net.GetStartN();
+        const int K = net.GetNumOutputs();
+        const int n = 32;
+
+        std::vector<std::vector<float>> inputs;
+        std::vector<int> targets;
+        make_synth(n, N, K, /*seed=*/99, inputs, targets);
+
+        HCNNFlatDataset ds;
+        ds.reset(n, N);
+        for (int i = 0; i < n; ++i) {
+            std::copy(inputs[i].begin(), inputs[i].end(), ds.sample_input(i));
+            ds.targets[static_cast<size_t>(i)] = targets[static_cast<size_t>(i)];
+        }
+        check(ds.count == n && ds.input_length == N, "FlatDataset reset sizing");
+
+        auto r0 = evaluate_classification(net, ds);
+        check(r0.count == n, "evaluate_classification count");
+        check(std::isfinite(r0.loss), "evaluate_classification loss finite");
+        check(r0.accuracy >= 0.0f && r0.accuracy <= 100.0f,
+              "evaluate_classification accuracy in [0,100]");
+        check(r0.correct >= 0 && r0.correct <= n, "evaluate_classification correct range");
+
+        HCNNDualCheckpoint ckpt;
+        auto u0 = ckpt.observe(net, r0.loss, r0.accuracy, /*epoch=*/1);
+        check(u0.new_best_loss && u0.new_best_acc,
+              "dual-ckpt first observe is both bests");
+        check(ckpt.has_best_loss() && ckpt.has_best_acc(), "dual-ckpt has snapshots");
+        check(ckpt.best_loss_epoch() == 1 && ckpt.best_acc_epoch() == 1,
+              "dual-ckpt epochs recorded");
+
+        // Train a few epochs; LR follows cosine helper.
+        const int epochs = 5;
+        for (int e = 0; e < epochs; ++e) {
+            const float lr = cosine_lr(0.05f, 0.005f, e, epochs);
+            net.TrainEpoch(ds.inputs.data(), ds.input_length, ds.targets.data(),
+                           ds.count, /*batch_size=*/8, lr, /*momentum=*/0.0f,
+                           /*wd=*/0.0f, /*class_weights=*/nullptr,
+                           /*shuffle_seed=*/static_cast<unsigned>(e + 1));
+            auto r = evaluate_classification(net, ds);
+            ckpt.observe(net, r.loss, r.accuracy, e + 1);
+        }
+
+        check(ckpt.has_best_loss() && ckpt.has_best_acc(),
+              "dual-ckpt still has snapshots after train");
+        check(std::isfinite(ckpt.best_loss()), "dual-ckpt best_loss finite");
+        check(ckpt.best_acc() >= 0.0f, "dual-ckpt best_acc non-negative");
+
+        // Restore both checkpoints without throw; logits stay finite.
+        ckpt.restore_best_loss(net);
+        auto r_loss = evaluate_classification(net, ds);
+        check(std::isfinite(r_loss.loss), "restore best-loss: eval finite");
+
+        ckpt.restore_best_acc(net);
+        auto r_acc = evaluate_classification(net, ds);
+        check(std::isfinite(r_acc.loss), "restore best-acc: eval finite");
+
+        // Empty checkpoint restore must throw.
+        HCNNDualCheckpoint empty;
+        bool threw = false;
+        try { empty.restore_best_loss(net); } catch (const std::exception&) { threw = true; }
+        check(threw, "empty dual-ckpt restore_best_loss throws");
     }
 }
 
@@ -1605,6 +1863,7 @@ int main() {
     test_regression_invalid_construction();
     test_spatial_aug();
     test_spatial_embed();
+    test_train_helpers();
 
     std::cout << "\n===================\n";
     if (failures == 0) {
