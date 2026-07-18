@@ -16,23 +16,28 @@
 #include <thread>
 #include <vector>
 
-// ---------------------------------------------------------------------------
+// =============================================================================
 // MNIST teaching demo — thin loop on core helpers
 //
-// Loader yields 28×28 in [-1, 1].  Pipeline:
+// Loader yields 28x28 in [-1, 1].  Pipeline:
 //   (train only) HCNNSpatialAugmenter  — rot / scale / shift / noise
-//   HCNNSpatialEmbedder                — DualPlaneResize → N = 2^11 = 2048
+//   HCNNSpatialEmbedder                — DualPlaneResize → N = 2^dim
 //   HCNN TrainEpoch + cosine_lr + dual checkpoint + evaluate_classification
-// ---------------------------------------------------------------------------
-
-static constexpr int kImgSide   = 28;
-static constexpr int kImgPixels = kImgSide * kImgSide;  // 784
-static constexpr int kDim       = 11;
-static constexpr float kBackground = -1.0f;  // MNIST "ink off" after loader norm
+// =============================================================================
 
 // ---------------------------------------------------------------------------
-// Architecture config — edit the layer list; build + print follow automatically
+// DEVELOPER CONFIG — edit knobs here; the rest of the file follows
 // ---------------------------------------------------------------------------
+//
+// Documented default recipe (~99.23% mean over weight seeds; peak 99.27% on
+// weight_seed below): DIM=11 dual-plane pack, 16→16 no pool, no BN, geometric
+// aug, Adam, cosine LR 1e-3→1e-4, 60 epochs, batch 256, wd 1e-3.
+// Re-run a seed after changing any of these if you need a hard accuracy claim.
+// ---------------------------------------------------------------------------
+
+static constexpr int   kImgSide     = 28;      // MNIST native side (loader)
+static constexpr int   kImgPixels   = 28 * 28; // 784
+static constexpr float kBackground  = -1.0f;   // "ink off" after loader norm
 
 /// One stack step: Hamming conv or antipodal pool.
 struct ArchLayer {
@@ -70,27 +75,64 @@ struct ArchLayer {
     }
 };
 
-/// Network topology for the teaching demo (not part of the core SDK).
-/// `dim` is the single source of truth for both HCNN start DIM and SpatialEmbed.
-struct ArchConfig {
-    int dim = kDim;              // start DIM (N = 2^dim); also drives SpatialEmbed
-    int num_outputs = 10;        // class count
-    int input_channels = 1;      // must be 1 for this demo (Spatial* is single-channel)
-    std::vector<ArchLayer> layers;
+/**
+ * All developer-facing knobs for this demo.
+ * Change fields / layers / seeds here — main, train loop, aug, and embed read
+ * this struct.  `dim` is shared by HCNN start capacity and SpatialEmbed.
+ */
+struct DemoConfig {
+    // ----- Data -----
+    size_t max_train_samples = 60000;  // 0 = all in file
+    size_t max_test_samples  = 10000;
 
-    /// Default MNIST recipe: 16 -> 16, no pool, no BN.
-    static ArchConfig MnistDefault() {
-        ArchConfig a;
-        a.dim = kDim;
-        a.num_outputs = 10;
-        a.input_channels = 1;
-        a.layers = {
-            ArchLayer::Conv(16, hcnn::Activation::RELU, /*bias=*/true, /*bn=*/false),
-            ArchLayer::Conv(16, hcnn::Activation::RELU, /*bias=*/true, /*bn=*/false),
-        };
-        return a;
-    }
+    // ----- Architecture (dim also drives SpatialEmbed N = 2^dim) -----
+    int dim            = 11;   // start DIM; DualPlane auto side = floor(sqrt(N/2))
+    int num_outputs    = 10;   // MNIST classes
+    int input_channels = 1;    // must stay 1 (Spatial* is single-channel)
+    std::vector<ArchLayer> layers = {
+        ArchLayer::Conv(16, hcnn::Activation::RELU, /*bias=*/true, /*bn=*/false),
+        ArchLayer::Conv(16, hcnn::Activation::RELU, /*bias=*/true, /*bn=*/false),
+        // Examples:
+        // ArchLayer::Conv(32),
+        // ArchLayer::Pool(hcnn::PoolType::MAX),
+        // ArchLayer::Conv(32),
+    };
+
+    // ----- Weight init / optimizer -----
+    // Documented default seed: 99.27% best-acc / 99.26% best-loss (pre-wire pack).
+    unsigned weight_seed = 398479293;
+    hcnn::OptimizerType optimizer = hcnn::OptimizerType::ADAM;
+
+    // ----- Schedule -----
+    int   epochs          = 60;
+    float lr_max          = 0.001f;   // cosine peak (epoch 0)
+    float lr_min_ratio    = 0.1f;     // lr_min = lr_max * ratio (floor)
+    int   batch_size      = 256;
+    float weight_decay    = 1e-3f;
+    float momentum        = 0.9f;     // passed to TrainEpoch (Adam ignores)
+
+    // ----- Train-time spatial aug (test path uses None()) -----
+    float aug_rot_deg_max = 12.0f;    // uniform ±deg about center
+    float aug_scale_min   = 0.9f;
+    float aug_scale_max   = 1.1f;
+    int   aug_shift_max   = 2;        // integer px dy,dx in {-s..+s}
+    float aug_noise_sigma = 0.03f;    // Gaussian after geometry; then clip
+    // Aug RNG: seed = aug_seed_base + epoch * aug_seed_stride (reproducible).
+    unsigned aug_seed_base   = 0xC0FFEEu;
+    unsigned aug_seed_stride = 9973u;
+    // Shuffle stream (independent of weight_seed): shuffle_seed = epoch + 1.
+
+    // ----- Embed -----
+    hcnn::HCNNSpatialEmbedMode embed_mode = hcnn::HCNNSpatialEmbedMode::DualPlaneResize;
+    float embed_pad_value = kBackground;  // OOB / blank |grad| / unused verts
+    int   embed_plane_side = 0;           // 0 = auto from dim
+
+    float lr_min() const { return lr_max * lr_min_ratio; }
 };
+
+// ---------------------------------------------------------------------------
+// Architecture helpers (param counts, print, apply)
+// ---------------------------------------------------------------------------
 
 static const char* activation_name(hcnn::Activation a) {
     switch (a) {
@@ -111,17 +153,14 @@ static const char* pool_name(hcnn::PoolType t) {
 }
 
 /**
- * Walk ArchConfig: track DIM/N/channels, collect per-conv param counts, and
- * FLATTEN readout size. Matches GetWeightCount (kernel + bias; BN γ/β omitted).
- * Each pool reduces DIM by 1 and does not add parameters.
- *
- * Validates demo contracts: dim in range, input_channels == 1, >=1 conv,
- * c_out >= 1, pools do not drive DIM below 0.
+ * Walk DemoConfig topology: DIM/N/channels, per-conv params, FLATTEN readout.
+ * Matches GetWeightCount (kernel + bias; BN γ/β omitted).
+ * Validates: dim range, input_channels == 1, >=1 conv, pool depth.
  */
 struct ArchParamSummary {
     long long total = 0;
     long long readout = 0;
-    long long flatten_features = 0;  // last_c * N_final
+    long long flatten_features = 0;
     int final_dim = 0;
     int final_N = 0;
     int last_channels = 0;
@@ -129,29 +168,33 @@ struct ArchParamSummary {
     std::vector<long long> conv_params;
 };
 
-static ArchParamSummary summarize_arch(const ArchConfig& arch) {
-    if (arch.dim < 1 || arch.dim > 30)
-        throw std::runtime_error("ArchConfig: dim must be in [1, 30]");
-    if (arch.num_outputs < 1)
-        throw std::runtime_error("ArchConfig: num_outputs must be >= 1");
-    // Spatial preprocess in this demo is single-channel only.
-    if (arch.input_channels != 1)
+static ArchParamSummary summarize_arch(const DemoConfig& cfg) {
+    if (cfg.dim < 1 || cfg.dim > 30)
+        throw std::runtime_error("DemoConfig: dim must be in [1, 30]");
+    if (cfg.num_outputs < 1)
+        throw std::runtime_error("DemoConfig: num_outputs must be >= 1");
+    if (cfg.input_channels != 1)
         throw std::runtime_error(
-            "ArchConfig: input_channels must be 1 (Spatial* path is single-channel)");
-    if (arch.layers.empty())
-        throw std::runtime_error("ArchConfig: need at least one layer");
+            "DemoConfig: input_channels must be 1 (Spatial* path is single-channel)");
+    if (cfg.layers.empty())
+        throw std::runtime_error("DemoConfig: need at least one layer");
+    if (cfg.epochs < 1)
+        throw std::runtime_error("DemoConfig: epochs must be >= 1");
+    if (cfg.batch_size < 1)
+        throw std::runtime_error("DemoConfig: batch_size must be >= 1");
+    if (cfg.lr_max <= 0.0f || cfg.lr_min_ratio < 0.0f || cfg.lr_min_ratio > 1.0f)
+        throw std::runtime_error("DemoConfig: invalid lr_max / lr_min_ratio");
 
     ArchParamSummary s;
-    int dim = arch.dim;
+    int dim = cfg.dim;
     int N = 1 << dim;
-    int c_in = arch.input_channels;
+    int c_in = cfg.input_channels;
     s.last_channels = c_in;
 
-    for (const auto& L : arch.layers) {
+    for (const auto& L : cfg.layers) {
         if (L.kind == ArchLayer::Kind::Conv) {
             if (L.c_out < 1)
-                throw std::runtime_error("ArchConfig: conv c_out must be >= 1");
-            // Hamming kernel size K = current DIM.
+                throw std::runtime_error("DemoConfig: conv c_out must be >= 1");
             const long long k_params =
                 static_cast<long long>(c_in) * L.c_out * dim
                 + (L.use_bias ? L.c_out : 0);
@@ -163,26 +206,25 @@ static ArchParamSummary summarize_arch(const ArchConfig& arch) {
         } else {
             dim -= 1;
             if (dim < 0)
-                throw std::runtime_error("ArchConfig: too many pools (DIM < 0)");
+                throw std::runtime_error("DemoConfig: too many pools (DIM < 0)");
             N = 1 << dim;
         }
     }
 
     if (s.num_conv < 1)
-        throw std::runtime_error("ArchConfig: need at least one Conv layer");
+        throw std::runtime_error("DemoConfig: need at least one Conv layer");
 
     s.final_dim = dim;
     s.final_N = N;
     s.flatten_features = static_cast<long long>(s.last_channels) * N;
-    s.readout = s.flatten_features * arch.num_outputs + arch.num_outputs;
+    s.readout = s.flatten_features * cfg.num_outputs + cfg.num_outputs;
     s.total += s.readout;
     return s;
 }
 
-/// Apply ArchConfig to an empty HCNN (AddConv / AddPool only). Validates first.
-static void apply_arch(hcnn::HCNN& net, const ArchConfig& arch) {
-    (void)summarize_arch(arch);  // validate contracts before mutating net
-    for (const auto& L : arch.layers) {
+static void apply_arch(hcnn::HCNN& net, const DemoConfig& cfg) {
+    (void)summarize_arch(cfg);
+    for (const auto& L : cfg.layers) {
         if (L.kind == ArchLayer::Kind::Conv)
             net.AddConv(L.c_out, L.activation, L.use_bias, L.use_bn);
         else
@@ -190,16 +232,15 @@ static void apply_arch(hcnn::HCNN& net, const ArchConfig& arch) {
     }
 }
 
-/// Print stack and parameter breakdown (uses a precomputed summary).
-static void print_arch(std::ostream& os, const ArchConfig& arch,
+static void print_arch(std::ostream& os, const DemoConfig& cfg,
                        const ArchParamSummary& sum) {
-    int dim = arch.dim;
+    int dim = cfg.dim;
     int N = 1 << dim;
-    int c_in = arch.input_channels;
+    int c_in = cfg.input_channels;
 
     os << "\nArchitecture: ";
     bool first_line = true;
-    for (const auto& L : arch.layers) {
+    for (const auto& L : cfg.layers) {
         if (!first_line)
             os << "              -> ";
         first_line = false;
@@ -222,7 +263,7 @@ static void print_arch(std::ostream& os, const ArchConfig& arch,
 
     os << "              -> FLATTEN\n"
        << "              -> Linear(" << sum.flatten_features
-       << " -> " << arch.num_outputs << ")\n"
+       << " -> " << cfg.num_outputs << ")\n"
        << "Parameters:   " << sum.total << " (";
     for (size_t i = 0; i < sum.conv_params.size(); ++i) {
         if (i) os << " + ";
@@ -231,35 +272,38 @@ static void print_arch(std::ostream& os, const ArchConfig& arch,
     os << " + " << sum.readout << " readout)\n\n";
 }
 
-/// Build MNIST train-time aug config (identity fields when disabled).
-static hcnn::HCNNSpatialAugConfig make_mnist_aug_config(bool enabled) {
+// ---------------------------------------------------------------------------
+// Spatial preprocess from DemoConfig
+// ---------------------------------------------------------------------------
+
+static hcnn::HCNNSpatialAugConfig make_aug_config(const DemoConfig& cfg,
+                                                  bool enabled) {
     if (!enabled)
         return hcnn::HCNNSpatialAugConfig::None();
 
-    hcnn::HCNNSpatialAugConfig cfg;
-    cfg.rot_deg_max  = 12.0f;       // uniform rotate ±12° about image center
-    cfg.scale_min    = 0.9f;        // uniform scale low (size factor)
-    cfg.scale_max    = 1.1f;        // uniform scale high
-    cfg.shift_max    = 2;           // integer pixel shift dy,dx in {-2..+2}
-    cfg.noise_sigma  = 0.03f;       // Gaussian N(0, σ²) after geometry
-    cfg.value_min    = -1.0f;       // clip floor after noise (loader range)
-    cfg.value_max    =  1.0f;       // clip ceiling after noise
-    cfg.border_value = kBackground; // bilinear OOB = empty paper (-1)
-    cfg.enabled      = true;        // master on (false → pure copy, no RNG)
-    return cfg;
+    hcnn::HCNNSpatialAugConfig ac;
+    ac.rot_deg_max  = cfg.aug_rot_deg_max;
+    ac.scale_min    = cfg.aug_scale_min;
+    ac.scale_max    = cfg.aug_scale_max;
+    ac.shift_max    = cfg.aug_shift_max;
+    ac.noise_sigma  = cfg.aug_noise_sigma;
+    ac.value_min    = -1.0f;           // clip after noise (loader range)
+    ac.value_max    =  1.0f;
+    ac.border_value = kBackground;     // bilinear OOB = empty paper
+    ac.enabled      = true;
+    return ac;
 }
 
-/// Dual-plane embed driven by ArchConfig::dim (same N as the network start).
-static hcnn::HCNNSpatialEmbedConfig make_mnist_embed_config(int dim) {
-    hcnn::HCNNSpatialEmbedConfig cfg;
-    cfg.dim        = dim;  // N = 2^dim; must match HCNN start DIM
-    cfg.mode       = hcnn::HCNNSpatialEmbedMode::DualPlaneResize;
-    cfg.pad_value  = kBackground;
-    cfg.plane_side = 0;  // auto: floor(sqrt(N/2)); 32 at DIM=11, 16 at DIM=9
-    return cfg;
+static hcnn::HCNNSpatialEmbedConfig make_embed_config(const DemoConfig& cfg) {
+    hcnn::HCNNSpatialEmbedConfig ec;
+    ec.dim        = cfg.dim;           // N = 2^dim; matches HCNN start DIM
+    ec.mode       = cfg.embed_mode;
+    ec.pad_value  = cfg.embed_pad_value;
+    ec.plane_side = cfg.embed_plane_side;
+    return ec;
 }
 
-/// Optional aug at 28×28, then SpatialEmbed into HCNNFlatDataset (length N).
+/// Optional aug at 28x28, then SpatialEmbed into HCNNFlatDataset (length N).
 static void fill_spatial_dataset(const HCNNDataset& ds,
                                  hcnn::HCNNFlatDataset& out,
                                  const hcnn::HCNNSpatialEmbedder& emb,
@@ -299,25 +343,22 @@ static void print_eval(const char* label, const hcnn::HCNNClassEval& r) {
 }
 
 // Dual checkpoint (best test loss / best test accuracy).
-// Each epoch rebuilds the train buffer with a fresh augment seed.
+// Each epoch rebuilds the train buffer with a fresh augment seed from DemoConfig.
 static void train_and_evaluate(const char* name, hcnn::HCNN& net,
                                const HCNNDataset& train_raw,
                                const hcnn::HCNNFlatDataset& test_ds,
                                const hcnn::HCNNSpatialEmbedder& emb,
                                const hcnn::HCNNSpatialAugmenter& train_aug,
-                               float lr = 0.01f, int batch_size = 32,
-                               float weight_decay = 0.0f) {
-    const int epochs = 60;
-    const float lr_max = lr;
-    const float lr_min = lr_max * 0.1f;
-    const float momentum = 0.9f;
+                               const DemoConfig& cfg) {
+    const float lr_max = cfg.lr_max;
+    const float lr_min = cfg.lr_min();
     const auto& ac = train_aug.config();
 
     std::cout << "\n=== " << name << " (lr_max=" << lr_max
               << ", lr_min=" << lr_min
-              << ", batch=" << batch_size
-              << ", wd=" << weight_decay
-              << ", epochs=" << epochs
+              << ", batch=" << cfg.batch_size
+              << ", wd=" << cfg.weight_decay
+              << ", epochs=" << cfg.epochs
               << ", aug=rot+/-" << ac.rot_deg_max
               << "+scale[" << ac.scale_min << "," << ac.scale_max << "]"
               << "+shift+/-" << ac.shift_max
@@ -327,29 +368,28 @@ static void train_and_evaluate(const char* name, hcnn::HCNN& net,
     hcnn::HCNNFlatDataset train_ds;
     hcnn::HCNNDualCheckpoint ckpt;
 
-    for (int epoch = 0; epoch < epochs; ++epoch) {
-        const float current_lr = hcnn::cosine_lr(lr_max, lr_min, epoch, epochs);
+    for (int epoch = 0; epoch < cfg.epochs; ++epoch) {
+        const float current_lr =
+            hcnn::cosine_lr(lr_max, lr_min, epoch, cfg.epochs);
 
-        // Fresh train-time aug each epoch; seed mixes epoch so runs are reproducible.
-        // Timer includes pack+aug rebuild (wall-clock cost of the epoch, not only
-        // the optimizer step).
+        // Fresh train-time aug each epoch; seed from DemoConfig.
+        // Timer includes pack+aug rebuild (wall-clock cost of the epoch).
         auto t0 = std::chrono::steady_clock::now();
-        fill_spatial_dataset(
-            train_raw, train_ds, emb, train_aug,
-            /*seed=*/static_cast<unsigned>(0xC0FFEEu + epoch * 9973u));
+        const unsigned aug_seed =
+            cfg.aug_seed_base + static_cast<unsigned>(epoch) * cfg.aug_seed_stride;
+        fill_spatial_dataset(train_raw, train_ds, emb, train_aug, aug_seed);
         net.TrainEpoch(train_ds.inputs.data(), train_ds.input_length,
-                       train_ds.targets.data(), train_ds.count, batch_size,
-                       current_lr, momentum, weight_decay,
+                       train_ds.targets.data(), train_ds.count, cfg.batch_size,
+                       current_lr, cfg.momentum, cfg.weight_decay,
                        /*class_weights=*/nullptr,
                        /*shuffle_seed=*/static_cast<unsigned>(epoch + 1));
         auto t1 = std::chrono::steady_clock::now();
         const double secs = std::chrono::duration<double>(t1 - t0).count();
-        // Guard zero/near-zero duration (tiny debug subsets or coarse timer).
         const double samples_per_s =
             (secs > 0.0) ? (static_cast<double>(train_ds.count) / secs) : 0.0;
 
         std::string label = "Epoch " + std::to_string(epoch + 1) + "/"
-                            + std::to_string(epochs);
+                            + std::to_string(cfg.epochs);
         hcnn::HCNNClassEval r = hcnn::evaluate_classification(net, test_ds);
         print_eval(label.c_str(), r);
 
@@ -388,42 +428,39 @@ static void train_and_evaluate(const char* name, hcnn::HCNN& net,
 }
 
 int main() {
+    // -------------------------------------------------------------------------
+    // Edit DemoConfig fields at the top of this file (weight_seed, layers,
+    // epochs, lr, aug, dim, ...).  No other knobs below.
+    // -------------------------------------------------------------------------
+    const DemoConfig cfg{};
+
     auto src_dir = std::filesystem::path(__FILE__).parent_path().parent_path();
     auto data_dir = src_dir / "data";
 
     std::cout << "Loading MNIST from " << data_dir << "...\n";
     auto train_raw = load_mnist((data_dir / "train-images-idx3-ubyte").string(),
-                                (data_dir / "train-labels-idx1-ubyte").string(), 60000);
+                                (data_dir / "train-labels-idx1-ubyte").string(),
+                                cfg.max_train_samples);
     auto test_raw  = load_mnist((data_dir / "t10k-images-idx3-ubyte").string(),
-                                (data_dir / "t10k-labels-idx1-ubyte").string(), 10000);
+                                (data_dir / "t10k-labels-idx1-ubyte").string(),
+                                cfg.max_test_samples);
     std::cout << "Train: " << train_raw.size() << " samples, "
               << "Test: " << test_raw.size() << " samples\n";
     std::cout << "Threads: " << std::thread::hardware_concurrency() << "\n";
 
-    // Edit layers / dim here — embed, net, print, and param counts follow.
-    // Documented recipe: DIM=11, 16 -> 16, no pool, no BN.
-    ArchConfig arch = ArchConfig::MnistDefault();
-    // Examples:
-    //   arch.layers = { ArchLayer::Conv(32), ArchLayer::Conv(32) };
-    //   arch.layers = { ArchLayer::Conv(16), ArchLayer::Pool(),
-    //                   ArchLayer::Conv(32), ArchLayer::Pool() };
-    //   arch.dim = 9;  // also shrinks DualPlane embed (auto S=16)
+    const ArchParamSummary arch_sum = summarize_arch(cfg);
 
-    const ArchParamSummary arch_sum = summarize_arch(arch);
-
-    // Embed dim tracks arch.dim so N_input == network start capacity.
-    hcnn::HCNNSpatialEmbedder emb(make_mnist_embed_config(arch.dim));
-    hcnn::HCNNSpatialAugmenter train_aug(make_mnist_aug_config(/*enabled=*/true));
-    hcnn::HCNNSpatialAugmenter test_aug(make_mnist_aug_config(/*enabled=*/false));
+    hcnn::HCNNSpatialEmbedder emb(make_embed_config(cfg));
+    hcnn::HCNNSpatialAugmenter train_aug(make_aug_config(cfg, /*enabled=*/true));
+    hcnn::HCNNSpatialAugmenter test_aug(make_aug_config(cfg, /*enabled=*/false));
 
     const auto plan = emb.plan(kImgSide, kImgSide);
     const int N = emb.capacity();
-    if (N != (1 << arch.dim) || N != emb.config().capacity()) {
+    if (N != (1 << cfg.dim)) {
         throw std::runtime_error(
-            "embed capacity does not match ArchConfig::dim");
+            "embed capacity does not match DemoConfig::dim");
     }
 
-    // Test: embed only (no aug).  Train: re-embedded with aug each epoch.
     hcnn::HCNNFlatDataset test_flat;
     fill_spatial_dataset(test_raw, test_flat, emb, test_aug, /*seed=*/0);
     if (test_flat.input_length != N) {
@@ -435,37 +472,32 @@ int main() {
               << "HCNNSpatialEmbed DualPlaneResize "
               << plan.plane_side << "x" << plan.plane_side
               << " ink || |grad|  (pattern_length=" << plan.pattern_length
-              << ", N=" << N << ", dim=" << arch.dim << ")\n";
-    std::cout << "Train aug:  rot +/-12 deg, scale [0.9,1.1], shift +/-2 px, "
-              << "Gaussian noise sigma=0.03 (train only, refreshed each epoch)\n";
+              << ", N=" << N << ", dim=" << cfg.dim << ")\n";
+    std::cout << "Train aug:  rot +/-" << cfg.aug_rot_deg_max
+              << " deg, scale [" << cfg.aug_scale_min << "," << cfg.aug_scale_max
+              << "], shift +/-" << cfg.aug_shift_max << " px, "
+              << "Gaussian noise sigma=" << cfg.aug_noise_sigma
+              << " (train only, refreshed each epoch)\n";
 
-    // Weight-init seed only (aug / shuffle seeds are fixed separately).
-    // Documented multi-seed ~99.23% mean was measured on this recipe (DIM=11
-    // dual pack + geometric aug); re-run a seed if you change arch/embed.
-    constexpr unsigned weight_seed = 398479293;
+    hcnn::HCNN net(cfg.dim, cfg.num_outputs, cfg.input_channels);
+    apply_arch(net, cfg);
+    net.RandomizeWeights(/*scale=*/0.0f, cfg.weight_seed);
+    net.SetOptimizer(cfg.optimizer);
 
-    hcnn::HCNN net(arch.dim, arch.num_outputs, arch.input_channels);
-    apply_arch(net, arch);
-    net.RandomizeWeights(/*scale=*/0.0f, weight_seed);
-    net.SetOptimizer(hcnn::OptimizerType::ADAM);
-
-    if (net.GetStartDim() != arch.dim || net.GetStartN() != N) {
+    if (net.GetStartDim() != cfg.dim || net.GetStartN() != N) {
         throw std::runtime_error(
-            "HCNN start DIM/N does not match ArchConfig / SpatialEmbed");
+            "HCNN start DIM/N does not match DemoConfig / SpatialEmbed");
     }
 
-    std::cout << "Weight init seed: " << weight_seed << "\n";
-    print_arch(std::cout, arch, arch_sum);
+    std::cout << "Weight init seed: " << cfg.weight_seed << "\n";
+    print_arch(std::cout, cfg, arch_sum);
 
-    // Printed total must match the SDK weight blob (kernel + bias; no BN γ/β).
     if (static_cast<long long>(net.GetWeightCount()) != arch_sum.total) {
         throw std::runtime_error(
-            "ArchConfig param count " + std::to_string(arch_sum.total)
+            "DemoConfig param count " + std::to_string(arch_sum.total)
             + " != HCNN::GetWeightCount " + std::to_string(net.GetWeightCount()));
     }
 
-    train_and_evaluate("HCNN", net, train_raw, test_flat, emb, train_aug,
-                       /*lr=*/0.001f, 256, 1e-3f);
-
+    train_and_evaluate("HCNN", net, train_raw, test_flat, emb, train_aug, cfg);
     return 0;
 }
