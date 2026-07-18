@@ -86,7 +86,7 @@ struct DemoConfig {
     size_t max_test_samples  = 10000;
 
     // ----- Architecture (dim also drives SpatialEmbed N = 2^dim) -----
-    int dim            = 11;   // start DIM; DualPlane auto side = floor(sqrt(N/2))
+    int dim            = 8;   // start DIM; DualPlane auto side = floor(sqrt(N/2))
     int num_outputs    = 10;   // MNIST classes
     int input_channels = 1;    // must stay 1 (Spatial* is single-channel)
     std::vector<ArchLayer> layers = {
@@ -473,6 +473,19 @@ int main() {
               << plan.plane_side << "x" << plan.plane_side
               << " ink || |grad|  (pattern_length=" << plan.pattern_length
               << ", N=" << N << ", dim=" << cfg.dim << ")\n";
+    // DualPlane / ResizeToFit always fit N by changing S. That is valid capacity
+    // math, but S < native 28 is a silent quality cliff (e.g. dim=8 -> S=11).
+    if (plan.plane_side > 0 && plan.plane_side < kImgSide) {
+        std::cout
+            << "*** WARNING: embed plane side S=" << plan.plane_side
+            << " < native " << kImgSide << "x" << kImgSide
+            << " — input is DOWN-SAMPLED (dim=" << cfg.dim
+            << ", N=" << N << ").\n"
+            << "***          Layout is legal (P <= N); accuracy will not match "
+               "the documented ~99% recipe\n"
+            << "***          (default dim=11, DualPlane S=32). Raise dim or "
+               "set embed_plane_side if that was unintentional.\n";
+    }
     std::cout << "Train aug:  rot +/-" << cfg.aug_rot_deg_max
               << " deg, scale [" << cfg.aug_scale_min << "," << cfg.aug_scale_max
               << "], shift +/-" << cfg.aug_shift_max << " px, "
