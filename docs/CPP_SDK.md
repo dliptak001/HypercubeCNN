@@ -53,7 +53,7 @@ Typical order: aug at native resolution → embed into N → `HCNN` train/infer.
 
 **Training helpers** (optional, thin loops):
 
-- **`HCNNTrainHelpers.h`** — classification metrics (`evaluate_classification`), `cosine_lr`, `HCNNDualCheckpoint` (best loss / best acc), and `HCNNFlatDataset` for contiguous TrainEpoch buffers.
+- **`HCNNTrainHelpers.h`** — classification metrics (`evaluate_classification`), regression metrics (`evaluate_regression`), `cosine_lr`, `HCNNDualCheckpoint` (best loss / best acc), `HCNNBestMetricCheckpoint` (minimize a scalar, e.g. MSE), and `HCNNFlatDataset` for classification TrainEpoch buffers.
 
 `HCNN` still does not own a learning-rate schedule; helpers only provide the math and bookkeeping the demos used to reimplement. Guide: [`docs/train_helpers.md`](train_helpers.md).
 

@@ -7,10 +7,12 @@ re-implementing CE / cosine / dual checkpoints.
 
 | Piece | API | Role |
 |-------|-----|------|
-| Metrics | `argmax`, `softmax_cross_entropy`, `evaluate_classification`, `HCNNClassEval` | CE + accuracy over a flat batch |
-| Flat dataset | `HCNNFlatDataset` | Contiguous inputs + int labels for `TrainEpoch` / `ForwardBatch` |
-| Cosine LR | `cosine_lr(lr_max, lr_min, epoch, num_epochs)` | Anneal from max → min over epochs |
+| Class metrics | `argmax`, `softmax_cross_entropy`, `evaluate_classification`, `HCNNClassEval` | CE + accuracy over a flat batch |
+| Reg metrics | `evaluate_regression`, `HCNNRegEval` | MSE + target variance + R^2 |
+| Flat dataset | `HCNNFlatDataset` | Contiguous inputs + int labels for classification |
+| Cosine LR | `cosine_lr(lr_max, lr_min, epoch, num_epochs)` | Anneal from max to min over epochs |
 | Dual checkpoint | `HCNNDualCheckpoint` | Best test loss and best test accuracy weight blobs |
+| Best metric | `HCNNBestMetricCheckpoint` | Best (lowest) scalar metric weight blob (e.g. test MSE) |
 
 Native hypercube workloads that already own their loop can ignore this header.
 
@@ -36,6 +38,19 @@ auto r = hcnn::evaluate_classification(net, ds);
 ```
 
 `softmax_cross_entropy` and `argmax` are available for custom eval loops.
+
+---
+
+## Regression metrics
+
+```cpp
+hcnn::HCNNRegEval r = hcnn::evaluate_regression(
+    net, flat_inputs, input_length, flat_targets, count, /*num_outputs=*/1);
+// r.mse, r.target_var, r.r2(), r.count
+```
+
+`flat_targets` is `count * num_outputs` row-major. Pass `num_outputs = 0` to use
+`net.GetNumOutputs()`.
 
 ---
 
@@ -86,6 +101,17 @@ Dual checkpoints are exact for **eval / export** on the no-BN stacks used in
 the MNIST demo. Restoring a snapshot and continuing training reuses stale
 optimizer moments unless you also reset them (e.g. `SetOptimizer`). BN nets
 need extra care until γ/β land in the weight blob.
+
+### Best-metric checkpoint (minimize)
+
+```cpp
+hcnn::HCNNBestMetricCheckpoint best;
+// each epoch after eval:
+if (best.observe(net, static_cast<float>(r.mse), epoch_1based)) { /* log */ }
+best.restore(net);  // after training
+```
+
+Use for regression best test MSE (see `examples/regression_timeseries.cpp`).
 
 ---
 

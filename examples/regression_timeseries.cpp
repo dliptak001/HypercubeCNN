@@ -1,120 +1,142 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 David Liptak
 //
-// Time-series regression example for HypercubeCNN.
+// Time-series regression teaching demo for HypercubeCNN.
 //
-// This example tests HCNN's regression mode against a target shape that
-// mimics HypercubeRC's actual readout workload: per-timestep prediction
-// of a continuous-valued signal from a high-dimensional reservoir-like
-// state vector.  Specifically, it learns to predict the next value of
-// sin(0.1*t) from a length-N synthetic state vector that captures the
-// input signal at N different leaky-integrator timescales.
+// Predicts sin(freq*(t+horizon)) from a length-N synthetic reservoir state
+// (N independent leaky tanh integrators of a shared sine drive).
 //
-// The target has variance that does NOT collapse with N: sin(0.1*(t+1))
-// is bounded in [-1, 1] with variance ~0.5 regardless of reservoir size.
-// This is what HypercubeRC's readout sees in BasicPrediction.cpp, so it
-// is the right shape to validate HCNN-as-readout against.  The question
-// is: can HCNN learn a non-trivially-shaped projection from reservoir
-// state to target?
+// Pipeline:
+//   synthetic reservoir states  ->  flat float buffers
+//   TrainEpochRegression + cosine_lr + evaluate_regression (MSE / R^2)
+//   HCNNBestMetricCheckpoint (best test MSE)
 //
-// What this example shows:
+// Developer knobs: DemoConfig below (same flavor as mnist_train.cpp).
+// Architecture scaffolding: examples/demo_arch.h
 //
-//   - Constructing a deep HCNN regression network: two conv+pool stages
-//     with TANH activation (the natural activation for time-series
-//     workloads, matching the reservoir's own nonlinearity)
-//   - Stacking conv+pool pairs for a 2-hop receptive field on the
-//     hypercube -- a more realistic template for HypercubeRC readout
-//   - Centering targets on the train mean -- standard regression
-//     hygiene that HypercubeRC's existing pipeline does via its
-//     feature_mean / feature_scale standardization
-//   - Using ForwardBatch in the evaluate path so per-epoch eval cost
-//     stays small as DIM grows
-//   - A self-contained synthetic reservoir (no HypercubeRC dependency)
-//     that produces state vectors with realistic structure
+// What this demo proves
+//   - Regression API (TaskType::Regression, MSE, TrainEpochRegression)
+//   - TANH + antipodal pool + FLATTEN at real scale (default DIM=12)
+//   - Train-loop hygiene: cosine LR, target centering, best-MSE restore
 //
-// How to scale this up:
-//
-//   The DIM constant below defaults to 12 for a good balance between
-//   showcasing real scale and finishing in a reasonable time.  Bump it
-//   to 14 or 16 to test how the architecture scales further.  At higher
-//   DIM, the second conv layer's parameter count grows as 256*(DIM-1),
-//   so per-epoch wall time increases significantly.  If convergence
-//   stalls at higher DIM, try more conv channels (capacity) or a third
-//   conv+pool pair (depth).
+// What this demo does NOT prove
+//   - Real HypercubeRC / ESN dynamics (reservoir here is uncoupled; no
+//     spectral radius, no recurrent mixing between vertices)
+//   - Hard multi-step forecasting or chaotic attractor skill
+//   - That near-perfect R^2 will transfer to production RC workloads
+//     (synthetic next-step sine is an easy target once capacity is enough)
 
 #include "HCNN.h"
+#include "HCNNTrainHelpers.h"
+#include "demo_arch.h"
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <iomanip>
 #include <iostream>
-#include <numbers>
 #include <random>
+#include <stdexcept>
+#include <string>
+#include <thread>
 #include <vector>
 
-// ---------------------------------------------------------------------------
-// Hypercube geometry
-// ---------------------------------------------------------------------------
-constexpr int DIM = 12;            // N = 4096 vertices.  Bump to 14, 16
-constexpr int N   = 1 << DIM;      // to test scaling.
+using hcnn_demo::ArchLayer;
+using hcnn_demo::ArchParamSummary;
+
+// =============================================================================
+// DEVELOPER CONFIG - edit knobs here; the rest of the file follows
+// =============================================================================
+//
+// Default: DIM=12 (N=4096), two conv+pool TANH stages, Adam, cosine LR
+// 0.002 -> 2e-4, 50 epochs. Bump dim / channels / depth to stress scale.
+// =============================================================================
+
+struct DemoConfig {
+    // ----- Hypercube / task -----
+    int dim = 12;                 // N = 2^dim vertices (state length)
+    int num_outputs = 1;          // scalar regression
+    int input_channels = 1;
+
+    // Default: Conv16 TANH -> MaxPool -> Conv16 TANH -> MaxPool -> FLATTEN
+    std::vector<ArchLayer> layers = {
+        ArchLayer::Conv(16, hcnn::Activation::TANH, /*bias=*/true, /*bn=*/false),
+        ArchLayer::Pool(hcnn::PoolType::MAX),
+        ArchLayer::Conv(16, hcnn::Activation::TANH, /*bias=*/true, /*bn=*/false),
+        ArchLayer::Pool(hcnn::PoolType::MAX),
+    };
+
+    // ----- Synthetic data -----
+    int n_warmup = 200;           // transient burn-in (discarded)
+    int n_train = 4096;
+    int n_test = 1024;
+    int horizon = 1;              // predict this many steps ahead
+    float input_freq = 0.1f;      // drive / target: sin(freq * t)
+    unsigned reservoir_seed = 77;
+
+    // ----- Init / optimizer -----
+    unsigned weight_seed = 42;
+    hcnn::OptimizerType optimizer = hcnn::OptimizerType::ADAM;
+
+    // ----- Schedule -----
+    int epochs = 50;
+    float lr_max = 0.002f;
+    float lr_min_ratio = 0.1f;    // lr_min = lr_max * ratio
+    int batch_size = 32;
+    float weight_decay = 0.0f;
+    float momentum = 0.0f;        // Adam; kept for TrainEpochRegression API
+
+    // ----- Logging -----
+    int log_first_epochs = 5;
+    int log_every = 10;
+    int n_sample_preds = 8;
+
+    float lr_min() const { return lr_max * lr_min_ratio; }
+    int N() const { return 1 << dim; }
+};
+
+static ArchParamSummary summarize_demo(const DemoConfig& cfg) {
+    if (cfg.epochs < 1 || cfg.batch_size < 1)
+        throw std::runtime_error("DemoConfig: epochs and batch_size must be >= 1");
+    if (cfg.n_train < 1 || cfg.n_test < 1)
+        throw std::runtime_error("DemoConfig: n_train and n_test must be >= 1");
+    if (cfg.lr_max <= 0.0f || cfg.lr_min_ratio < 0.0f || cfg.lr_min_ratio > 1.0f)
+        throw std::runtime_error("DemoConfig: invalid lr_max / lr_min_ratio");
+    return hcnn_demo::summarize_arch(cfg.dim, cfg.num_outputs, cfg.input_channels,
+                                     cfg.layers);
+}
 
 // ---------------------------------------------------------------------------
-// Synthetic reservoir
-//
-// Each of the N vertices is an independent leaky tanh integrator of a
-// shared input signal.  Per-vertex parameters (leak rate, input weight,
-// bias) are drawn once at startup and then held fixed across all data
-// generation.  This gives the state vector rich temporal structure --
-// different vertices capture the input at different effective timescales
-// and phase offsets -- without requiring the O(N^2) coupling that a real
-// reservoir would have.
-//
-// The trade-off: a real reservoir has cross-vertex coupling that produces
-// nonlinear interactions between input dimensions and richer dynamics.
-// This synthetic version is "uncoupled" -- each vertex's state is a
-// function of the (scalar) input history, not of other vertices.  For an
-// HCNN-readout test that's actually a useful simplification: the model
-// only needs to learn which timescale combinations predict the target,
-// not how to undo cross-vertex coupling.
+// Synthetic reservoir (no HypercubeRC dependency)
 // ---------------------------------------------------------------------------
+
 struct ReservoirParams {
-    std::vector<float> alpha;  ///< Per-vertex leak rate, length N.
-    std::vector<float> w_in;   ///< Per-vertex input weight, length N.
-    std::vector<float> bias;   ///< Per-vertex bias, length N.
+    std::vector<float> alpha;
+    std::vector<float> w_in;
+    std::vector<float> bias;
 };
 
 static ReservoirParams make_reservoir(int n_vertices, unsigned seed) {
     std::mt19937 rng(seed);
-    // Leak rates spread across a wide range so different vertices capture
-    // different timescales.  Slow vertices (small alpha) integrate over
-    // long history; fast vertices (large alpha) track recent values.
     std::uniform_real_distribution<float> alpha_dist(0.05f, 0.45f);
     std::uniform_real_distribution<float> w_dist(-1.0f, 1.0f);
     std::uniform_real_distribution<float> b_dist(-0.5f, 0.5f);
 
     ReservoirParams p;
-    p.alpha.resize(n_vertices);
-    p.w_in.resize(n_vertices);
-    p.bias.resize(n_vertices);
+    p.alpha.resize(static_cast<size_t>(n_vertices));
+    p.w_in.resize(static_cast<size_t>(n_vertices));
+    p.bias.resize(static_cast<size_t>(n_vertices));
     for (int i = 0; i < n_vertices; ++i) {
-        p.alpha[i] = alpha_dist(rng);
-        p.w_in[i]  = w_dist(rng);
-        p.bias[i]  = b_dist(rng);
+        p.alpha[static_cast<size_t>(i)] = alpha_dist(rng);
+        p.w_in[static_cast<size_t>(i)]  = w_dist(rng);
+        p.bias[static_cast<size_t>(i)]  = b_dist(rng);
     }
     return p;
 }
 
-// ---------------------------------------------------------------------------
-// Drive the reservoir for `n_warmup + n_collect` timesteps.  Discard the
-// first n_warmup steps as transient burn-in, then capture (state, target)
-// pairs for the remaining n_collect steps.  The target is the input value
-// `horizon` steps in the future -- predicting it requires the model to
-// extract phase information from the state vector.
-// ---------------------------------------------------------------------------
 struct TimeseriesSample {
-    std::vector<float> state;   ///< Reservoir state at this timestep, length N.
-    float target;               ///< Sine value `horizon` steps ahead.
+    std::vector<float> state;
+    float target = 0.0f;
 };
 
 static std::vector<TimeseriesSample>
@@ -122,27 +144,30 @@ drive_and_collect(const ReservoirParams& params,
                   int n_warmup, int n_collect,
                   float input_freq, int horizon) {
     const int n_vertices = static_cast<int>(params.alpha.size());
-    std::vector<float> state(n_vertices, 0.0f);
+    std::vector<float> state(static_cast<size_t>(n_vertices), 0.0f);
 
     auto step = [&](int t) {
         const float u = std::sin(input_freq * static_cast<float>(t));
         for (int i = 0; i < n_vertices; ++i) {
-            const float drive = std::tanh(u * params.w_in[i] + params.bias[i]);
-            state[i] = (1.0f - params.alpha[i]) * state[i]
-                     + params.alpha[i] * drive;
+            const float drive =
+                std::tanh(u * params.w_in[static_cast<size_t>(i)]
+                          + params.bias[static_cast<size_t>(i)]);
+            state[static_cast<size_t>(i)] =
+                (1.0f - params.alpha[static_cast<size_t>(i)])
+                    * state[static_cast<size_t>(i)]
+                + params.alpha[static_cast<size_t>(i)] * drive;
         }
     };
 
-    // Warmup -- drive but don't capture.
-    for (int t = 0; t < n_warmup; ++t) step(t);
+    for (int t = 0; t < n_warmup; ++t)
+        step(t);
 
-    // Collect.
     std::vector<TimeseriesSample> out;
-    out.reserve(n_collect);
+    out.reserve(static_cast<size_t>(n_collect));
     for (int t = n_warmup; t < n_warmup + n_collect; ++t) {
         step(t);
         TimeseriesSample s;
-        s.state = state;  // copy current state vector
+        s.state = state;
         s.target = std::sin(input_freq * static_cast<float>(t + horizon));
         out.push_back(std::move(s));
     }
@@ -150,252 +175,227 @@ drive_and_collect(const ReservoirParams& params,
 }
 
 // ---------------------------------------------------------------------------
-// Contiguous flat-buffer view over a sample list, suitable for HCNN's flat
-// batch/epoch APIs.  Built once and reused across epochs.
+// Flat regression buffers
 // ---------------------------------------------------------------------------
-struct FlatDataset {
-    std::vector<float> inputs;   // n * N contiguous floats
-    std::vector<float> targets;  // n contiguous floats
-    int count = 0;
 
-    explicit FlatDataset(const std::vector<TimeseriesSample>& ds) {
+struct FlatRegDataset {
+    std::vector<float> inputs;
+    std::vector<float> targets;
+    int count = 0;
+    int input_length = 0;
+
+    void from_samples(const std::vector<TimeseriesSample>& ds, int N) {
         count = static_cast<int>(ds.size());
-        inputs.resize(static_cast<size_t>(count) * N);
-        targets.resize(count);
+        input_length = N;
+        inputs.resize(static_cast<size_t>(count) * static_cast<size_t>(N));
+        targets.resize(static_cast<size_t>(count));
         for (int i = 0; i < count; ++i) {
-            std::copy(ds[i].state.begin(), ds[i].state.end(),
-                      inputs.begin() + i * N);
-            targets[i] = ds[i].target;
+            if (static_cast<int>(ds[static_cast<size_t>(i)].state.size()) != N)
+                throw std::runtime_error("FlatRegDataset: state length != N");
+            std::copy(ds[static_cast<size_t>(i)].state.begin(),
+                      ds[static_cast<size_t>(i)].state.end(),
+                      inputs.begin() + static_cast<size_t>(i) * static_cast<size_t>(N));
+            targets[static_cast<size_t>(i)] = ds[static_cast<size_t>(i)].target;
         }
     }
 };
 
-// ---------------------------------------------------------------------------
-// Dataset evaluation via HCNN's parallel ForwardBatch path.  Returns MSE
-// and target variance so the caller can compute R^2.
-// ---------------------------------------------------------------------------
-struct EvalResult {
-    double mse;
-    double target_var;
-    double r2() const {
-        return target_var > 0.0 ? 1.0 - mse / target_var : 0.0;
-    }
-};
-
-static EvalResult evaluate(hcnn::HCNN& net, const FlatDataset& ds) {
-    const int n = ds.count;
-
-    std::vector<float> preds(n);
-    net.ForwardBatch(ds.inputs.data(), N, n, preds.data());
-
-    double mse_sum = 0.0;
-    double tgt_sum = 0.0;
-    double tgt_sq  = 0.0;
-    for (int i = 0; i < n; ++i) {
-        double d = preds[i] - ds.targets[i];
-        mse_sum += d * d;
-        tgt_sum += ds.targets[i];
-        tgt_sq  += static_cast<double>(ds.targets[i]) * ds.targets[i];
-    }
-    const double dn = static_cast<double>(n);
-    EvalResult r;
-    r.mse        = mse_sum / dn;
-    r.target_var = tgt_sq / dn - (tgt_sum / dn) * (tgt_sum / dn);
-    return r;
+static void print_eval(const char* label, const hcnn::HCNNRegEval& r) {
+    std::cout << label << ": mse=" << std::scientific << std::setprecision(4)
+              << r.mse
+              << "  target_var=" << r.target_var
+              << "  R^2=" << std::fixed << std::setprecision(4) << r.r2()
+              << "  (1-R^2=" << (1.0 - r.r2()) << ")\n";
 }
 
+static bool should_log_epoch(int epoch_0, int epochs, const DemoConfig& cfg) {
+    const int e1 = epoch_0 + 1;
+    if (e1 <= cfg.log_first_epochs) return true;
+    if (e1 == epochs) return true;
+    if (cfg.log_every > 0 && (e1 % cfg.log_every) == 0) return true;
+    return false;
+}
+
+// ---------------------------------------------------------------------------
+// main
+// ---------------------------------------------------------------------------
+
 int main() {
-    std::cout << "HypercubeCNN Time-Series Regression Example\n";
-    std::cout << "===========================================\n";
-    std::cout << "Task: predict sin(0.1*(t+1)) from a length-" << N << " synthetic\n";
-    std::cout << "      reservoir state vector.  Each of the " << N << " vertices is an\n";
-    std::cout << "      independent leaky tanh integrator with its own leak rate,\n";
-    std::cout << "      input weight, and bias -- so the state vector encodes the\n";
-    std::cout << "      input signal at " << N << " different timescales.  The model\n";
-    std::cout << "      learns which combination of those timescales predicts the\n";
-    std::cout << "      next-step value.  No exact solution exists; this is a real\n";
-    std::cout << "      regression problem, not a sparse-recovery demo.\n\n";
+    const DemoConfig cfg{};
+    const int N = cfg.N();
+    const ArchParamSummary arch_sum = summarize_demo(cfg);
 
-    // ----- Hyperparameters -----
-    constexpr int    n_warmup    = 200;     // transient burn-in steps (discarded)
-    constexpr int    n_train     = 4096;
-    constexpr int    n_test      = 1024;
-    constexpr int    horizon     = 1;       // predict 1 step ahead
-    constexpr float  input_freq  = 0.1f;
-    constexpr unsigned reservoir_seed = 77;
+    std::cout << "HypercubeCNN Time-Series Regression\n";
+    std::cout << "===================================\n";
+    std::cout << "Task: predict sin(" << cfg.input_freq << "*(t+" << cfg.horizon
+              << ")) from length-" << N << " reservoir state (DIM=" << cfg.dim
+              << ")\n";
+    std::cout << "      Synthetic uncoupled leaky-tanh integrators; no HypercubeRC.\n";
+    std::cout << "\n";
+    std::cout << "Proves:    regression API, TANH+pool+FLATTEN scale, train hygiene\n";
+    std::cout << "Does not:  real RC dynamics, hard forecasting, production RC skill\n";
+    std::cout << "           (near-perfect R^2 on this sine task is expected smoke).\n";
 
-    // ----- Synthetic reservoir + data -----
-    auto reservoir = make_reservoir(N, reservoir_seed);
-    auto all_data  = drive_and_collect(reservoir, n_warmup, n_train + n_test,
-                                       input_freq, horizon);
+    auto reservoir = make_reservoir(N, cfg.reservoir_seed);
+    auto all_data = drive_and_collect(reservoir, cfg.n_warmup,
+                                      cfg.n_train + cfg.n_test,
+                                      cfg.input_freq, cfg.horizon);
 
-    // Split into train / test along the time axis (no shuffling -- this is
-    // a time series; train sees earlier steps, test sees later ones).
-    std::vector<TimeseriesSample> train_data(all_data.begin(),
-                                             all_data.begin() + n_train);
-    std::vector<TimeseriesSample> test_data(all_data.begin() + n_train,
-                                            all_data.end());
+    std::vector<TimeseriesSample> train_data(
+        all_data.begin(), all_data.begin() + cfg.n_train);
+    std::vector<TimeseriesSample> test_data(
+        all_data.begin() + cfg.n_train, all_data.end());
 
-    std::cout << "Reservoir: " << N << " independent leaky tanh integrators\n";
-    std::cout << "           leak rate ~ U[0.05, 0.45], w_in ~ U[-1, 1], bias ~ U[-0.5, 0.5]\n";
-    std::cout << "Input:     sin(" << input_freq << "*t)\n";
-    std::cout << "Target:    sin(" << input_freq << "*(t+" << horizon << "))\n";
-    std::cout << "Train:     " << train_data.size() << " timesteps (after "
-              << n_warmup << " warmup steps)\n";
-    std::cout << "Test:      " << test_data.size()  << " timesteps\n\n";
+    std::cout << "\nData:      train=" << train_data.size()
+              << "  test=" << test_data.size()
+              << "  (warmup=" << cfg.n_warmup << " discarded)\n";
+    std::cout << "Reservoir: N=" << N
+              << "  leak~U[0.05,0.45]  w_in~U[-1,1]  bias~U[-0.5,0.5]"
+              << "  seed=" << cfg.reservoir_seed << "\n";
+    std::cout << "Drive:     sin(" << cfg.input_freq << "*t)\n";
+    std::cout << "Threads:   " << std::thread::hardware_concurrency() << "\n";
 
-    // ----- Center the targets on the train mean -----
-    //
-    // Standard regression hygiene.  Sine targets are already centered to
-    // zero in expectation, but the empirical train-set mean over a finite
-    // window is small but nonzero, and Adam's moment estimates work much
-    // better when there is no systematic offset to correct in the first
-    // few epochs.
-    // Flatten into contiguous buffers for HCNN's flat API.
-    FlatDataset train_flat(train_data);
-    FlatDataset test_flat(test_data);
+    FlatRegDataset train_flat;
+    FlatRegDataset test_flat;
+    train_flat.from_samples(train_data, N);
+    test_flat.from_samples(test_data, N);
 
-    // Center targets on the train mean.
-    double train_target_mean_d = 0.0;
-    for (int i = 0; i < train_flat.count; ++i)
-        train_target_mean_d += train_flat.targets[i];
-    train_target_mean_d /= static_cast<double>(train_flat.count);
-    const float train_target_mean = static_cast<float>(train_target_mean_d);
-    for (auto& t : train_flat.targets) t -= train_target_mean;
-    for (auto& t : test_flat.targets)  t -= train_target_mean;
+    double train_mean_d = 0.0;
+    for (float t : train_flat.targets)
+        train_mean_d += t;
+    train_mean_d /= static_cast<double>(train_flat.count);
+    const float train_mean = static_cast<float>(train_mean_d);
+    for (float& t : train_flat.targets) t -= train_mean;
+    for (float& t : test_flat.targets)  t -= train_mean;
 
-    std::cout << "Target centering: subtracted train mean "
-              << std::scientific << std::setprecision(3) << train_target_mean
-              << std::fixed << "\n\n";
+    std::cout << "Centering: subtracted train target mean "
+              << std::scientific << std::setprecision(3) << train_mean
+              << std::defaultfloat << "\n";
 
-    // ----- Network -----
-    //
-    // Conv(16, TANH) -> MaxPool -> Conv(16, TANH) -> MaxPool -> FLATTEN -> Linear(16*N_final -> 1)
-    //
-    // Two conv+pool stages give the model a 2-hop receptive field on the
-    // hypercube.  The first conv sees DIM immediate neighbors per vertex;
-    // the second sees (DIM-1) neighbors in the pooled graph, so each
-    // output vertex integrates information from a 2-hop neighborhood in
-    // the original hypercube.  This is a more realistic template for
-    // HypercubeRC readout than a single-layer net.
-    //
-    // TANH is the natural activation for time-series workloads -- smooth,
-    // symmetric, bounded in (-1, 1).  Same nonlinearity used by the
-    // synthetic reservoir, by HypercubeRC's actual reservoir, and by every
-    // RNN-family model in the literature.
-    //
-    // Each antipodal max-pool pairs vertices on opposite sides of the
-    // hypercube and keeps the larger activation, reducing DIM by 1.
-    // Two pools take DIM -> DIM-2, N -> N/4.
-    //
-    // FLATTEN treats every (channel, vertex) activation as an independent
-    // feature and feeds them all into a linear projection
-    // (16 * N_final) -> 1.  Position-sensitive -- the readout learns
-    // per-vertex weights.
-    hcnn::HCNN net(DIM, /*num_outputs=*/1, /*input_channels=*/1,
+    hcnn::HCNN net(cfg.dim, cfg.num_outputs, cfg.input_channels,
                    hcnn::TaskType::Regression);
-    net.AddConv(16, hcnn::Activation::TANH, /*use_bias=*/true);
-    net.AddPool(hcnn::PoolType::MAX);
-    net.AddConv(16, hcnn::Activation::TANH, /*use_bias=*/true);
-    net.AddPool(hcnn::PoolType::MAX);
-    net.RandomizeWeights();
-    net.SetOptimizer(hcnn::OptimizerType::ADAM);
+    hcnn_demo::apply_arch(net, cfg.dim, cfg.num_outputs, cfg.input_channels,
+                          cfg.layers);
+    net.RandomizeWeights(/*scale=*/0.0f, cfg.weight_seed);
+    net.SetOptimizer(cfg.optimizer);
 
-    const int conv1_params = 1 * 16 * DIM + 16;        // 1->16 channels, K=DIM
-    const int conv2_params = 16 * 16 * (DIM - 1) + 16; // 16->16 channels, K=DIM-1
-    const int N_final = N / 4;                            // two pools: N -> N/4
-    const int readout_params = 16 * N_final * 1 + 1;     // FLATTEN: c_final * N_final * num_outputs + bias
-    const int total_params = conv1_params + conv2_params + readout_params;
-    std::cout << "Architecture: Conv(1->16, TANH, bias)    DIM=" << DIM << "\n";
-    std::cout << "              -> MaxPool (antipodal)      DIM=" << (DIM - 1) << "\n";
-    std::cout << "              -> Conv(16->16, TANH, bias) DIM=" << (DIM - 1) << "\n";
-    std::cout << "              -> MaxPool (antipodal)      DIM=" << (DIM - 2) << "\n";
-    std::cout << "              -> FLATTEN\n";
-    std::cout << "              -> Linear(" << (16 * N_final) << " -> 1)\n";
-    std::cout << "Parameters:   " << total_params
-              << " (" << conv1_params << " conv1 + " << conv2_params
-              << " conv2 + " << readout_params << " readout)\n\n";
+    if (net.GetStartN() != N) {
+        throw std::runtime_error("HCNN start N does not match DemoConfig::dim");
+    }
+    if (static_cast<long long>(net.GetWeightCount()) != arch_sum.total) {
+        throw std::runtime_error(
+            "param count mismatch: summary " + std::to_string(arch_sum.total)
+            + " vs GetWeightCount " + std::to_string(net.GetWeightCount()));
+    }
 
-    // ----- Training loop -----
-    constexpr int   epochs       = 50;
-    constexpr int   batch_size   = 32;
-    constexpr float lr_max       = 0.002f;
-    constexpr float lr_min       = 2e-4f;    // 10% of lr_max -- keeps learning
-    constexpr float momentum     = 0.0f;     // Adam handles adaptive scaling
-    constexpr float weight_decay = 0.0f;
+    std::cout << "Weight init seed: " << cfg.weight_seed << "\n";
+    hcnn_demo::print_arch(std::cout, cfg.dim, cfg.num_outputs, cfg.input_channels,
+                          cfg.layers, arch_sum);
 
-    EvalResult before = evaluate(net, test_flat);
-    std::cout << std::scientific << std::setprecision(3)
-              << "Initial test MSE: " << before.mse
-              << "   target_var: " << before.target_var
-              << "   1-R^2: " << (1.0 - before.r2()) << "\n\n";
+    const float lr_max = cfg.lr_max;
+    const float lr_min = cfg.lr_min();
+    std::cout << "=== train (lr_max=" << lr_max
+              << ", lr_min=" << lr_min
+              << ", batch=" << cfg.batch_size
+              << ", wd=" << cfg.weight_decay
+              << ", epochs=" << cfg.epochs << ") ===\n";
 
-    for (int e = 0; e < epochs; ++e) {
-        const float progress = static_cast<float>(e) / static_cast<float>(epochs);
-        const float lr = lr_min + 0.5f * (lr_max - lr_min) *
-                         (1.0f + std::cos(static_cast<float>(std::numbers::pi) * progress));
+    auto eval_ds = [&](const FlatRegDataset& ds) {
+        return hcnn::evaluate_regression(net, ds.inputs.data(), ds.input_length,
+                                         ds.targets.data(), ds.count,
+                                         cfg.num_outputs);
+    };
+
+    hcnn::HCNNRegEval before = eval_ds(test_flat);
+    print_eval("Initial test", before);
+    std::cout << "\n";
+
+    hcnn::HCNNBestMetricCheckpoint best_mse;
+    auto t_run0 = std::chrono::steady_clock::now();
+
+    for (int e = 0; e < cfg.epochs; ++e) {
+        const float lr = hcnn::cosine_lr(lr_max, lr_min, e, cfg.epochs);
 
         auto t0 = std::chrono::steady_clock::now();
-        net.TrainEpochRegression(train_flat.inputs.data(), N,
+        net.TrainEpochRegression(train_flat.inputs.data(), train_flat.input_length,
                                  train_flat.targets.data(),
-                                 train_flat.count, batch_size,
-                                 lr, momentum, weight_decay,
+                                 train_flat.count, cfg.batch_size,
+                                 lr, cfg.momentum, cfg.weight_decay,
                                  /*shuffle_seed=*/static_cast<unsigned>(e + 1));
+        auto t1 = std::chrono::steady_clock::now();
+        const double secs = std::chrono::duration<double>(t1 - t0).count();
+        const double samples_per_s =
+            (secs > 0.0) ? (static_cast<double>(train_flat.count) / secs) : 0.0;
 
-        if (e < 5 || (e + 1) % 10 == 0 || e == epochs - 1) {
-            EvalResult train_r = evaluate(net, train_flat);
-            EvalResult test_r  = evaluate(net, test_flat);
-            auto t1 = std::chrono::steady_clock::now();
-            const double secs = std::chrono::duration<double>(t1 - t0).count();
-            std::cout << "Epoch " << std::setw(3) << (e + 1) << "/" << epochs
+        // Always score test for best-MSE; log train+test on selected epochs.
+        hcnn::HCNNRegEval test_r = eval_ds(test_flat);
+        const bool is_best = best_mse.observe(
+            net, static_cast<float>(test_r.mse), e + 1);
+
+        if (should_log_epoch(e, cfg.epochs, cfg)) {
+            hcnn::HCNNRegEval train_r = eval_ds(train_flat);
+            std::cout << "Epoch " << (e + 1) << "/" << cfg.epochs
                       << std::fixed << std::setprecision(6)
-                      << "  lr=" << std::setw(8) << lr
-                      << std::scientific << std::setprecision(3)
-                      << "  train_mse=" << std::setw(10) << train_r.mse
-                      << "  test_mse="  << std::setw(10) << test_r.mse
-                      << "  1-R^2=" << std::setw(10) << (1.0 - test_r.r2())
-                      << std::fixed << std::setprecision(3)
-                      << "  (" << secs << "s)\n";
+                      << "  lr=" << lr
+                      << std::scientific << std::setprecision(4)
+                      << "  train_mse=" << train_r.mse
+                      << "  test_mse=" << test_r.mse
+                      << std::fixed << std::setprecision(4)
+                      << "  test_R^2=" << test_r.r2()
+                      << std::setprecision(2)
+                      << "  (" << secs << "s, " << samples_per_s << " samples/s)";
+            if (is_best) std::cout << "  [best-mse]";
+            std::cout << "\n";
         }
     }
 
-    EvalResult after = evaluate(net, test_flat);
-    const double reduction = 100.0 * (1.0 - after.mse / before.mse);
-    std::cout << "\nFinal test MSE:    "
-              << std::scientific << std::setprecision(3) << after.mse
-              << std::fixed << std::setprecision(2)
-              << "  (" << reduction << "% reduction)\n"
-              << std::scientific << std::setprecision(3)
-              << "Final test 1-R^2:  " << (1.0 - after.r2())
-              << "  (0 = perfect fit)\n";
+    auto t_run1 = std::chrono::steady_clock::now();
+    const double total_secs =
+        std::chrono::duration<double>(t_run1 - t_run0).count();
 
-    // ----- Sample predictions (evenly spaced across the test set) -----
-    //
-    // Spread 8 samples across the full test window so the output covers
-    // peaks, troughs, and zero crossings -- not just one phase of the sine.
-    constexpr int n_samples = 8;
-    const int stride = std::max(1, test_flat.count / n_samples);
-    std::cout << "\nSample predictions (test set, original scale):\n";
-    std::cout << "  step  target      pred       err\n";
-    std::vector<float> embedded(N);
-    std::vector<float> pred(1);
-    for (int s = 0; s < n_samples && s * stride < test_flat.count; ++s) {
+    std::cout << "\n--- Checkpoints ---\n";
+    if (best_mse.has_best()) {
+        std::cout << "Best test MSE: epoch " << best_mse.best_epoch()
+                  << "  mse=" << std::scientific << std::setprecision(4)
+                  << best_mse.best_metric() << "\n";
+        best_mse.restore(net);
+        print_eval("Restored best-mse", eval_ds(test_flat));
+    }
+
+    hcnn::HCNNRegEval after = eval_ds(test_flat);
+    const double reduction =
+        (before.mse > 0.0) ? 100.0 * (1.0 - after.mse / before.mse) : 0.0;
+    std::cout << "\n--- Final (best-mse weights) ---\n";
+    print_eval("Test", after);
+    std::cout << std::fixed << std::setprecision(2)
+              << "MSE reduction vs initial: " << reduction << "%\n"
+              << "Total train wall time: " << total_secs << "s\n";
+
+    const int n_show = std::min(cfg.n_sample_preds, test_flat.count);
+    const int stride = std::max(1, test_flat.count / std::max(1, n_show));
+    std::cout << "\nSample predictions (test, original scale):\n";
+    std::cout << "  step   target        pred          err\n";
+    std::vector<float> embedded(static_cast<size_t>(N));
+    std::vector<float> pred(static_cast<size_t>(cfg.num_outputs));
+    for (int s = 0; s < n_show; ++s) {
         const int i = s * stride;
-        net.Embed(test_flat.inputs.data() + i * N, N, embedded.data());
+        if (i >= test_flat.count) break;
+        net.Embed(test_flat.inputs.data()
+                      + static_cast<size_t>(i) * static_cast<size_t>(N),
+                  N, embedded.data());
         net.Forward(embedded.data(), pred.data());
-        const float target_orig = test_flat.targets[i] + train_target_mean;
-        const float pred_orig   = pred[0]              + train_target_mean;
-        const float err         = pred_orig - target_orig;
+        const float target_orig =
+            test_flat.targets[static_cast<size_t>(i)] + train_mean;
+        const float pred_orig = pred[0] + train_mean;
+        const float err = pred_orig - target_orig;
         std::cout << "  " << std::setw(4) << i
                   << std::fixed << std::setprecision(6)
-                  << "   " << std::showpos << std::setw(10) << target_orig
-                  << "  " << std::setw(10) << pred_orig
+                  << "  " << std::showpos << std::setw(11) << target_orig
+                  << "  " << std::setw(11) << pred_orig
                   << std::scientific << std::setprecision(3)
-                  << "  " << std::setw(10) << err
+                  << "  " << std::setw(11) << err
                   << std::noshowpos << "\n";
     }
 
-    // Defensive CI sanity check.  The target is not exactly expressible,
-    // so a non-trivial R^2 is what counts, not perfect fit.
     return (after.r2() > 0.9) ? 0 : 1;
 }

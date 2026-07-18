@@ -48,7 +48,7 @@ Test-set packing uses the **same** embed path with **no** augmentation (`HCNNSpa
 
 ## Architecture
 
-Topology and all other knobs live in **`DemoConfig`** near the top of `mnist_train.cpp` (layer list of `ArchLayer::Conv` / `ArchLayer::Pool`, plus seed, LR, epochs, aug, …). `apply_arch` builds the net; `print_arch` / `summarize_arch` derive the stack printout and parameter counts (checked against `HCNN::GetWeightCount`). `dim` also drives SpatialEmbed.
+Topology and all other knobs live in **`DemoConfig`** near the top of `mnist_train.cpp` (layer list of `ArchLayer::Conv` / `Pool`, plus seed, LR, epochs, aug, …). Architecture scaffolding is shared with the regression demo in **`examples/demo_arch.h`** (`hcnn_demo::apply_arch` / `print_arch` / `summarize_arch`); param counts are checked against `HCNN::GetWeightCount`. `dim` also drives SpatialEmbed.
 
 **Default** (`DemoConfig{}` field defaults):
 

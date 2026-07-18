@@ -133,6 +133,7 @@ if(HCNN_BUILD_EXAMPLES)
     )
     target_include_directories(MNISTTrain PRIVATE
         ${PROJECT_SOURCE_DIR}/dataloader
+        ${PROJECT_SOURCE_DIR}/examples
     )
 
     # RegressionTimeseries: time-series next-step prediction from a
@@ -141,6 +142,9 @@ if(HCNN_BUILD_EXAMPLES)
     # HypercubeRC integration (Phase B).  Self-contained -- no
     # external data, no HypercubeRC dependency.
     add_executable(RegressionTimeseries examples/regression_timeseries.cpp)
+    target_include_directories(RegressionTimeseries PRIVATE
+        ${PROJECT_SOURCE_DIR}/examples
+    )
 
     set(HCNN_EXE_TARGETS HypercubeCNN MNISTTrain CoreSmokeTest
                          RegressionTimeseries)

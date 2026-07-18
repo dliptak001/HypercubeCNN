@@ -15,8 +15,10 @@ namespace hcnn {
 //
 // Extracted from the shipped demos so teaching examples stay thin:
 //   - classification metrics (softmax CE, argmax, batch evaluate)
+//   - regression metrics (MSE, target variance, R^2)
 //   - cosine LR schedule with floor
 //   - dual weight checkpoints (best test loss + best test accuracy)
+//   - best-metric checkpoint (minimize a scalar, e.g. test MSE)
 //   - contiguous flat classification dataset for TrainEpoch / ForwardBatch
 //
 // Include this header only when you need these utilities.  HCNN itself does
@@ -24,7 +26,7 @@ namespace hcnn {
 // =============================================================================
 
 // -----------------------------------------------------------------------------
-// Metrics
+// Classification metrics
 // -----------------------------------------------------------------------------
 
 /// Index of the maximum value in `v[0 .. n)`.  Requires n > 0.
@@ -79,6 +81,35 @@ struct HCNNFlatDataset {
 /// Convenience overload for HCNNFlatDataset.
 [[nodiscard]] HCNNClassEval evaluate_classification(HCNN& net,
                                                     const HCNNFlatDataset& ds);
+
+// -----------------------------------------------------------------------------
+// Regression metrics
+// -----------------------------------------------------------------------------
+
+/// Aggregate regression metrics over a dataset (MSE + R^2 ingredients).
+struct HCNNRegEval {
+    double mse = 0.0;          ///< Mean squared error over all target scalars
+    double target_var = 0.0;   ///< Empirical variance of targets (population)
+    int    count = 0;          ///< Number of samples (not target dims)
+
+    /// Coefficient of determination. 1 = perfect; 0 = mean baseline; <0 worse.
+    [[nodiscard]] double r2() const {
+        return target_var > 0.0 ? 1.0 - mse / target_var : 0.0;
+    }
+};
+
+/**
+ * Run ForwardBatch then mean MSE over all output dimensions.
+ * `flat_inputs` is count * input_length; `flat_targets` is count * num_outputs
+ * (row-major).  When num_outputs is 0, uses net.GetNumOutputs().
+ */
+[[nodiscard]] HCNNRegEval evaluate_regression(
+    HCNN& net,
+    const float* flat_inputs,
+    int input_length,
+    const float* flat_targets,
+    int count,
+    int num_outputs = 0);
 
 // -----------------------------------------------------------------------------
 // Cosine LR schedule
@@ -162,6 +193,38 @@ private:
     float best_acc_ = -1.0f;
     float best_acc_loss_ = std::numeric_limits<float>::infinity();
     int   best_acc_epoch_ = 0;
+};
+
+// -----------------------------------------------------------------------------
+// Best-metric weight checkpoint (minimize)
+// -----------------------------------------------------------------------------
+
+/**
+ * Tracks a single weight snapshot for the best (lowest) scalar metric so far.
+ * Typical use: best test MSE in a regression loop.
+ *
+ * Same weights-only caveats as HCNNDualCheckpoint (no BN gamma/beta, no
+ * optimizer state).  Intended for eval/export restore, not mid-train resume
+ * without resetting the optimizer.
+ */
+class HCNNBestMetricCheckpoint {
+public:
+    /// Copy weights when metric improves (strictly lower).  epoch is 1-based.
+    /// @return true if this observation set a new best.
+    bool observe(const HCNN& net, float metric, int epoch);
+
+    [[nodiscard]] bool has_best() const { return !weights_.empty(); }
+    void restore(HCNN& net) const;
+
+    [[nodiscard]] float best_metric() const { return best_metric_; }
+    [[nodiscard]] int   best_epoch() const { return best_epoch_; }
+
+    void reset();
+
+private:
+    std::vector<float> weights_;
+    float best_metric_ = std::numeric_limits<float>::infinity();
+    int   best_epoch_ = 0;
 };
 
 } // namespace hcnn

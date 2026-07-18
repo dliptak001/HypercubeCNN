@@ -192,4 +192,80 @@ void HCNNDualCheckpoint::restore_best_acc(HCNN& net) const {
     net.SetWeights(best_acc_weights_);
 }
 
+// -----------------------------------------------------------------------------
+// Regression metrics
+// -----------------------------------------------------------------------------
+
+HCNNRegEval evaluate_regression(HCNN& net,
+                                const float* flat_inputs,
+                                int input_length,
+                                const float* flat_targets,
+                                int count,
+                                int num_outputs) {
+    if (flat_inputs == nullptr || flat_targets == nullptr)
+        throw std::invalid_argument(
+            "hcnn::evaluate_regression: null inputs or targets");
+    if (count <= 0)
+        throw std::invalid_argument(
+            "hcnn::evaluate_regression: count must be > 0");
+    if (input_length <= 0)
+        throw std::invalid_argument(
+            "hcnn::evaluate_regression: input_length must be > 0");
+
+    int K = num_outputs;
+    if (K <= 0)
+        K = net.GetNumOutputs();
+    if (K <= 0)
+        throw std::invalid_argument(
+            "hcnn::evaluate_regression: num_outputs must be > 0");
+
+    std::vector<float> preds(
+        static_cast<size_t>(count) * static_cast<size_t>(K));
+    net.ForwardBatch(flat_inputs, input_length, count, preds.data());
+
+    double mse_sum = 0.0;
+    double tgt_sum = 0.0;
+    double tgt_sq = 0.0;
+    const int n_scalars = count * K;
+    for (int i = 0; i < n_scalars; ++i) {
+        const double t = flat_targets[i];
+        const double d = static_cast<double>(preds[static_cast<size_t>(i)]) - t;
+        mse_sum += d * d;
+        tgt_sum += t;
+        tgt_sq += t * t;
+    }
+    const double dn = static_cast<double>(n_scalars);
+    HCNNRegEval r;
+    r.mse = mse_sum / dn;
+    r.target_var = tgt_sq / dn - (tgt_sum / dn) * (tgt_sum / dn);
+    r.count = count;
+    return r;
+}
+
+// -----------------------------------------------------------------------------
+// Best-metric checkpoint
+// -----------------------------------------------------------------------------
+
+void HCNNBestMetricCheckpoint::reset() {
+    weights_.clear();
+    best_metric_ = std::numeric_limits<float>::infinity();
+    best_epoch_ = 0;
+}
+
+bool HCNNBestMetricCheckpoint::observe(const HCNN& net, float metric, int epoch) {
+    if (!(metric < best_metric_))
+        return false;
+    best_metric_ = metric;
+    best_epoch_ = epoch;
+    weights_ = net.GetWeights();
+    return true;
+}
+
+void HCNNBestMetricCheckpoint::restore(HCNN& net) const {
+    if (weights_.empty())
+        throw std::logic_error(
+            "HCNNBestMetricCheckpoint::restore: no snapshot");
+    net.SetWeights(weights_);
+}
+
 } // namespace hcnn

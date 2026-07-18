@@ -33,9 +33,11 @@ using hcnn::HCNNSpatialEmbedMode;
 using hcnn::HCNNSpatialEmbedder;
 using hcnn::HCNNFlatDataset;
 using hcnn::HCNNDualCheckpoint;
+using hcnn::HCNNBestMetricCheckpoint;
 using hcnn::argmax;
 using hcnn::softmax_cross_entropy;
 using hcnn::evaluate_classification;
+using hcnn::evaluate_regression;
 using hcnn::cosine_lr;
 
 static int failures = 0;
@@ -1827,6 +1829,47 @@ static void test_train_helpers() {
         bool threw = false;
         try { empty.restore_best_loss(net); } catch (const std::exception&) { threw = true; }
         check(threw, "empty dual-ckpt restore_best_loss throws");
+    }
+
+    // --- Regression metrics + best-metric checkpoint ---
+    {
+        HCNN net(5, /*num_outputs=*/1, /*input_channels=*/1,
+                 TaskType::Regression);
+        net.AddConv(8, Activation::TANH);
+        net.RandomizeWeights(/*scale=*/0.0f, /*seed=*/3);
+        net.SetOptimizer(OptimizerType::ADAM);
+
+        const int N = net.GetStartN();
+        const int n = 16;
+        std::vector<float> inputs(static_cast<size_t>(n) * N, 0.1f);
+        std::vector<float> targets(static_cast<size_t>(n), 0.0f);
+        for (int i = 0; i < n; ++i)
+            targets[static_cast<size_t>(i)] = 0.25f * static_cast<float>(i % 4);
+
+        auto r0 = evaluate_regression(net, inputs.data(), N, targets.data(), n);
+        check(r0.count == n, "evaluate_regression count");
+        check(std::isfinite(r0.mse), "evaluate_regression mse finite");
+        check(std::isfinite(r0.target_var), "evaluate_regression var finite");
+
+        HCNNBestMetricCheckpoint best;
+        check(best.observe(net, static_cast<float>(r0.mse), 1),
+              "best-metric first observe is best");
+        check(best.has_best() && best.best_epoch() == 1, "best-metric has snapshot");
+
+        net.TrainEpochRegression(inputs.data(), N, targets.data(), n,
+                                 /*batch=*/8, /*lr=*/0.05f);
+        auto r1 = evaluate_regression(net, inputs.data(), N, targets.data(), n);
+        best.observe(net, static_cast<float>(r1.mse), 2);
+        check(best.has_best(), "best-metric still has snapshot after train");
+
+        best.restore(net);
+        auto r2 = evaluate_regression(net, inputs.data(), N, targets.data(), n);
+        check(std::isfinite(r2.mse), "best-metric restore: eval finite");
+
+        HCNNBestMetricCheckpoint empty;
+        bool threw = false;
+        try { empty.restore(net); } catch (const std::exception&) { threw = true; }
+        check(threw, "empty best-metric restore throws");
     }
 }
 
