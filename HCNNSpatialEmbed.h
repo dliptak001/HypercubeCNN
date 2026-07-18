@@ -1,0 +1,160 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 David Liptak
+
+#pragma once
+
+#include <cstddef>
+
+namespace hcnn {
+
+/**
+ * @brief How to map a 2D single-channel image onto a length-N hypercube input
+ *        with N = 2^dim and pattern length P ≤ N.
+ *
+ * This module is **optional convenience** for spatial → hypercube demos.
+ * It does not run the network. Pair with `HCNNSpatialAugmenter` (2D only)
+ * and `HCNN::TrainEpoch` / `Embed` as needed.
+ *
+ * Pipeline (typical):
+ * @code
+ *   HxW image  --(optional aug)-->  HxW
+ *              --HCNNSpatialEmbedder-->  length N = 2^dim
+ *              --HCNN (input_channels=1)-->
+ * @endcode
+ *
+ * Layout is always a flat `float[N]` for **one** input channel (vertex-major).
+ * Multi-channel networks are out of scope here; use separate embeds or custom
+ * packing if you need c_in > 1.
+ */
+enum class HCNNSpatialEmbedMode {
+    /**
+     * Write row-major H×W into out[0 .. H*W). Fill out[H*W .. N) with pad_value.
+     * Requires H*W ≤ N. No resize.
+     */
+    RowMajorPad,
+
+    /**
+     * Bilinear-resize the image to an S×S square with S = floor(sqrt(N)),
+     * write row-major into out[0 .. S*S), pad the rest with pad_value.
+     * Always fits: S*S ≤ N.
+     */
+    ResizeToFit,
+
+    /**
+     * Bilinear-resize to S×S with S = floor(sqrt(N/2)) so 2*S*S ≤ N.
+     * out[0 .. S*S)       = resized intensity (ink)
+     * out[S*S .. 2*S*S)   = per-image max-normalized |∇| of that plane, in
+     *                       approximately [-1, 1] (blank plane → pad_value)
+     * out[2*S*S .. N)     = pad_value
+     * Full occupancy when N is even and S is chosen as above (e.g. N=512→S=16,
+     * N=2048→S=32).
+     */
+    DualPlaneResize,
+};
+
+/**
+ * @brief Configuration for spatial → length-N embedding.
+ */
+struct HCNNSpatialEmbedConfig {
+    /// Hypercube dimension. Capacity N = 2^dim. Must be in [1, 30] for size_t safety.
+    int dim = 10;
+
+    HCNNSpatialEmbedMode mode = HCNNSpatialEmbedMode::RowMajorPad;
+
+    /// Fill value for unused vertices (and dual-plane blank gradients).
+    float pad_value = 0.0f;
+
+    /**
+     * Optional override for target square side S (ResizeToFit / DualPlaneResize).
+     * 0 = automatic: floor(sqrt(N)) or floor(sqrt(N/2)) respectively.
+     * If non-zero, must satisfy mode capacity (S*S ≤ N or 2*S*S ≤ N).
+     */
+    int plane_side = 0;
+
+    /// Vertex capacity N = 2^dim.
+    int capacity() const;
+
+    /// Validate dim / plane_side / mode; throws std::runtime_error if invalid.
+    void validate() const;
+};
+
+/**
+ * @brief Planned layout after embedding (for logging and buffer sizing).
+ */
+struct HCNNSpatialEmbedPlan {
+    int dim = 0;
+    int N = 0;              ///< capacity (= 2^dim), output length of embed()
+    int height_in = 0;
+    int width_in = 0;
+    int plane_side = 0;     ///< S used for resize modes; 0 for RowMajorPad
+    int pattern_length = 0; ///< occupied floats before pad (H*W, S*S, or 2*S*S)
+    HCNNSpatialEmbedMode mode = HCNNSpatialEmbedMode::RowMajorPad;
+};
+
+/**
+ * @class HCNNSpatialEmbedder
+ * @brief Maps 2D images into a length-N vertex buffer for HCNN (P ≤ N).
+ *
+ * Stateless aside from config. Thread-safe for concurrent embed() with a
+ * fixed config.
+ *
+ * @code
+ * hcnn::HCNNSpatialEmbedConfig cfg;
+ * cfg.dim = 11;
+ * cfg.mode = hcnn::HCNNSpatialEmbedMode::DualPlaneResize;
+ * cfg.pad_value = -1.0f;
+ *
+ * hcnn::HCNNSpatialEmbedder emb(cfg);
+ * std::vector<float> out(emb.capacity());
+ * emb.embed(img28, 28, 28, out.data());
+ * // out.size() == 2048; ready as input_length for TrainEpoch with DIM=11
+ * @endcode
+ */
+class HCNNSpatialEmbedder {
+public:
+    explicit HCNNSpatialEmbedder(HCNNSpatialEmbedConfig cfg = {});
+
+    void set_config(const HCNNSpatialEmbedConfig& cfg);
+    const HCNNSpatialEmbedConfig& config() const { return cfg_; }
+
+    /// N = 2^dim.
+    int capacity() const;
+
+    /**
+     * Describe the layout that embed() will produce for this input size.
+     * Throws if RowMajorPad and H*W > N, or if config is invalid.
+     */
+    HCNNSpatialEmbedPlan plan(int height, int width) const;
+
+    /**
+     * Embed one row-major image into out[0 .. N).
+     *
+     * @param in      Source, length height*width
+     * @param height  Rows (≥ 1)
+     * @param width   Cols (≥ 1)
+     * @param out     Destination, length capacity() (= N). Always fully written.
+     */
+    void embed(const float* in, int height, int width, float* out) const;
+
+    /**
+     * Embed `batch` images. Each sample is height*width; each output plane is N.
+     * out layout: sample-major, stride = N.
+     */
+    void embed_batch(const float* in, int batch, int height, int width,
+                     float* out) const;
+
+    // --- Static helpers (also useful without constructing an embedder) ---
+
+    /// Largest S with S*S ≤ N.
+    static int max_square_side(int N);
+
+    /// Largest S with 2*S*S ≤ N.
+    static int max_dual_plane_side(int N);
+
+private:
+    HCNNSpatialEmbedConfig cfg_;
+
+    int resolve_plane_side(int N) const;
+};
+
+} // namespace hcnn

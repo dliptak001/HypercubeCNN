@@ -30,6 +30,8 @@ After installation, the SDK contains:
     HCNNConv.h         -- Conv layer (re-exported via HCNNNetwork.h)
     HCNNPool.h         -- Pooling layer (re-exported via HCNNNetwork.h)
     HCNNReadout.h      -- Readout layer (re-exported via HCNNNetwork.h)
+    HCNNSpatialAug.h   -- Optional 2D spatial augmentation (preprocess; not DIM-coupled)
+    HCNNSpatialEmbed.h -- Optional 2D → length-N embed (P ≤ N = 2^dim)
     ThreadPool.h       -- Internal threading (re-exported via HCNNNetwork.h)
   lib/
     libHypercubeCNNCore.a
@@ -40,6 +42,13 @@ After installation, the SDK contains:
 ```
 
 Consumers include `"HCNN.h"` and link against `HypercubeCNNCore`. `HCNN` is the canonical front door for the entire pipeline; the underlying layer headers are re-exported transitively for power users who need direct weight access or custom training loops.
+
+**Spatial preprocess** (optional, image demos):
+
+- **`HCNNSpatialAug.h`** — 2D geometric aug on any \(H\times W\) (DIM-agnostic): rotate / scale / shift + noise.
+- **`HCNNSpatialEmbed.h`** — map a 2D image into a length-\(N=2^{\mathrm{dim}}\) buffer with pattern length \(P\le N\): row-major pad, resize-to-fit square, or dual-plane (ink ‖ \|∇\|).
+
+Typical order: aug at native resolution → embed into \(N\) → `HCNN` train/infer. Full guide: [`docs/spatial_preprocess.md`](spatial_preprocess.md).
 
 All public symbols live in the `hcnn::` namespace (`hcnn::HCNN`, `hcnn::PoolType`, etc.).
 

@@ -71,6 +71,8 @@ set(HCNN_PUBLIC_HEADERS
     HCNNConv.h
     HCNNPool.h
     HCNNReadout.h
+    HCNNSpatialAug.h
+    HCNNSpatialEmbed.h
     ThreadPool.h
 )
 
@@ -80,6 +82,8 @@ add_library(HypercubeCNNCore STATIC
     HCNNNetwork.cpp
     HCNNReadout.cpp
     HCNN.cpp
+    HCNNSpatialAug.cpp
+    HCNNSpatialEmbed.cpp
 )
 add_library(HypercubeCNN::HypercubeCNNCore ALIAS HypercubeCNNCore)
 

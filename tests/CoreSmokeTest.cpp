@@ -8,6 +8,8 @@
 // readout-type variations.
 
 #include "HCNN.h"
+#include "HCNNSpatialAug.h"
+#include "HCNNSpatialEmbed.h"
 
 #include <algorithm>
 #include <cmath>
@@ -23,6 +25,11 @@ using hcnn::TaskType;
 using hcnn::LossType;
 using hcnn::Activation;
 using hcnn::OptimizerType;
+using hcnn::HCNNSpatialAugConfig;
+using hcnn::HCNNSpatialAugmenter;
+using hcnn::HCNNSpatialEmbedConfig;
+using hcnn::HCNNSpatialEmbedMode;
+using hcnn::HCNNSpatialEmbedder;
 
 static int failures = 0;
 
@@ -1219,6 +1226,353 @@ static void test_regression_invalid_construction() {
 }
 
 // ---------------------------------------------------------------------------
+//  Spatial augmentation (2D preprocess; independent of hypercube DIM)
+// ---------------------------------------------------------------------------
+
+static void test_spatial_aug() {
+    std::cout << "\n[Spatial augmentation]\n";
+
+    // Identity / disabled: pure copy, any size
+    {
+        const int H = 7, W = 5, n = H * W;
+        std::vector<float> src(n), dst(n, 99.0f);
+        for (int i = 0; i < n; ++i) src[i] = 0.01f * static_cast<float>(i);
+
+        HCNNSpatialAugmenter aug(HCNNSpatialAugConfig::None());
+        std::mt19937 rng(1);
+        check(aug.config().is_identity(), "None() config is_identity");
+        aug.apply(src.data(), dst.data(), H, W, rng);
+        bool same = true;
+        for (int i = 0; i < n; ++i) if (dst[i] != src[i]) same = false;
+        check(same, "disabled aug is memcpy for non-square HxW");
+    }
+
+    // Default config (all ops off) is identity even when enabled
+    {
+        HCNNSpatialAugConfig cfg; // defaults
+        check(cfg.is_identity(), "default config is_identity");
+        HCNNSpatialAugmenter aug(cfg);
+        const int H = 4, W = 4, n = H * W;
+        std::vector<float> src(n, 0.5f), dst(n, -9.0f);
+        std::mt19937 rng(2);
+        aug.apply(src.data(), dst.data(), H, W, rng);
+        bool same = true;
+        for (int i = 0; i < n; ++i) if (dst[i] != src[i]) same = false;
+        check(same, "default enabled config with zero ops copies");
+    }
+
+    // Determinism: same seed => same geometric warp
+    {
+        HCNNSpatialAugConfig cfg;
+        cfg.rot_deg_max = 15.0f;
+        cfg.scale_min = 0.85f;
+        cfg.scale_max = 1.15f;
+        cfg.shift_max = 2;
+        cfg.noise_sigma = 0.0f;
+        cfg.border_value = -1.0f;
+        HCNNSpatialAugmenter aug(cfg);
+
+        const int H = 16, W = 16, n = H * W;
+        std::vector<float> src(n);
+        for (int i = 0; i < n; ++i) src[i] = std::sin(0.1f * static_cast<float>(i));
+
+        std::vector<float> a(n), b(n);
+        {
+            std::mt19937 rng(12345);
+            aug.apply(src.data(), a.data(), H, W, rng);
+        }
+        {
+            std::mt19937 rng(12345);
+            aug.apply(src.data(), b.data(), H, W, rng);
+        }
+        bool same = true;
+        for (int i = 0; i < n; ++i) if (a[i] != b[i]) same = false;
+        check(same, "fixed seed reproduces geometric aug");
+
+        // Different seed should almost always differ
+        std::vector<float> c(n);
+        {
+            std::mt19937 rng(99999);
+            aug.apply(src.data(), c.data(), H, W, rng);
+        }
+        bool differ = false;
+        for (int i = 0; i < n; ++i) if (c[i] != a[i]) { differ = true; break; }
+        check(differ, "different seed changes geometric aug");
+    }
+
+    // Pure shift: content moves; OOB is border_value
+    {
+        HCNNSpatialAugConfig cfg;
+        cfg.shift_max = 0; // we force shift via... can't force exact shift with random.
+        // Use rot/scale off and shift_max=1, check finiteness + border appears
+        cfg.shift_max = 1;
+        cfg.border_value = -0.5f;
+        HCNNSpatialAugmenter aug(cfg);
+        const int H = 8, W = 8, n = H * W;
+        std::vector<float> src(n, 1.0f), dst(n);
+        std::mt19937 rng(7);
+        // Several draws so we likely get nonzero shift
+        bool saw_border = false;
+        bool all_finite = true;
+        for (int trial = 0; trial < 32; ++trial) {
+            aug.apply(src.data(), dst.data(), H, W, rng);
+            for (float v : dst) {
+                if (!std::isfinite(v)) all_finite = false;
+                if (v == cfg.border_value) saw_border = true;
+            }
+        }
+        check(all_finite, "shift aug produces finite values");
+        check(saw_border, "shift aug can introduce border_value at edges");
+    }
+
+    // Noise only: in-place allowed; clips to range
+    {
+        HCNNSpatialAugConfig cfg;
+        cfg.noise_sigma = 0.5f;
+        cfg.value_min = -1.0f;
+        cfg.value_max = 1.0f;
+        HCNNSpatialAugmenter aug(cfg);
+        const int n = 64;
+        std::vector<float> buf(n, 0.0f);
+        std::mt19937 rng(3);
+        aug.apply(buf.data(), buf.data(), 8, 8, rng);
+        bool in_range = true;
+        bool changed = false;
+        for (float v : buf) {
+            if (v < -1.0f || v > 1.0f) in_range = false;
+            if (v != 0.0f) changed = true;
+        }
+        check(in_range, "noise aug clips to [value_min, value_max]");
+        check(changed, "noise aug perturbs values");
+    }
+
+    // Batch path
+    {
+        HCNNSpatialAugConfig cfg;
+        cfg.rot_deg_max = 5.0f;
+        cfg.border_value = 0.0f;
+        HCNNSpatialAugmenter aug(cfg);
+        const int B = 3, H = 5, W = 6, plane = H * W;
+        std::vector<float> src(B * plane, 0.25f), dst(B * plane, 0.0f);
+        std::mt19937 rng(11);
+        aug.apply_batch(src.data(), dst.data(), B, H, W, rng);
+        bool finite = true;
+        for (float v : dst) if (!std::isfinite(v)) finite = false;
+        check(finite, "apply_batch produces finite values");
+    }
+
+    // Invalid sizes throw
+    {
+        HCNNSpatialAugmenter aug;
+        std::mt19937 rng(0);
+        float x = 0.0f;
+        bool threw = false;
+        try { aug.apply(&x, &x, 0, 4, rng); }
+        catch (const std::runtime_error&) { threw = true; }
+        check(threw, "apply rejects height < 1");
+    }
+
+    // Geometric with in == out throws
+    {
+        HCNNSpatialAugConfig cfg;
+        cfg.rot_deg_max = 10.0f;
+        HCNNSpatialAugmenter aug(cfg);
+        std::vector<float> buf(16, 1.0f);
+        std::mt19937 rng(0);
+        bool threw = false;
+        try { aug.apply(buf.data(), buf.data(), 4, 4, rng); }
+        catch (const std::runtime_error&) { threw = true; }
+        check(threw, "geometric aug rejects in == out");
+    }
+}
+
+// ---------------------------------------------------------------------------
+//  Spatial embed (2D → length N = 2^dim, P ≤ N)
+// ---------------------------------------------------------------------------
+
+static void test_spatial_embed() {
+    std::cout << "\n[Spatial embed]\n";
+
+    check(HCNNSpatialEmbedder::max_square_side(2048) == 45
+          || HCNNSpatialEmbedder::max_square_side(2048) * HCNNSpatialEmbedder::max_square_side(2048) <= 2048,
+          "max_square_side(2048) is valid");
+    check(HCNNSpatialEmbedder::max_dual_plane_side(2048) == 32,
+          "max_dual_plane_side(2048) == 32");
+    check(HCNNSpatialEmbedder::max_dual_plane_side(512) == 16,
+          "max_dual_plane_side(512) == 16");
+    check(HCNNSpatialEmbedder::max_square_side(512) == 22,
+          "max_square_side(512) == 22");
+
+    // RowMajorPad: copy + pad
+    {
+        HCNNSpatialEmbedConfig cfg;
+        cfg.dim = 6;  // N=64
+        cfg.mode = HCNNSpatialEmbedMode::RowMajorPad;
+        cfg.pad_value = -1.0f;
+        HCNNSpatialEmbedder emb(cfg);
+        check(emb.capacity() == 64, "capacity 2^6 == 64");
+
+        const int H = 4, W = 5;  // 20 <= 64
+        std::vector<float> src(H * W);
+        for (int i = 0; i < H * W; ++i) src[i] = 0.1f * static_cast<float>(i);
+        std::vector<float> out(emb.capacity(), 99.0f);
+        emb.embed(src.data(), H, W, out.data());
+
+        bool head_ok = true;
+        for (int i = 0; i < H * W; ++i) if (out[i] != src[i]) head_ok = false;
+        bool tail_ok = true;
+        for (int i = H * W; i < 64; ++i) if (out[i] != -1.0f) tail_ok = false;
+        check(head_ok, "RowMajorPad copies H*W prefix");
+        check(tail_ok, "RowMajorPad pads with pad_value");
+
+        auto plan = emb.plan(H, W);
+        check(plan.pattern_length == H * W && plan.N == 64,
+              "RowMajorPad plan pattern_length and N");
+    }
+
+    // RowMajorPad rejects H*W > N
+    {
+        HCNNSpatialEmbedConfig cfg;
+        cfg.dim = 5;  // N=32
+        cfg.mode = HCNNSpatialEmbedMode::RowMajorPad;
+        HCNNSpatialEmbedder emb(cfg);
+        std::vector<float> src(64, 0.0f), out(32);
+        bool threw = false;
+        try { emb.embed(src.data(), 8, 8, out.data()); }
+        catch (const std::runtime_error&) { threw = true; }
+        check(threw, "RowMajorPad rejects H*W > N");
+    }
+
+    // ResizeToFit: always fills S*S, pads rest
+    {
+        HCNNSpatialEmbedConfig cfg;
+        cfg.dim = 9;  // N=512, S=22
+        cfg.mode = HCNNSpatialEmbedMode::ResizeToFit;
+        cfg.pad_value = 0.0f;
+        HCNNSpatialEmbedder emb(cfg);
+        auto plan = emb.plan(28, 28);
+        check(plan.plane_side == 22, "ResizeToFit dim9 plane_side == 22");
+        check(plan.pattern_length == 22 * 22, "ResizeToFit pattern_length");
+
+        std::vector<float> src(28 * 28, 0.5f), out(emb.capacity(), -9.0f);
+        emb.embed(src.data(), 28, 28, out.data());
+        bool finite = true;
+        for (float v : out) if (!std::isfinite(v)) finite = false;
+        check(finite, "ResizeToFit produces finite values");
+        bool pad_ok = true;
+        for (int i = plan.pattern_length; i < plan.N; ++i)
+            if (out[i] != 0.0f) pad_ok = false;
+        check(pad_ok, "ResizeToFit pads unused vertices");
+    }
+
+    // DualPlaneResize: full occupancy at dim 11
+    {
+        HCNNSpatialEmbedConfig cfg;
+        cfg.dim = 11;
+        cfg.mode = HCNNSpatialEmbedMode::DualPlaneResize;
+        cfg.pad_value = -1.0f;
+        HCNNSpatialEmbedder emb(cfg);
+        auto plan = emb.plan(28, 28);
+        check(plan.plane_side == 32, "DualPlane dim11 plane_side == 32");
+        check(plan.pattern_length == 2048 && plan.N == 2048,
+              "DualPlane dim11 full occupancy");
+
+        // Non-constant image so |grad| is not blank
+        std::vector<float> src(28 * 28);
+        for (int y = 0; y < 28; ++y)
+            for (int x = 0; x < 28; ++x)
+                src[y * 28 + x] = (x > 14) ? 1.0f : -1.0f;
+
+        std::vector<float> out(emb.capacity());
+        emb.embed(src.data(), 28, 28, out.data());
+        bool finite = true;
+        for (float v : out) if (!std::isfinite(v)) finite = false;
+        check(finite, "DualPlane produces finite values");
+
+        // Grad plane should not be all pad for a step edge
+        bool grad_alive = false;
+        for (int i = 1024; i < 2048; ++i) {
+            if (out[i] != cfg.pad_value) { grad_alive = true; break; }
+        }
+        check(grad_alive, "DualPlane |grad| plane has structure");
+    }
+
+    // DualPlane dim 9: 16x16 * 2 = 512
+    {
+        HCNNSpatialEmbedConfig cfg;
+        cfg.dim = 9;
+        cfg.mode = HCNNSpatialEmbedMode::DualPlaneResize;
+        HCNNSpatialEmbedder emb(cfg);
+        auto plan = emb.plan(28, 28);
+        check(plan.plane_side == 16 && plan.pattern_length == 512,
+              "DualPlane dim9 is 16x16 dual full fill");
+    }
+
+    // Explicit plane_side override
+    {
+        HCNNSpatialEmbedConfig cfg;
+        cfg.dim = 11;
+        cfg.mode = HCNNSpatialEmbedMode::DualPlaneResize;
+        cfg.plane_side = 16;  // smaller than max 32
+        HCNNSpatialEmbedder emb(cfg);
+        auto plan = emb.plan(28, 28);
+        check(plan.plane_side == 16 && plan.pattern_length == 512,
+              "plane_side override respected");
+        std::vector<float> src(28 * 28, 0.0f), out(emb.capacity(), 1.0f);
+        emb.embed(src.data(), 28, 28, out.data());
+        // tail N - 512 should be pad (default 0)
+        bool tail = true;
+        for (int i = 512; i < 2048; ++i) if (out[i] != 0.0f) tail = false;
+        check(tail, "smaller dual plane pads remainder of N");
+    }
+
+    // Invalid plane_side rejected
+    {
+        HCNNSpatialEmbedConfig cfg;
+        cfg.dim = 8;  // N=256
+        cfg.mode = HCNNSpatialEmbedMode::DualPlaneResize;
+        cfg.plane_side = 20;  // 2*400=800 > 256
+        bool threw = false;
+        try { HCNNSpatialEmbedder emb(cfg); (void)emb; }
+        catch (const std::runtime_error&) { threw = true; }
+        check(threw, "oversized plane_side rejected at construct");
+    }
+
+    // Batch embed
+    {
+        HCNNSpatialEmbedConfig cfg;
+        cfg.dim = 6;
+        cfg.mode = HCNNSpatialEmbedMode::RowMajorPad;
+        HCNNSpatialEmbedder emb(cfg);
+        const int B = 2, H = 3, W = 3, N = 64;
+        std::vector<float> src(B * H * W, 0.25f), out(B * N, -3.0f);
+        emb.embed_batch(src.data(), B, H, W, out.data());
+        check(out[0] == 0.25f && out[N] == 0.25f, "embed_batch writes both samples");
+        check(out[H * W] == 0.0f, "embed_batch pads each sample");
+    }
+
+    // Works with HCNN Embed path (length N)
+    {
+        HCNNSpatialEmbedConfig cfg;
+        cfg.dim = 6;
+        cfg.mode = HCNNSpatialEmbedMode::ResizeToFit;
+        HCNNSpatialEmbedder emb(cfg);
+        std::vector<float> src(10 * 10, 0.1f), packed(emb.capacity());
+        emb.embed(src.data(), 10, 10, packed.data());
+
+        HCNN net(6, 2);
+        net.AddConv(4);
+        net.RandomizeWeights(0.0f, 1);
+        std::vector<float> logits(2);
+        // TrainEpoch-style: input_length = N
+        net.TrainStep(packed.data(), emb.capacity(), 0, 0.01f, 0.9f, 0.0f);
+        net.ForwardBatch(packed.data(), emb.capacity(), 1, logits.data());
+        check(std::isfinite(logits[0]) && std::isfinite(logits[1]),
+              "embedded vector trains/infers on HCNN");
+    }
+}
+
+// ---------------------------------------------------------------------------
 //  main
 // ---------------------------------------------------------------------------
 
@@ -1249,6 +1603,8 @@ int main() {
     test_forward_batch_regression();
     test_regression_classification_cross_misuse();
     test_regression_invalid_construction();
+    test_spatial_aug();
+    test_spatial_embed();
 
     std::cout << "\n===================\n";
     if (failures == 0) {
