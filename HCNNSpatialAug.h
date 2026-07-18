@@ -22,6 +22,16 @@ namespace hcnn {
  *
  * Defaults are identity (no augmentation). `None()` sets `enabled = false`
  * (master off; apply is a pure copy and draws no RNG).
+ *
+ * TODO(aug-next): planned extensions for the MNIST plateau (deferred; pull
+ * other threads first). Keep aug-then-embed; do not aug on packed vertices.
+ *   1) Shear in the existing single affine warp (start shear_x ~ U[-0.15,0.15],
+ *      shear_y mild or off) — best cheap ROI vs FLATTEN slant memorization.
+ *   2) Mild elastic (Simard-style smooth displacement, small amplitude so
+ *      DualPlane |grad| stays sane) — higher variance; multi-seed to claim.
+ * Expected buy: ~0.02-0.1 pp best-acc, not a free jump to 99.5%. Sequence:
+ * shear A/B on seed 398479293, then elastic on top, then 3-seed mean.
+ * See examples/mnist_train.md "Deferred TODO".
  */
 struct HCNNSpatialAugConfig {
     /// Uniform rotation in degrees over [-|rot_deg_max|, +|rot_deg_max|]. 0 = off.

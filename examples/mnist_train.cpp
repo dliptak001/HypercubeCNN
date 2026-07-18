@@ -82,7 +82,7 @@ struct DemoConfig {
     std::vector<ArchLayer> layers = {
         // Documented ~99.3% recipe: three 16-wide RELU convs, no pool
         ArchLayer::Conv(16, hcnn::Activation::RELU, /*bias=*/true, /*bn=*/false),
-        ArchLayer::Conv(16, hcnn::Activation::RELU, /*bias=*/true, /*bn=*/false),
+        ArchLayer::Conv(16, hcnn::Activation::TANH, /*bias=*/true, /*bn=*/false),
         ArchLayer::Conv(16, hcnn::Activation::RELU, /*bias=*/true, /*bn=*/false),
         // Examples:
         // ArchLayer::Conv(32),
@@ -96,7 +96,7 @@ struct DemoConfig {
     hcnn::OptimizerType optimizer = hcnn::OptimizerType::ADAM;
 
     // ----- Schedule -----
-    int   epochs          = 60;
+    int   epochs          = 100;
     float lr_max          = 0.001f;   // cosine peak (epoch 0)
     float lr_min_ratio    = 0.1f;     // lr_min = lr_max * ratio (floor)
     int   batch_size      = 256;
@@ -104,6 +104,8 @@ struct DemoConfig {
     float momentum        = 0.9f;     // passed to TrainEpoch (Adam ignores)
 
     // ----- Train-time spatial aug (test path uses None()) -----
+    // Current: rot/scale/shift + noise. Next level (shear, then mild elastic)
+    // is deferred — see TODO(aug-next) in HCNNSpatialAug.h and mnist_train.md.
     float aug_rot_deg_max = 12.0f;    // uniform +/-deg about center
     float aug_scale_min   = 0.9f;
     float aug_scale_max   = 1.1f;

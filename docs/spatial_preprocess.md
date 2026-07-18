@@ -9,6 +9,10 @@ each other beyond a recommended pipeline order.
 | Spatial aug | `HCNNSpatialAug.h` | Stochastic 2D geometry / noise on any **H×W** grid | No |
 | Spatial embed | `HCNNSpatialEmbed.h` | Layout a 2D image into length **N = 2^dim** with **pattern length P ≤ N** | Yes (`dim`) |
 
+**Deferred (`TODO(aug-next)` in `HCNNSpatialAug.h`):** shear in the affine warp,
+then mild elastic — wanted for the MNIST plateau after other threads; see
+`examples/mnist_train.md` “Deferred TODO”.
+
 Native hypercube data (already length ≤ N) can ignore both modules and use
 `HCNN::Embed` / `TrainEpoch` directly.
 

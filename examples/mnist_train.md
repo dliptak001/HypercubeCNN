@@ -221,7 +221,27 @@ Fast start (~97% after epoch 1), then a long climb under cosine decay. Best acc 
 - 2-layer MLP ~98%
 - Spatial 2D CNNs typically 99.0–99.5%+
 
-HypercubeCNN at **99.31% best-acc** (seed 398479293; best-loss CE **0.021**) sits in **light spatial-CNN territory** without a grid prior (row-major pack + Hamming kernels + FLATTEN). Remaining errors ~69/10k at best-acc. Optional next levers: more weight seeds for a mean claim, elastic/shear aug, or locality-aware packing — not antipodal pooling on this demo pack.
+HypercubeCNN at **99.31% best-acc** (seed 398479293; best-loss CE **0.021**) sits in **light spatial-CNN territory** without a grid prior (row-major pack + Hamming kernels + FLATTEN). Remaining errors ~69/10k at best-acc. Optional next levers: more weight seeds for a mean claim, stronger geometry aug (below), or locality-aware packing — not antipodal pooling on this demo pack.
+
+### Deferred TODO — next-level spatial aug
+
+**Wanted, not next.** Other threads first. Tracked as `TODO(aug-next)` in
+`HCNNSpatialAug.h`.
+
+Current train aug is mild affine only: rot ±12°, scale [0.9, 1.1], shift ±2,
+noise σ=0.03. FLATTEN is still position-hungry; remaining errors look more like
+slant / local stroke than “needs more pure rotation.”
+
+| Priority | Extension | Where | Expected buy |
+|----------|-----------|--------|--------------|
+| 1 | **Shear** in the existing single inverse affine warp (start shear_x ~ U[−0.15, +0.15]; shear_y mild or off) | Core `HCNNSpatialAug` | ~+0.02–0.08 pp; cheap ROI |
+| 2 | **Mild elastic** (smooth displacement field, small amplitude so DualPlane \|grad\| stays sane) | Core `HCNNSpatialAug` | ~+0.02–0.10 pp; higher variance |
+
+**Not the upgrade path:** cranking rot/scale only, heavy noise, cutout, mixup, or antipodal pool.
+
+**When pulled:** shear A/B on seed `398479293` (same 60-ep recipe) → add mild
+elastic only if shear stalls → re-run three weight seeds before claiming a
+mean. Keep **aug-then-embed**. Do not expect a free jump to 99.5%.
 
 ## Significance
 
