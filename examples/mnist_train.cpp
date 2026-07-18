@@ -436,8 +436,12 @@ int main() {
 
     auto src_dir = std::filesystem::path(__FILE__).parent_path().parent_path();
     auto data_dir = src_dir / "data";
+    // Prefer native separators for logs. operator<< on path quotes and can mix
+    // '/' from __FILE__ with '\\' from path append on Windows (ugly mojibake-ish paths).
+    const std::string data_dir_str =
+        std::filesystem::absolute(data_dir).lexically_normal().make_preferred().string();
 
-    std::cout << "Loading MNIST from " << data_dir << "...\n";
+    std::cout << "Loading MNIST from " << data_dir_str << "...\n";
     auto train_raw = load_mnist((data_dir / "train-images-idx3-ubyte").string(),
                                 (data_dir / "train-labels-idx1-ubyte").string(),
                                 cfg.max_train_samples);
@@ -476,15 +480,18 @@ int main() {
     // DualPlane / ResizeToFit always fit N by changing S. That is valid capacity
     // math, but S < native 28 is a silent quality cliff (e.g. dim=8 -> S=11).
     if (plan.plane_side > 0 && plan.plane_side < kImgSide) {
+        // ASCII only (no em-dash): Windows consoles often mis-decode UTF-8 as mojibake.
         std::cout
+            << "\n"
             << "*** WARNING: embed plane side S=" << plan.plane_side
             << " < native " << kImgSide << "x" << kImgSide
-            << " — input is DOWN-SAMPLED (dim=" << cfg.dim
+            << " - input is DOWN-SAMPLED (dim=" << cfg.dim
             << ", N=" << N << ").\n"
             << "***          Layout is legal (P <= N); accuracy will not match "
                "the documented ~99% recipe\n"
             << "***          (default dim=11, DualPlane S=32). Raise dim or "
-               "set embed_plane_side if that was unintentional.\n";
+               "set embed_plane_side if that was unintentional.\n"
+            << "\n";
     }
     std::cout << "Train aug:  rot +/-" << cfg.aug_rot_deg_max
               << " deg, scale [" << cfg.aug_scale_min << "," << cfg.aug_scale_max
