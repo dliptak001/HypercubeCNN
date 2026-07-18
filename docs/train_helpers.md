@@ -118,5 +118,5 @@ H×W image
 ```
 
 See [`spatial_preprocess.md`](spatial_preprocess.md) for aug/embed details.
-`examples/mnist_train.cpp` currently uses these train helpers; geometric pack
-may still be local until Spatial* wiring lands.
+`examples/mnist_train.cpp` uses Spatial* preprocess plus these train helpers
+as the thin teaching loop.

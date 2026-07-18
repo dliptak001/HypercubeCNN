@@ -2,187 +2,90 @@
 // Copyright 2026 David Liptak
 
 #include "HCNN.h"
+#include "HCNNSpatialAug.h"
+#include "HCNNSpatialEmbed.h"
 #include "HCNNTrainHelpers.h"
 #include "HCNNDataset.h"
-#include <algorithm>
+
 #include <chrono>
-#include <cmath>
 #include <filesystem>
 #include <iostream>
-#include <numbers>
 #include <random>
 #include <stdexcept>
 #include <thread>
 #include <vector>
 
 // ---------------------------------------------------------------------------
-// MNIST geometry → dense DIM=11 input (N = 2048)
+// MNIST teaching demo — thin loop on core helpers
 //
-// Loader still yields 28×28 in [-1, 1].  Before the network we:
-//   (train only) rotate ±12°, scale [0.9,1.1], shift ±2 px, Gaussian noise
-//   pack: 32×32 bilinear image  ‖  32×32 |∇|   → 2048 floats, no zero pad
+// Loader yields 28×28 in [-1, 1].  Pipeline:
+//   (train only) HCNNSpatialAugmenter  — rot / scale / shift / noise
+//   HCNNSpatialEmbedder                — DualPlaneResize → N = 2^11 = 2048
+//   HCNN TrainEpoch + cosine_lr + dual checkpoint + evaluate_classification
 // ---------------------------------------------------------------------------
 
-static constexpr int kImgSide     = 28;
-static constexpr int kImgPixels   = kImgSide * kImgSide;  // 784
-static constexpr int kPlaneSide   = 32;
-static constexpr int kPlanePixels = kPlaneSide * kPlaneSide;  // 1024
-static constexpr int kPackedLen   = 2 * kPlanePixels;         // 2048 == 2^11
+static constexpr int kImgSide   = 28;
+static constexpr int kImgPixels = kImgSide * kImgSide;  // 784
+static constexpr int kDim       = 11;
 static constexpr float kBackground = -1.0f;  // MNIST "ink off" after loader norm
 
-static float clampf(float v, float lo, float hi) {
-    return std::max(lo, std::min(hi, v));
+/// Build MNIST train-time aug config (identity fields when disabled).
+static hcnn::HCNNSpatialAugConfig make_mnist_aug_config(bool enabled) {
+    if (!enabled)
+        return hcnn::HCNNSpatialAugConfig::None();
+
+    hcnn::HCNNSpatialAugConfig cfg;
+    cfg.rot_deg_max  = 12.0f;
+    cfg.scale_min    = 0.9f;
+    cfg.scale_max    = 1.1f;
+    cfg.shift_max    = 2;
+    cfg.noise_sigma  = 0.03f;
+    cfg.value_min    = -1.0f;
+    cfg.value_max    =  1.0f;
+    cfg.border_value = kBackground;
+    cfg.enabled      = true;
+    return cfg;
 }
 
-// Sample 28×28 with bilinear interpolation.  Out-of-bounds → background.
-static float sample_bilinear_28(const float* img, float y, float x) {
-    const int y0 = static_cast<int>(std::floor(y));
-    const int x0 = static_cast<int>(std::floor(x));
-    const int y1 = y0 + 1;
-    const int x1 = x0 + 1;
-    const float wy = y - static_cast<float>(y0);
-    const float wx = x - static_cast<float>(x0);
-
-    auto at = [img](int yy, int xx) -> float {
-        if (yy < 0 || xx < 0 || yy >= kImgSide || xx >= kImgSide)
-            return kBackground;
-        return img[yy * kImgSide + xx];
-    };
-
-    const float v00 = at(y0, x0);
-    const float v01 = at(y0, x1);
-    const float v10 = at(y1, x0);
-    const float v11 = at(y1, x1);
-    const float v0 = v00 * (1.0f - wx) + v01 * wx;
-    const float v1 = v10 * (1.0f - wx) + v11 * wx;
-    return v0 * (1.0f - wy) + v1 * wy;
+/// Dual-plane embed: 32×32 ink ‖ 32×32 |∇| into length N = 2048 (full occupancy).
+static hcnn::HCNNSpatialEmbedConfig make_mnist_embed_config() {
+    hcnn::HCNNSpatialEmbedConfig cfg;
+    cfg.dim        = kDim;
+    cfg.mode       = hcnn::HCNNSpatialEmbedMode::DualPlaneResize;
+    cfg.pad_value  = kBackground;
+    cfg.plane_side = 0;  // auto: floor(sqrt(N/2)) = 32 at DIM=11
+    return cfg;
 }
 
-// Similarity about image center, then integer shift, via inverse bilinear warp.
-// Forward content map: scale (about center) → rotate (about center) → shift.
-// OOB samples → background (-1).  deg in degrees; scale is linear size factor.
-static void affine_28(const float* src, float* dst,
-                      float deg, float scale, int dy, int dx) {
-    constexpr float kCenter = 0.5f * static_cast<float>(kImgSide - 1);  // 13.5
-    const float s = (scale > 1e-6f) ? scale : 1.0f;
-    const float rad = deg * (static_cast<float>(std::numbers::pi) / 180.0f);
-    // Inverse: unshift → unrotate → unscale
-    const float c = std::cos(-rad);
-    const float sn = std::sin(-rad);
-    const float inv_s = 1.0f / s;
-    const float fdy = static_cast<float>(dy);
-    const float fdx = static_cast<float>(dx);
-
-    for (int y = 0; y < kImgSide; ++y) {
-        for (int x = 0; x < kImgSide; ++x) {
-            const float yy = static_cast<float>(y) - fdy - kCenter;
-            const float xx = static_cast<float>(x) - fdx - kCenter;
-            const float xr = c * xx - sn * yy;
-            const float yr = sn * xx + c * yy;
-            const float sx = xr * inv_s + kCenter;
-            const float sy = yr * inv_s + kCenter;
-            dst[y * kImgSide + x] = sample_bilinear_28(src, sy, sx);
-        }
-    }
-}
-
-static void add_gaussian_noise_28(float* img, float sigma, std::mt19937& rng) {
-    if (sigma <= 0.0f) return;
-    std::normal_distribution<float> dist(0.0f, sigma);
-    for (int i = 0; i < kImgPixels; ++i)
-        img[i] = clampf(img[i] + dist(rng), -1.0f, 1.0f);
-}
-
-// Half-pixel-aligned bilinear resize 28×28 → 32×32.
-static void resize_28_to_32(const float* src28, float* dst32) {
-    constexpr float scale = static_cast<float>(kImgSide) / static_cast<float>(kPlaneSide);
-    for (int y = 0; y < kPlaneSide; ++y) {
-        for (int x = 0; x < kPlaneSide; ++x) {
-            const float sy = (static_cast<float>(y) + 0.5f) * scale - 0.5f;
-            const float sx = (static_cast<float>(x) + 0.5f) * scale - 0.5f;
-            dst32[y * kPlaneSide + x] = sample_bilinear_28(src28, sy, sx);
-        }
-    }
-}
-
-// Finite-difference gradient magnitude on 32×32; per-image max-norm → [-1, 1].
-// Replicate edge for the forward difference at the last row/col.
-static void grad_magnitude_32(const float* img32, float* out32) {
-    float gmax = 0.0f;
-    for (int y = 0; y < kPlaneSide; ++y) {
-        for (int x = 0; x < kPlaneSide; ++x) {
-            const int x1 = (x + 1 < kPlaneSide) ? x + 1 : x;
-            const int y1 = (y + 1 < kPlaneSide) ? y + 1 : y;
-            const float c  = img32[y * kPlaneSide + x];
-            const float dx = img32[y * kPlaneSide + x1] - c;
-            const float dy = img32[y1 * kPlaneSide + x] - c;
-            const float g  = std::sqrt(dx * dx + dy * dy);
-            out32[y * kPlaneSide + x] = g;
-            if (g > gmax) gmax = g;
-        }
-    }
-    if (gmax < 1e-8f) {
-        // Blank / constant image: no edges → same as background plane.
-        std::fill(out32, out32 + kPlanePixels, kBackground);
-        return;
-    }
-    const float inv = 1.0f / gmax;
-    for (int i = 0; i < kPlanePixels; ++i) {
-        const float u = out32[i] * inv;           // [0, 1]
-        out32[i] = 2.0f * u - 1.0f;               // [-1, 1]
-    }
-}
-
-// Dense pack: out[0:1024] = 32×32 image, out[1024:2048] = 32×32 |∇|.
-static void pack_mnist_2048(const float* img28, float* out2048) {
-    resize_28_to_32(img28, out2048);
-    grad_magnitude_32(out2048, out2048 + kPlanePixels);
-}
-
-// Pack every sample to 2048 floats.  If augment: random rotate (±rot_deg_max),
-// scale [scale_min, scale_max], shift ±shift_max, then Gaussian noise on the
-// 28×28 plane before packing.  seed controls reproducibility; use a different
-// seed each epoch for fresh aug.  Test path: augment=false (identity pack).
-//
-// Uses hcnn::HCNNFlatDataset (core train helper).  Geometric pack is still
-// local here; SpatialAug/SpatialEmbed wiring is a separate step.
-static void fill_packed_dataset(const HCNNDataset& ds, hcnn::HCNNFlatDataset& out,
-                                bool augment, int shift_max, float noise_sigma,
-                                float rot_deg_max, float scale_min, float scale_max,
-                                unsigned seed) {
+/// Optional aug at 28×28, then SpatialEmbed into HCNNFlatDataset (length N).
+static void fill_spatial_dataset(const HCNNDataset& ds,
+                                 hcnn::HCNNFlatDataset& out,
+                                 const hcnn::HCNNSpatialEmbedder& emb,
+                                 const hcnn::HCNNSpatialAugmenter& aug,
+                                 unsigned seed) {
     const int n = static_cast<int>(ds.size());
-    out.reset(n, kPackedLen);
+    const int N = emb.capacity();
+    out.reset(n, N);
 
     std::mt19937 rng(seed);
-    std::uniform_int_distribution<int> shift_dist(-shift_max, shift_max);
-    std::uniform_real_distribution<float> rot_dist(-rot_deg_max, rot_deg_max);
-    std::uniform_real_distribution<float> scale_dist(scale_min, scale_max);
-
     std::vector<float> work(static_cast<size_t>(kImgPixels));
+    const bool do_aug = aug.config().enabled && !aug.config().is_identity();
 
     for (int i = 0; i < n; ++i) {
         const auto& s = ds.get(static_cast<size_t>(i));
         if (static_cast<int>(s.input.size()) != kImgPixels) {
-            throw std::runtime_error("fill_packed_dataset: expected 28x28 MNIST input");
+            throw std::runtime_error(
+                "fill_spatial_dataset: expected 28x28 MNIST input");
         }
 
         const float* img = s.input.data();
-        if (augment) {
-            const float deg = (rot_deg_max > 0.0f) ? rot_dist(rng) : 0.0f;
-            const float sc  = (scale_max > scale_min) ? scale_dist(rng)
-                            : ((scale_min > 0.0f) ? scale_min : 1.0f);
-            const int dy = shift_dist(rng);
-            const int dx = shift_dist(rng);
-            // Identity affine degenerates cleanly when deg=0, sc=1, shift=0.
-            if (deg != 0.0f || sc != 1.0f || dy != 0 || dx != 0)
-                affine_28(s.input.data(), work.data(), deg, sc, dy, dx);
-            else
-                std::copy(s.input.begin(), s.input.end(), work.begin());
-            add_gaussian_noise_28(work.data(), noise_sigma, rng);
+        if (do_aug) {
+            // Geometric warp requires in != out; work holds the warped plane.
+            aug.apply(s.input.data(), work.data(), kImgSide, kImgSide, rng);
             img = work.data();
         }
 
-        pack_mnist_2048(img, out.inputs.data() + static_cast<size_t>(i) * kPackedLen);
+        emb.embed(img, kImgSide, kImgSide, out.sample_input(i));
         out.targets[static_cast<size_t>(i)] = s.target_class;
     }
 }
@@ -193,32 +96,30 @@ static void print_eval(const char* label, const hcnn::HCNNClassEval& r) {
               << " (" << r.accuracy << "%)\n";
 }
 
-// Dual checkpoint (best test loss / best test accuracy) via HCNNDualCheckpoint.
+// Dual checkpoint (best test loss / best test accuracy).
 // Each epoch rebuilds the train buffer with a fresh augment seed.
 static void train_and_evaluate(const char* name, hcnn::HCNN& net,
                                const HCNNDataset& train_raw,
                                const hcnn::HCNNFlatDataset& test_ds,
+                               const hcnn::HCNNSpatialEmbedder& emb,
+                               const hcnn::HCNNSpatialAugmenter& train_aug,
                                float lr = 0.01f, int batch_size = 32,
                                float weight_decay = 0.0f) {
     const int epochs = 60;
     const float lr_max = lr;
     const float lr_min = lr_max * 0.1f;
     const float momentum = 0.9f;
-    constexpr int   kShiftMax    = 2;
-    constexpr float kNoiseSigma  = 0.03f;
-    constexpr float kRotDegMax   = 12.0f;   // uniform in [-12, +12] degrees
-    constexpr float kScaleMin    = 0.9f;
-    constexpr float kScaleMax    = 1.1f;
+    const auto& ac = train_aug.config();
 
     std::cout << "\n=== " << name << " (lr_max=" << lr_max
               << ", lr_min=" << lr_min
               << ", batch=" << batch_size
               << ", wd=" << weight_decay
               << ", epochs=" << epochs
-              << ", aug=rot+/-" << kRotDegMax
-              << "+scale[" << kScaleMin << "," << kScaleMax << "]"
-              << "+shift+/-" << kShiftMax
-              << "+N(0," << kNoiseSigma << ")) ===\n";
+              << ", aug=rot+/-" << ac.rot_deg_max
+              << "+scale[" << ac.scale_min << "," << ac.scale_max << "]"
+              << "+shift+/-" << ac.shift_max
+              << "+N(0," << ac.noise_sigma << ")) ===\n";
     print_eval("Initial test", hcnn::evaluate_classification(net, test_ds));
 
     hcnn::HCNNFlatDataset train_ds;
@@ -231,10 +132,9 @@ static void train_and_evaluate(const char* name, hcnn::HCNN& net,
         // Timer includes pack+aug rebuild (wall-clock cost of the epoch, not only
         // the optimizer step).
         auto t0 = std::chrono::steady_clock::now();
-        fill_packed_dataset(train_raw, train_ds, /*augment=*/true,
-                            kShiftMax, kNoiseSigma,
-                            kRotDegMax, kScaleMin, kScaleMax,
-                            /*seed=*/static_cast<unsigned>(0xC0FFEEu + epoch * 9973u));
+        fill_spatial_dataset(
+            train_raw, train_ds, emb, train_aug,
+            /*seed=*/static_cast<unsigned>(0xC0FFEEu + epoch * 9973u));
         net.TrainEpoch(train_ds.inputs.data(), train_ds.input_length,
                        train_ds.targets.data(), train_ds.count, batch_size,
                        current_lr, momentum, weight_decay,
@@ -295,25 +195,29 @@ int main() {
               << "Test: " << test_raw.size() << " samples\n";
     std::cout << "Threads: " << std::thread::hardware_concurrency() << "\n";
 
-    // Test: pack only (no aug).  Train: re-packed with aug each epoch.
-    hcnn::HCNNFlatDataset test_flat;
-    fill_packed_dataset(test_raw, test_flat, /*augment=*/false,
-                        /*shift_max=*/0, /*noise_sigma=*/0.0f,
-                        /*rot_deg_max=*/0.0f, /*scale_min=*/1.0f, /*scale_max=*/1.0f,
-                        /*seed=*/0);
+    hcnn::HCNNSpatialEmbedder emb(make_mnist_embed_config());
+    hcnn::HCNNSpatialAugmenter train_aug(make_mnist_aug_config(/*enabled=*/true));
+    hcnn::HCNNSpatialAugmenter test_aug(make_mnist_aug_config(/*enabled=*/false));
 
-    std::cout << "Input pack: 28x28 -> 32x32 image || 32x32 |grad| "
-              << "(length " << kPackedLen << ", full N=" << kPackedLen << ")\n";
+    const auto plan = emb.plan(kImgSide, kImgSide);
+    const int N = emb.capacity();
+
+    // Test: embed only (no aug).  Train: re-embedded with aug each epoch.
+    hcnn::HCNNFlatDataset test_flat;
+    fill_spatial_dataset(test_raw, test_flat, emb, test_aug, /*seed=*/0);
+
+    std::cout << "Spatial pipeline: HCNNSpatialAug (train) -> "
+              << "HCNNSpatialEmbed DualPlaneResize "
+              << plan.plane_side << "x" << plan.plane_side
+              << " ink || |grad|  (pattern_length=" << plan.pattern_length
+              << ", N=" << N << ")\n";
     std::cout << "Train aug:  rot +/-12 deg, scale [0.9,1.1], shift +/-2 px, "
               << "Gaussian noise sigma=0.03 (train only, refreshed each epoch)\n";
 
-    constexpr int DIM = 11;
-    constexpr int N   = 1 << DIM;
-    static_assert(N == kPackedLen, "DIM=11 N must match dense pack length 2048");
-
     // Weight-init seed only (aug / shuffle seeds are fixed separately).
-    // Documented default: 99.27% best-acc / 99.26% best-loss (seed 398479293)
-    // with rot±12 + scale[0.9,1.1] + shift±2 + noise, 60 epochs, no pool.
+    // Documented default: ~99.23% mean best-acc over seeds; peak 99.27%
+    // (seed 398479293) with rot±12 + scale[0.9,1.1] + shift±2 + noise,
+    // 60 epochs, no pool.  Re-measure after Spatial* wire if claiming numbers.
     constexpr unsigned weight_seed = 398479293;
 
     // 2-layer no-pool: 16 -> 16 at full N=2048 (no antipodal pool).
@@ -322,7 +226,7 @@ int main() {
     constexpr int C2 = 16;
     constexpr bool kUseBN = false;
 
-    hcnn::HCNN net(DIM, /*num_outputs=*/10, /*input_channels=*/1);
+    hcnn::HCNN net(kDim, /*num_outputs=*/10, /*input_channels=*/1);
     net.AddConv(C1, hcnn::Activation::RELU, /*use_bias=*/true, kUseBN);
     net.AddConv(C2, hcnn::Activation::RELU, /*use_bias=*/true, kUseBN);
     net.RandomizeWeights(/*scale=*/0.0f, weight_seed);
@@ -330,25 +234,25 @@ int main() {
 
     std::cout << "Weight init seed: " << weight_seed << "\n";
 
-    // No pool: DIM stays 11, N stays 2048; both convs use K=11.
-    constexpr int N_final = N;
-    const int conv1_params   = 1 * C1 * DIM + C1;                 // K=11
-    const int conv2_params   = C1 * C2 * DIM + C2;                // K=11
-    const int readout_params = C2 * N_final * 10 + 10;            // 16*2048*10
+    constexpr int N_final = 1 << kDim;
+    static_assert(N_final == 2048, "DIM=11 N must be 2048");
+    const int conv1_params   = 1 * C1 * kDim + C1;
+    const int conv2_params   = C1 * C2 * kDim + C2;
+    const int readout_params = C2 * N_final * 10 + 10;
     const int total_params   = conv1_params + conv2_params + readout_params;
     std::cout << "\nArchitecture: Conv(1->" << C1 << ", RELU, bias"
-              << (kUseBN ? ", BN" : "") << ")  DIM=" << DIM
-              << "  N=" << N << "\n"
+              << (kUseBN ? ", BN" : "") << ")  DIM=" << kDim
+              << "  N=" << N_final << "\n"
               << "              -> Conv(" << C1 << "->" << C2 << ", RELU, bias"
-              << (kUseBN ? ", BN" : "") << ") DIM=" << DIM << "\n"
+              << (kUseBN ? ", BN" : "") << ") DIM=" << kDim << "\n"
               << "              -> FLATTEN\n"
               << "              -> Linear(" << (C2 * N_final) << " -> 10)\n"
               << "Parameters:   " << total_params
               << " (" << conv1_params << " conv1 + " << conv2_params
               << " conv2 + " << readout_params << " readout)\n\n";
 
-    // Same baseline schedule; larger head may want more WD if overfit appears.
-    train_and_evaluate("HCNN", net, train_raw, test_flat, /*lr=*/0.001f, 256, 1e-3f);
+    train_and_evaluate("HCNN", net, train_raw, test_flat, emb, train_aug,
+                       /*lr=*/0.001f, 256, 1e-3f);
 
     return 0;
 }

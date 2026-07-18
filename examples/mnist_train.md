@@ -5,13 +5,13 @@ Demonstrates end-to-end training and evaluation of a HypercubeCNN on the MNIST h
 ## What this example shows
 
 - Loading real MNIST data from IDX binary files
-- **Dense input pack** for DIM=11: full N=2048 occupancy (no zero pad)
+- **Core spatial preprocess**: `HCNNSpatialAugmenter` (train) → `HCNNSpatialEmbedder` DualPlaneResize (DIM=11, full N=2048)
 - **Train-time augmentation**: rotate ±12°, scale [0.9, 1.1], shift ±2 px, light Gaussian noise
 - 2-conv stack **without pooling** (16-wide, full N=2048) and FLATTEN readout
 - Mini-batch Adam, cosine LR annealing, weight decay
 - Dual checkpoints: best test loss and best test accuracy (`GetWeights` / `SetWeights`)
 - Parallel batch inference for evaluation
-- Core train helpers (`HCNNTrainHelpers.h`): `cosine_lr`, `evaluate_classification`, `HCNNDualCheckpoint`, `HCNNFlatDataset` — geometric pack is still local in this example until Spatial* wiring
+- Core train helpers (`HCNNTrainHelpers.h`): `cosine_lr`, `evaluate_classification`, `HCNNDualCheckpoint`, `HCNNFlatDataset`
 
 ## How MNIST maps onto the hypercube
 
@@ -19,22 +19,22 @@ Demonstrates end-to-end training and evaluation of a HypercubeCNN on the MNIST h
 
 MNIST images are 28×28 = 784 grayscale pixels, normalized to **[-1.0, 1.0]** (background ≈ −1).
 
-### Dense pack (always length 2048)
+### Spatial pipeline (always length 2048)
 
-Before `TrainEpoch` / `ForwardBatch`, each image is packed into a **full** hypercube input (N = 2^11 = 2048). There is **no** zero-padding of unused vertices.
+Before `TrainEpoch` / `ForwardBatch`, each image goes through the core helpers. Embed always writes a **full** length-N buffer (`input_length = N = 2^11 = 2048`). At DIM=11 DualPlaneResize with auto side, pattern length is exactly 2048 (no pad tail).
 
 ```
 28×28 digit in [-1, 1]
         │
-        │  (train only) rot ±12°, scale [0.9,1.1], shift ±2, N(0, 0.03²), clip
+        │  (train only) HCNNSpatialAugmenter
+        │    rot ±12°, scale [0.9,1.1], shift ±2, N(0, 0.03²), clip after noise
         ▼
- bilinear resize → 32×32 image
+28×28 (possibly warped)
         │
-        ├──► out[0 .. 1023]      = 32×32 image (row-major)
-        │
-        └──► finite-diff |∇| → per-image max-norm → [-1, 1]
-                    │
-                    └──► out[1024 .. 2047] = 32×32 |∇| (row-major)
+        │  HCNNSpatialEmbedder  DualPlaneResize  pad_value = -1
+        ▼
+ out[0 .. 1023]      = 32×32 bilinear resize (ink)
+ out[1024 .. 2047]   = 32×32 |∇| max-normed to about [-1, 1]
 ```
 
 | Region | Content |
@@ -42,9 +42,9 @@ Before `TrainEpoch` / `ForwardBatch`, each image is packed into a **full** hyper
 | Vertices 0–1023 | 32×32 bilinear upsample of the (possibly augmented) digit |
 | Vertices 1024–2047 | 32×32 gradient magnitude of that plane, scaled to [-1, 1] |
 
-Layout is **row-major blocks**, not a locality-preserving Hamming map. The goal is full occupancy plus a simple multi-view (ink ‖ edges), not spatial↔hypercube alignment.
+Layout is **row-major blocks**, not a locality-preserving Hamming map. The goal is full occupancy plus a simple multi-view (ink ‖ edges), not spatial↔hypercube alignment. See [`docs/spatial_preprocess.md`](../docs/spatial_preprocess.md).
 
-Test-set packing uses the **same** transform with **no** augmentation.
+Test-set packing uses the **same** embed path with **no** augmentation (`HCNNSpatialAugConfig::None()`).
 
 ## Architecture
 
@@ -73,19 +73,19 @@ Total parameters: **330,714** (192 conv1 + 2,832 conv2 + 327,690 readout).
 | Epochs | 60 | |
 | Shuffle | per-epoch | `shuffle_seed = epoch + 1` (fixed stream; not varied with weight seed) |
 | Weight init seed | **398479293** (default) | Printed as `Weight init seed:`; change `weight_seed` in `mnist_train.cpp` to probe init variance. Aug/shuffle seeds stay fixed. |
-| **Augmentation** | train only | Rotate \(U[-12°,+12°]\); scale \(U[0.9,1.1]\) about center; shift \(dx,dy \in \{-2,\ldots,2\}\); Gaussian noise σ=0.03; OOB = −1; single bilinear warp; **rebuilt every epoch** |
-| Checkpoints | dual | Best test **loss** and best test **acc**; net left on best-acc weights |
+| **Augmentation** | train only | `HCNNSpatialAugmenter`: rot U[−12°, +12°]; scale U[0.9, 1.1] about center; shift dx,dy in {−2,…,2}; Gaussian noise σ=0.03; OOB = −1; single bilinear warp; **rebuilt every epoch** |
+| Checkpoints | dual | Best test **loss** and best test **acc** via `HCNNDualCheckpoint`; net left on best-acc weights |
 
 ## Data loading
 
-Raw IDX load via `load_mnist()` (`dataloader/HCNNDataset.h`) still returns 784-vectors. Packing and aug live in `examples/mnist_train.cpp` so the core loader stays format-only.
+Raw IDX load via `load_mnist()` (`dataloader/HCNNDataset.h`) still returns 784-vectors. Augment + embed + flat buffers live in `examples/mnist_train.cpp` so the core loader stays format-only.
 
 ```cpp
 auto train_raw = load_mnist("data/train-images-idx3-ubyte",
                             "data/train-labels-idx1-ubyte", 60000);
 auto test_raw  = load_mnist("data/t10k-images-idx3-ubyte",
                             "data/t10k-labels-idx1-ubyte",  10000);
-// fill_packed_dataset(...): 28×28 → 2048; aug optional
+// fill_spatial_dataset: optional SpatialAug -> SpatialEmbed DualPlane -> FlatDataset
 ```
 
 ## Downloading the MNIST IDX files
