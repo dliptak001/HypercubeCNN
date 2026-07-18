@@ -55,17 +55,20 @@ Topology and all other knobs live in **`DemoConfig`** near the top of `mnist_tra
 ```
 Input: SpatialEmbed DualPlane 2048 floats (DIM=11, 1 channel)
   |
-Conv1: 1 -> 16 channels, K=11, ReLU, bias
+Conv1: 1  -> 16 channels, K=11, ReLU, bias
 Conv2: 16 -> 16 channels, K=11, ReLU, bias
+Conv3: 16 -> 16 channels, K=11, ReLU, bias
   |
 Readout: FLATTEN -> linear 32768->10 -> logits
 ```
 
-Total parameters: **330,714** (192 conv1 + 2,832 conv2 + 327,690 readout).
+Total parameters: **333,546** (192 conv1 + 2,832 conv2 + 2,832 conv3 + 327,690 readout).
 
 To try another stack or schedule, edit `DemoConfig` fields at the top of the `.cpp` (layers, `dim`, `weight_seed`, `epochs`, `lr_max`, aug, …). Pools reduce DIM by 1 and shrink the FLATTEN head; BN is available per conv but is not the documented MNIST recipe.
 
-**No antipodal pool (default)** — DIM stays 11 and N stays 2048 for both convs, so the FLATTEN head sees every packed vertex (`32768→10`). Antipodal MAX pairs ink-half with grad-half indices on this pack and halves addressable positions; skipping pool is the default for this MNIST recipe. FLATTEN treats every (channel, vertex) activation as an independent feature.
+**No antipodal pool (default)** — DIM stays 11 and N stays 2048 for all three convs, so the FLATTEN head sees every packed vertex (`32768→10`). Antipodal MAX pairs ink-half with grad-half indices on this pack and halves addressable positions; skipping pool is the default for this MNIST recipe. FLATTEN treats every (channel, vertex) activation as an independent feature.
+
+**Depth:** On the documented default weight seed, the **3-conv** stack beats the prior **2-conv** recipe (best-acc **99.31%** vs **99.27%** on seed `398479293`).
 
 ## Training configuration
 
@@ -128,63 +131,43 @@ cmake --build cmake-build-release --target MNISTTrain
 
 ## Results
 
-60K train / 10K test, **DIM=11**, dense pack (32×32 image ‖ 32×32 \|∇\|), **no antipodal pool**, train aug (**rot ±12°**, **scale [0.9, 1.1]**, shift ±2, σ=0.03), Adam, batch=256, wd=1e-3, cosine LR **0.001 → 1e-4**, **60 epochs**. Only the **weight init seed** varies; aug and shuffle streams are fixed. Epoch timing includes pack+aug rebuild + `TrainEpoch`. Throughput ~1.9k samples/s on 32 threads (~31 s/epoch).
+60K train / 10K test, **DIM=11**, **3× Conv 16** (no antipodal pool), dense pack (32×32 image ‖ 32×32 \|∇\|), train aug (**rot ±12°**, **scale [0.9, 1.1]**, shift ±2, σ=0.03), Adam, batch=256, wd=1e-3, cosine LR **0.001 → 1e-4**, **60 epochs**. Aug and shuffle streams fixed; numbers below are the **documented default weight seed** only. Epoch timing includes pack+aug rebuild + `TrainEpoch`. Throughput ~1.1k samples/s on 32 threads (~54–56 s/epoch).
 
-### Multi-seed (weight init only)
+Prior 2-conv multi-seed tables are **retired** (that stack peaked at 99.27% best-acc on this seed). Multi-seed mean for the 3-conv recipe is **TBD**.
 
-| Weight seed | Best acc | Loss @ best-acc | Best loss | Acc @ best-loss |
-|-------------|----------|-----------------|-----------|-----------------|
-| **398479293** | **99.27%** | 0.0243 @ ep 59 | 0.0238 @ ep 50 | 99.26% |
-| 287821292 | 99.23% | 0.0248 @ ep 55 | **0.0235** @ ep 58 | 99.20% |
-| 498279213 | 99.20% | 0.0265 @ ep 55 | 0.0248 @ ep 47 | 99.14% |
+### Seed 398479293 (default) — first recorded 3-conv run
 
-| Statistic (best-acc) | Value |
-|----------------------|--------|
-| Mean (3 seeds) | **99.23%** |
-| Range | 99.20% – 99.27% (0.07 pp) |
-| Mean best-loss CE | **~0.024** |
+| Metric | Value |
+|--------|--------|
+| Best acc | **99.31%** (9931/10000) @ epoch **53**, loss **0.02177** |
+| Best loss | **0.02135** @ epoch **60**, acc **99.23%** (9923/10000) |
+| Parameters | **333,546** |
+| First ≥99% | epoch **27** (99.09%) |
 
-Prefer quoting **mean ~99.23% over seeds** for claims; quote a single seed only with the printed `Weight init seed`. **Documented default seed:** `398479293` (best of the three). All three seeds clear **99.1%+** best-acc and best-loss.
+Quote with the printed `Weight init seed`. Prefer re-running more seeds before claiming a multi-seed mean.
 
 ### Checkpoints — seed 398479293 (default)
 
 | Checkpoint | Epoch | Test loss | Test acc |
 |------------|-------|-----------|----------|
-| **Best loss** | 50 | **0.02379** | 99.26% (9926/10000) |
-| **Best acc** | 59 | 0.02428 | **99.27%** (9927/10000) |
+| **Best loss** | 60 | **0.02135** | 99.23% (9923/10000) |
+| **Best acc** | 53 | 0.02177 | **99.31%** (9931/10000) |
 
-First ≥99% at epoch **33** (99.05%).
-
-### Checkpoints — seed 287821292
-
-| Checkpoint | Epoch | Test loss | Test acc |
-|------------|-------|-----------|----------|
-| **Best loss** | 58 | **0.02354** | 99.20% (9920/10000) |
-| **Best acc** | 55 | 0.02481 | **99.23%** (9923/10000) |
-
-First ≥99% at epoch **28** (99.05%). Best-loss CE is the lowest of the three seeds.
-
-### Checkpoints — seed 498279213
-
-| Checkpoint | Epoch | Test loss | Test acc |
-|------------|-------|-----------|----------|
-| **Best loss** | 47 | **0.02485** | 99.14% (9914/10000) |
-| **Best acc** | 55 | 0.02647 | **99.20%** (9920/10000) |
-
-First ≥99% at epoch **22** (99.05%). Mid-pack seed; dual checkpoints a bit more separated on CE than the default run.
+Dual restore confirmed both snapshots at end of run.
 
 ### Curve (seed 398479293)
 
 ```
 Epoch  Test Acc    Test Loss   LR
-  1    96.99%      0.1096      0.00100
- 12    98.82%      0.0399      0.00092
- 22    98.97%      0.0328      0.00075
- 33    99.05%      0.0290      0.00049   ← first ≥99%
- 34    99.13%      0.0272      0.00047
- 50    99.26%      0.0238      0.00016   ← best loss
- 59    99.27%      0.0243      0.00010   ← best acc
- 60    99.14%      0.0253      0.00010
+  1    96.99%      0.1056      0.00100
+ 12    98.73%      0.0388      0.00092
+ 22    98.95%      0.0331      0.00075
+ 27    99.09%      0.0270      0.00063   ← first ≥99%
+ 33    99.13%      0.0278      0.00049
+ 47    99.27%      0.0225      0.00020   ← joint best-loss + best-acc (then)
+ 50    99.21%      0.0217      0.00016
+ 53    99.31%      0.0218      0.00013   ← best acc
+ 60    99.23%      0.0213      0.00010   ← best loss
 ```
 
 ## Analysis
@@ -195,7 +178,11 @@ Leaving vertices 784–2047 at zero wasted most of N at DIM=11. The 32×32 ‖ |
 
 ### Why no pool
 
-Antipodal MAX is correct mathematically (winner-take-all backprop checks out) but a poor fit for this layout: every pair at DIM=11 straddles the ink half and the grad half, and pooling halves the FLATTEN head. Keeping full N=2048 lets both views stay addressable through both convs into the linear readout.
+Antipodal MAX is correct mathematically (winner-take-all backprop checks out) but a poor fit for this layout: every pair at DIM=11 straddles the ink half and the grad half, and pooling halves the FLATTEN head. Keeping full N=2048 lets both views stay addressable through all three convs into the linear readout.
+
+### Why three convs
+
+On seed `398479293`, adding a third 16-wide RELU conv (same DIM, same FLATTEN head size) lifts best-acc from **99.27%** (2-conv) to **99.31%** and best-loss CE from ~0.024 to **~0.021**. Extra depth is cheap in parameters (~2.8k for the third conv vs 328k readout) but costs wall time (~1.1k vs ~1.9k samples/s).
 
 ### Why augmentation
 
@@ -203,16 +190,16 @@ The FLATTEN readout is strongly position-addressable. Rotation and mild scale (p
 
 ### Curve shape
 
-Fast start (~96–97% after epoch 1), then a long climb under cosine decay. Across seeds, best loss is late (ep **47–58**); best acc is late (ep **55–59**). Dual checkpoints usually stay within ~0.01–0.02 CE. Init seed moves accuracy by about **±0.04 pp** over three seeds — real but small.
+Fast start (~97% after epoch 1), then a long climb under cosine decay. Best acc lands mid–late schedule (ep **53**); best loss is at the final epoch (**60**). Dual checkpoints stay within ~0.0004 CE on this seed. Multi-seed variance for 3-conv is not yet re-measured.
 
-### What ~99.2% means
+### What ~99.3% means
 
 - Linear classifier on raw pixels ~92%
 - 2-layer MLP ~98%
 - Spatial 2D CNNs typically 99.0–99.5%+
 
-HypercubeCNN at **~99.23% mean best-acc** (peak **99.27%** seed 398479293) sits in **light spatial-CNN territory** without a grid prior (row-major pack + Hamming kernels + FLATTEN). Remaining errors ~73–80/10k. Optional next levers: elastic/shear aug or locality-aware packing — not antipodal pooling on this demo pack.
+HypercubeCNN at **99.31% best-acc** (seed 398479293; best-loss CE **0.021**) sits in **light spatial-CNN territory** without a grid prior (row-major pack + Hamming kernels + FLATTEN). Remaining errors ~69/10k at best-acc. Optional next levers: more weight seeds for a mean claim, elastic/shear aug, or locality-aware packing — not antipodal pooling on this demo pack.
 
 ## Significance
 
-**~99.23% mean test accuracy** over three weight-init seeds (peak **99.27%**; best-loss CE ~0.024) on MNIST with a 2-conv no-pool HypercubeCNN, dense pack, and geometric train aug shows the training stack is solid for demos and that **full-N FLATTEN + invariance-inducing aug** matter when the input is an engineered image embedding rather than native hypercube data. Pack, aug, schedule, and reported weight seeds are **image-demo engineering**, documented here separately from the core SDK (fingerprints, Boolean functions, reservoir state).
+**99.31% best-acc / 99.23% at best-loss** on the documented default weight seed for a **3-conv** no-pool HypercubeCNN (DIM=11, dense pack, geometric train aug) shows the training stack is solid for demos and that **depth + full-N FLATTEN + invariance-inducing aug** matter when the input is an engineered image embedding rather than native hypercube data. Pack, aug, schedule, depth, and reported weight seed are **image-demo engineering**, documented here separately from the core SDK (fingerprints, Boolean functions, reservoir state).

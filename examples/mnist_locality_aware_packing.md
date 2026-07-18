@@ -90,11 +90,11 @@ structure**.
   adjacency.
 
 **Empirical context:** with **no antipodal pool**, geometric train aug
-(rot ±12°, scale [0.9, 1.1], shift ±2, noise), 60 epochs, 2-conv 16-wide
-stack, mean best-acc **~99.23%** over three weight seeds (peak **99.27%**).
-So packing is **not** “fix a broken model.” It is “give Hamming kernels
-something coherent to do,” so conv layers are more than mild scrubbers in
-front of a large FLATTEN head.
+(rot ±12°, scale [0.9, 1.1], shift ±2, noise), 60 epochs, **3-conv** 16-wide
+stack, best-acc **99.31%** on seed `398479293` (best-loss CE ~0.021; prior
+2-conv multi-seed mean was ~99.23%). So packing is **not** “fix a broken
+model.” It is “give Hamming kernels something coherent to do,” so conv layers
+are more than mild scrubbers in front of a large FLATTEN head.
 
 **Reasonable accuracy expectation if packing is improved:** on the order of
 **+0.05–0.2 pp** mean, **null** within seed noise, or a **slight regression**
@@ -478,7 +478,7 @@ That is the hypercube analogue of spatial pooling that respects packing.
 - That it will **definitely** beat elastic/shear aug for the next 0.1 pp.  
 - That Hilbert is “the” solution because it is popular for caches.  
 - That antipodal pooling becomes appropriate once packing is local.  
-- That row-major was “wrong” for the 99.23% result — it was a valid
+- That row-major was “wrong” for the ~99.3% result — it was a valid
   occupancy + multi-view engineering choice.
 
 ---
@@ -502,7 +502,7 @@ That is the hypercube analogue of spatial pooling that respects packing.
 
 **Reasonable expectation:** clearer use of Hamming convolution and a fairer
 scientific story for “images on a hypercube”; **modest** accuracy movement on
-an already ~99.23% mean recipe. The primary win is **alignment and
+an already ~99.3% (single-seed) recipe. The primary win is **alignment and
 interpretability**; leaderboard gains are secondary and must be measured.
 
 **Implementation surface for Phase 1:** example/demo pack code only (e.g.

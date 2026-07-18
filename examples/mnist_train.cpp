@@ -53,9 +53,10 @@ using hcnn_demo::ArchParamSummary;
 // DEVELOPER CONFIG - edit knobs here; the rest of the file follows
 // ---------------------------------------------------------------------------
 //
-// Documented default recipe (~99.23% mean over weight seeds; peak 99.27% on
-// weight_seed below): DIM=11 dual-plane pack, 16->16 no pool, no BN, geometric
-// aug, Adam, cosine LR 1e-3->1e-4, 60 epochs, batch 256, wd 1e-3.
+// Documented default recipe (first seed 398479293: 99.31% best-acc / 99.23%
+// best-loss): DIM=11 dual-plane pack, three 16-wide RELU convs, no pool, no BN,
+// geometric aug, Adam, cosine LR 1e-3->1e-4, 60 epochs, batch 256, wd 1e-3.
+// Three-layer stack beats two-layer on this seed; multi-seed mean TBD.
 // Re-run a seed after changing any of these if you need a hard accuracy claim.
 // ---------------------------------------------------------------------------
 
@@ -79,7 +80,8 @@ struct DemoConfig {
     int num_outputs    = 10;   // MNIST classes
     int input_channels = 1;    // must stay 1 (Spatial* is single-channel)
     std::vector<ArchLayer> layers = {
-        // Documented ~99% recipe: two 16-wide RELU convs, no pool
+        // Documented ~99.3% recipe: three 16-wide RELU convs, no pool
+        ArchLayer::Conv(16, hcnn::Activation::RELU, /*bias=*/true, /*bn=*/false),
         ArchLayer::Conv(16, hcnn::Activation::RELU, /*bias=*/true, /*bn=*/false),
         ArchLayer::Conv(16, hcnn::Activation::RELU, /*bias=*/true, /*bn=*/false),
         // Examples:
@@ -89,7 +91,7 @@ struct DemoConfig {
     };
 
     // ----- Weight init / optimizer -----
-    // Documented default seed: 99.27% best-acc / 99.26% best-loss (pre-wire pack).
+    // Documented default seed: 99.31% best-acc / 99.23% best-loss (3-conv stack).
     unsigned weight_seed = 398479293;
     hcnn::OptimizerType optimizer = hcnn::OptimizerType::ADAM;
 
