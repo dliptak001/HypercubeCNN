@@ -35,15 +35,15 @@ static hcnn::HCNNSpatialAugConfig make_mnist_aug_config(bool enabled) {
         return hcnn::HCNNSpatialAugConfig::None();
 
     hcnn::HCNNSpatialAugConfig cfg;
-    cfg.rot_deg_max  = 12.0f;
-    cfg.scale_min    = 0.9f;
-    cfg.scale_max    = 1.1f;
-    cfg.shift_max    = 2;
-    cfg.noise_sigma  = 0.03f;
-    cfg.value_min    = -1.0f;
-    cfg.value_max    =  1.0f;
-    cfg.border_value = kBackground;
-    cfg.enabled      = true;
+    cfg.rot_deg_max  = 12.0f;       // uniform rotate ±12° about image center
+    cfg.scale_min    = 0.9f;        // uniform scale low (size factor)
+    cfg.scale_max    = 1.1f;        // uniform scale high
+    cfg.shift_max    = 2;           // integer pixel shift dy,dx in {-2..+2}
+    cfg.noise_sigma  = 0.03f;       // Gaussian N(0, σ²) after geometry
+    cfg.value_min    = -1.0f;       // clip floor after noise (loader range)
+    cfg.value_max    =  1.0f;       // clip ceiling after noise
+    cfg.border_value = kBackground; // bilinear OOB = empty paper (-1)
+    cfg.enabled      = true;        // master on (false → pure copy, no RNG)
     return cfg;
 }
 
