@@ -35,6 +35,8 @@ enum class PoolType { MAX, AVG };
  */
 class HCNNPool {
 public:
+    /// @param input_dim  Hypercube dim before pool; requires 2 <= dim <= 30
+    ///                   (N = 2^dim fits in signed 32-bit int; leaves dim >= 1).
     HCNNPool(int input_dim, PoolType type = PoolType::MAX);
 
     void forward(const float* in, float* out, int num_channels,
@@ -48,6 +50,7 @@ public:
     int get_input_N() const { return input_N; }
     int get_output_N() const { return output_N; }
 
+    /// Non-owning; pool must outlive any ForEach that uses it.
     void set_thread_pool(ThreadPool* tp) { thread_pool = tp; }
 
 private:

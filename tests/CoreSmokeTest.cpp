@@ -8,12 +8,15 @@
 // readout-type variations.
 
 #include "HCNN.h"
+#include "HCNNPool.h"
 #include "HCNNReadout.h"
 #include "HCNNSpatialAug.h"
 #include "HCNNSpatialEmbed.h"
 #include "HCNNTrainHelpers.h"
+#include "ThreadPool.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <iostream>
@@ -24,8 +27,10 @@
 
 using hcnn::HCNN;
 using hcnn::HCNNNetwork;
+using hcnn::HCNNPool;
 using hcnn::HCNNReadout;
 using hcnn::ReadoutGradInLoop;
+using hcnn::ThreadPool;
 using hcnn::PoolType;
 using hcnn::TaskType;
 using hcnn::LossType;
@@ -2377,6 +2382,96 @@ static void test_train_helpers() {
     }
 }
 
+// ThreadPool + pool dim contracts (power-user surface).
+static void test_thread_pool() {
+    std::cout << "\n[ThreadPool]\n";
+
+    auto throws = [](auto&& fn) {
+        try { fn(); } catch (const std::exception&) { return true; }
+        return false;
+    };
+
+    // count == 0 is a no-op
+    {
+        ThreadPool pool(2);
+        int hits = 0;
+        pool.ForEach(0, [&](size_t, size_t, size_t) { ++hits; });
+        check(hits == 0, "ForEach(count=0) does not invoke func");
+        check(pool.NumWorkers() == 2, "NumWorkers() == 2");
+        check(pool.NumThreads() == 3, "NumThreads() == workers + caller");
+    }
+
+    // Partitioned sum: every index visited exactly once
+    {
+        ThreadPool pool(3);
+        constexpr size_t N = 1000;
+        std::vector<int> hits(N, 0);
+        pool.ForEach(N, [&](size_t /*tid*/, size_t b, size_t e) {
+            for (size_t i = b; i < e; ++i) hits[i] += 1;
+        });
+        bool ok = true;
+        for (size_t i = 0; i < N; ++i) {
+            if (hits[i] != 1) { ok = false; break; }
+        }
+        check(ok, "ForEach visits each index exactly once");
+    }
+
+    // Worker exception is rethrown on caller after join
+    {
+        ThreadPool pool(2);
+        check(throws([&] {
+            pool.ForEach(64, [](size_t tid, size_t, size_t) {
+                if (tid != 0)
+                    throw std::runtime_error("worker boom");
+            });
+        }), "worker exception rethrown after join");
+        // Pool still usable after a thrown ForEach
+        std::atomic<int> sum{0};
+        pool.ForEach(32, [&](size_t, size_t b, size_t e) {
+            sum.fetch_add(static_cast<int>(e - b));
+        });
+        check(sum.load() == 32, "pool usable after worker exception");
+    }
+
+    // Caller (tid 0) exception: workers still joined; pool reusable
+    {
+        ThreadPool pool(2);
+        check(throws([&] {
+            pool.ForEach(128, [](size_t tid, size_t, size_t) {
+                if (tid == 0)
+                    throw std::runtime_error("caller boom");
+            });
+        }), "caller chunk exception rethrown after join");
+        std::atomic<int> sum{0};
+        pool.ForEach(40, [&](size_t, size_t b, size_t e) {
+            sum.fetch_add(static_cast<int>(e - b));
+        });
+        check(sum.load() == 40, "pool usable after caller exception");
+    }
+
+    // Serial path (zero workers)
+    {
+        ThreadPool pool(/*num_workers=*/0); // may still spawn auto workers if hw>1
+    }
+    {
+        // Force empty workers: construct with explicit 0 after we can't -
+        // use hardware path: only empty when hw concurrency is 1.
+        // Instead test via ForEach when workers empty is hard without private API.
+        // Covered: NumWorkers auto >= 0.
+        ThreadPool auto_pool(0);
+        check(auto_pool.NumThreads() >= 1, "auto pool has at least caller thread");
+    }
+
+    // HCNNPool dim guards
+    check(throws([&] { HCNNPool p(1); }), "HCNNPool(dim=1) throws");
+    check(throws([&] { HCNNPool p(31); }), "HCNNPool(dim=31) throws");
+    {
+        HCNNPool p(5, PoolType::MAX);
+        check(p.get_input_N() == 32 && p.get_output_N() == 16,
+              "HCNNPool dim=5 sizes N=32->16");
+    }
+}
+
 // ---------------------------------------------------------------------------
 //  main
 // ---------------------------------------------------------------------------
@@ -2385,6 +2480,7 @@ int main() {
     std::cout << "HCNN SDK Smoke Test\n";
     std::cout << "===================\n";
 
+    test_thread_pool();
     test_construction();
     test_self_contribution();
     test_forward_pass();

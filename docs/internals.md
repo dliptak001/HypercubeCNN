@@ -280,6 +280,9 @@ All batch/epoch APIs take one base pointer + uniform `input_length` (and targets
 
 `ThreadPool` is **not reentrant**: nested `ForEach` on the same pool deadlocks. Batch paths disable layer pools via `LayerThreadGuard`.
 
+`ForEach` always joins workers before returning — including when the caller's
+own chunk throws — so functors are not left dangling on background threads.
+
 Constructor `num_threads`:
 
 | Value | Meaning |
@@ -287,6 +290,8 @@ Constructor `num_threads`:
 | `0` | Auto (`hardware_concurrency − 1` workers) |
 | `1` | No background workers (host may outer-parallelize nets) |
 | `N > 1` | `N` workers (+ caller as thread 0 during `ForEach`) |
+
+`HCNNPool` input dim is **[2, 30]** (same N-safety as conv/network).
 
 ---
 

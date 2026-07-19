@@ -252,7 +252,8 @@ public:
     int get_self_index() const { return DIM; }
     ///@}
 
-    /// Set the thread pool for parallel execution (nullptr = single-threaded).
+    /// Non-owning pool for DIM>=12 paths; nullptr = single-threaded.
+    /// Pool must outlive any forward/backward that uses it.
     void set_thread_pool(ThreadPool* pool) { thread_pool = pool; }
 
     /// Set training mode (true) or eval mode (false) for batch normalization.
