@@ -123,9 +123,8 @@ out[2*S*S .. N)       = pad_value
 - Ink is **not** range-clipped; only |grad| is max-normalized to ~[-1, 1].
 - Bilinear OOB uses `pad_value` (use -1 for MNIST-like backgrounds).
 
-**Layout is row-major blocks, not locality-aware Hamming packing.** For
-Cartesian Gray / Hilbert maps see `examples/mnist_locality_aware_packing.md`
-(design memo; not this API).
+**Layout is row-major blocks, not locality-aware Hamming packing.** Bit-flip
+neighbors on the cube are not automatic 2D pixel adjacency under this embed.
 
 ---
 
@@ -236,4 +235,3 @@ emb.embed_batch(tmp, batch, H, W, out);       // stride N
 | `docs/CPP_SDK.md` | SDK overview (§8: short pointer + pad contract) |
 | `docs/internals.md` | Hypercube conv (after embed) |
 | `examples/mnist_train.md` | Full image training demo |
-| `examples/mnist_locality_aware_packing.md` | Future locality maps (design only) |

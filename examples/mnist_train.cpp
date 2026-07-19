@@ -81,8 +81,8 @@ struct DemoConfig {
     int input_channels = 1;    // must stay 1 (Spatial* is single-channel)
     std::vector<ArchLayer> layers = {
         // Documented ~99.3% recipe: three 16-wide RELU convs, no pool
-        ArchLayer::Conv(16, hcnn::Activation::NONE, /*bias=*/true, /*bn=*/false),
-        ArchLayer::Conv(16, hcnn::Activation::TANH, /*bias=*/true, /*bn=*/false),
+        ArchLayer::Conv(16, hcnn::Activation::RELU, /*bias=*/true, /*bn=*/false),
+        ArchLayer::Conv(16, hcnn::Activation::RELU, /*bias=*/true, /*bn=*/false),
         ArchLayer::Conv(16, hcnn::Activation::RELU, /*bias=*/true, /*bn=*/false)
         // Examples:
         // ArchLayer::Conv(32),
@@ -96,7 +96,7 @@ struct DemoConfig {
     hcnn::OptimizerType optimizer = hcnn::OptimizerType::ADAM;
 
     // ----- Schedule -----
-    int   epochs          = 60;
+    int   epochs          = 100;
     float lr_max          = 0.001f;   // cosine peak (epoch 0)
     float lr_min_ratio    = 0.1f;     // lr_min = lr_max * ratio (floor)
     int   batch_size      = 256;
