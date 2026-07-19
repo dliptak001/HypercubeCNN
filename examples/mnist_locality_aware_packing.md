@@ -91,8 +91,8 @@ structure**.
 
 **Empirical context:** with **no antipodal pool**, geometric train aug
 (rot ±12°, scale [0.9, 1.1], shift ±2, noise), 60 epochs, **3-conv** 16-wide
-stack, best-acc **99.31%** on seed `398479293` (best-loss CE ~0.021; prior
-2-conv multi-seed mean was ~99.23%). So packing is **not** “fix a broken
+stack, best-acc **99.28%** on seed `398479293` with default shear_x (pre-shear
+peak was 99.31%; best-loss CE ~0.021). So packing is **not** “fix a broken
 model.” It is “give Hamming kernels something coherent to do,” so conv layers
 are more than mild scrubbers in front of a large FLATTEN head.
 

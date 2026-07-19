@@ -24,7 +24,7 @@ using hcnn_demo::ArchParamSummary;
 // MNIST teaching demo - thin loop on core helpers
 //
 // Loader yields 28x28 in [-1, 1].  Pipeline:
-//   (train only) HCNNSpatialAugmenter  - rot / scale / shift / noise
+//   (train only) HCNNSpatialAugmenter  - rot/scale/shift/shear/elastic + noise
 //   HCNNSpatialEmbedder                - DualPlaneResize -> N = 2^dim
 //   HCNN TrainEpoch + cosine_lr + dual checkpoint + evaluate_classification
 //
@@ -53,11 +53,11 @@ using hcnn_demo::ArchParamSummary;
 // DEVELOPER CONFIG - edit knobs here; the rest of the file follows
 // ---------------------------------------------------------------------------
 //
-// Documented default recipe (first seed 398479293: 99.31% best-acc / 99.23%
-// best-loss): DIM=11 dual-plane pack, three 16-wide RELU convs, no pool, no BN,
-// geometric aug, Adam, cosine LR 1e-3->1e-4, 60 epochs, batch 256, wd 1e-3.
-// Three-layer stack beats two-layer on this seed; multi-seed mean TBD.
-// Re-run a seed after changing any of these if you need a hard accuracy claim.
+// Documented default recipe (seed 398479293): DIM=11 DualPlane, three 16-wide
+// RELU convs, no pool/BN, rot/scale/shift + shear_x (elastic off), Adam,
+// cosine 1e-3->1e-4, 60 epochs, batch 256, wd 1e-3.
+// Measured: 99.28% best-acc / 99.25% at best-loss (shear on). Pre-shear was
+// 99.31% best-acc / 99.23% at best-loss — single-seed wash; multi-seed TBD.
 // ---------------------------------------------------------------------------
 
 static constexpr int   kImgSide     = 28;      // MNIST native side (loader)
@@ -82,8 +82,8 @@ struct DemoConfig {
     std::vector<ArchLayer> layers = {
         // Documented ~99.3% recipe: three 16-wide RELU convs, no pool
         ArchLayer::Conv(16, hcnn::Activation::RELU, /*bias=*/true, /*bn=*/false),
-        ArchLayer::Conv(16, hcnn::Activation::TANH, /*bias=*/true, /*bn=*/false),
         ArchLayer::Conv(16, hcnn::Activation::RELU, /*bias=*/true, /*bn=*/false),
+        ArchLayer::Conv(16, hcnn::Activation::RELU, /*bias=*/true, /*bn=*/false)
         // Examples:
         // ArchLayer::Conv(32),
         // ArchLayer::Pool(hcnn::PoolType::MAX),
@@ -91,12 +91,12 @@ struct DemoConfig {
     };
 
     // ----- Weight init / optimizer -----
-    // Documented default seed: 99.31% best-acc / 99.23% best-loss (3-conv stack).
+    // Documented default seed: 99.28% best-acc / 99.25% best-loss (shear on).
     unsigned weight_seed = 398479293;
     hcnn::OptimizerType optimizer = hcnn::OptimizerType::ADAM;
 
     // ----- Schedule -----
-    int   epochs          = 100;
+    int   epochs          = 60;
     float lr_max          = 0.001f;   // cosine peak (epoch 0)
     float lr_min_ratio    = 0.1f;     // lr_min = lr_max * ratio (floor)
     int   batch_size      = 256;
@@ -104,12 +104,17 @@ struct DemoConfig {
     float momentum        = 0.9f;     // passed to TrainEpoch (Adam ignores)
 
     // ----- Train-time spatial aug (test path uses None()) -----
-    // Current: rot/scale/shift + noise. Next level (shear, then mild elastic)
-    // is deferred — see TODO(aug-next) in HCNNSpatialAug.h and mnist_train.md.
+    // Affine: rot/scale/shift/shear (one inverse warp). Optional mild elastic
+    // (off by default — enable after shear A/B). Then Gaussian noise.
+    // See HCNNSpatialAug.h. Elastic dominates aug cost when on.
     float aug_rot_deg_max = 12.0f;    // uniform +/-deg about center
     float aug_scale_min   = 0.9f;
     float aug_scale_max   = 1.1f;
     int   aug_shift_max   = 2;        // integer px dy,dx in {-s..+s}
+    float aug_shear_x_max = 0.15f;    // horizontal shear ~ U[-m,m]; MNIST slant
+    float aug_shear_y_max = 0.0f;     // vertical shear off by default
+    float aug_elastic_alpha = 0.0f;   // 0=off; try 1.0 after shear A/B
+    float aug_elastic_sigma = 5.0f;   // used when elastic_alpha > 0 (in [0.25,32])
     float aug_noise_sigma = 0.03f;    // Gaussian after geometry; then clip
     // Aug RNG: seed = aug_seed_base + epoch * aug_seed_stride (reproducible).
     unsigned aug_seed_base   = 0xC0FFEEu;
@@ -147,15 +152,19 @@ static hcnn::HCNNSpatialAugConfig make_aug_config(const DemoConfig& cfg,
         return hcnn::HCNNSpatialAugConfig::None();
 
     hcnn::HCNNSpatialAugConfig ac;
-    ac.rot_deg_max  = cfg.aug_rot_deg_max;
-    ac.scale_min    = cfg.aug_scale_min;
-    ac.scale_max    = cfg.aug_scale_max;
-    ac.shift_max    = cfg.aug_shift_max;
-    ac.noise_sigma  = cfg.aug_noise_sigma;
-    ac.value_min    = -1.0f;           // clip after noise (loader range)
-    ac.value_max    =  1.0f;
-    ac.border_value = kBackground;     // bilinear OOB = empty paper
-    ac.enabled      = true;
+    ac.rot_deg_max    = cfg.aug_rot_deg_max;
+    ac.scale_min      = cfg.aug_scale_min;
+    ac.scale_max      = cfg.aug_scale_max;
+    ac.shift_max      = cfg.aug_shift_max;
+    ac.shear_x_max    = cfg.aug_shear_x_max;
+    ac.shear_y_max    = cfg.aug_shear_y_max;
+    ac.elastic_alpha  = cfg.aug_elastic_alpha;
+    ac.elastic_sigma  = cfg.aug_elastic_sigma;
+    ac.noise_sigma    = cfg.aug_noise_sigma;
+    ac.value_min      = -1.0f;           // clip after noise (loader range)
+    ac.value_max      =  1.0f;
+    ac.border_value   = kBackground;     // bilinear OOB = empty paper
+    ac.enabled        = true;
     return ac;
 }
 
@@ -227,6 +236,10 @@ static void train_and_evaluate(const char* name, hcnn::HCNN& net,
               << ", aug=rot+/-" << ac.rot_deg_max
               << "+scale[" << ac.scale_min << "," << ac.scale_max << "]"
               << "+shift+/-" << ac.shift_max
+              << "+shear_x+/-" << ac.shear_x_max
+              << "+shear_y+/-" << ac.shear_y_max
+              << "+elastic(a=" << ac.elastic_alpha
+              << ",s=" << ac.elastic_sigma << ")"
               << "+N(0," << ac.noise_sigma << ")) ===\n";
     print_eval("Initial test", hcnn::evaluate_classification(net, test_ds));
 
@@ -361,7 +374,11 @@ int main() {
     std::cout << "Train aug:  rot +/-" << cfg.aug_rot_deg_max
               << " deg, scale [" << cfg.aug_scale_min << "," << cfg.aug_scale_max
               << "], shift +/-" << cfg.aug_shift_max << " px, "
-              << "Gaussian noise sigma=" << cfg.aug_noise_sigma
+              << "shear_x +/-" << cfg.aug_shear_x_max
+              << ", shear_y +/-" << cfg.aug_shear_y_max
+              << ", elastic alpha=" << cfg.aug_elastic_alpha
+              << " sigma=" << cfg.aug_elastic_sigma
+              << ", Gaussian noise sigma=" << cfg.aug_noise_sigma
               << " (train only, refreshed each epoch)\n";
 
     hcnn::HCNN net(cfg.dim, cfg.num_outputs, cfg.input_channels);

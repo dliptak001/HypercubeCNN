@@ -15,23 +15,22 @@ namespace hcnn {
  * Independent of hypercube DIM / vertex count -- callers map augmented
  * patterns onto the network input separately (see HCNNSpatialEmbed).
  *
- * Geometry (rotate, scale, shift) is applied as **one** inverse bilinear
- * warp when any geometric term is active. Gaussian noise is applied after
- * the warp; values are clipped to [value_min, value_max] when noise runs
- * (geometry-only paths do not clip).
+ * Geometry pipeline when active:
+ *   1) Optional **single inverse bilinear affine**: scale, shear, rotate,
+ *      integer shift about the image center (one sample, not chained warps).
+ *   2) Optional **mild elastic** (Simard-style): smooth random displacement
+ *      field, then bilinear sample. Applied after affine when both run.
+ *   3) Optional Gaussian **noise** after geometry; values are clipped to
+ *      [value_min, value_max] when noise runs (geometry-only paths do not clip).
  *
  * Defaults are identity (no augmentation). `None()` sets `enabled = false`
  * (master off; apply is a pure copy and draws no RNG).
  *
- * TODO(aug-next): planned extensions for the MNIST plateau (deferred; pull
- * other threads first). Keep aug-then-embed; do not aug on packed vertices.
- *   1) Shear in the existing single affine warp (start shear_x ~ U[-0.15,0.15],
- *      shear_y mild or off) — best cheap ROI vs FLATTEN slant memorization.
- *   2) Mild elastic (Simard-style smooth displacement, small amplitude so
- *      DualPlane |grad| stays sane) — higher variance; multi-seed to claim.
- * Expected buy: ~0.02-0.1 pp best-acc, not a free jump to 99.5%. Sequence:
- * shear A/B on seed 398479293, then elastic on top, then 3-seed mean.
- * See examples/mnist_train.md "Deferred TODO".
+ * Elastic cost is O(H·W·⌈3σ⌉) per displacement field (two fields); it usually
+ * dominates aug time when enabled. Prefer shear-only A/B before turning elastic
+ * on for MNIST (see `examples/mnist_train.cpp`).
+ *
+ * Keep **aug-then-embed**; do not aug on packed vertices.
  */
 struct HCNNSpatialAugConfig {
     /// Uniform rotation in degrees over [-|rot_deg_max|, +|rot_deg_max|]. 0 = off.
@@ -46,6 +45,24 @@ struct HCNNSpatialAugConfig {
     /// 0 = off.
     int shift_max = 0;
 
+    /// Horizontal shear amount ~ U[-|shear_x_max|, +|shear_x_max|].
+    /// Applied in the affine warp as x' = x + shear_x * y (about center). 0 = off.
+    float shear_x_max = 0.0f;
+
+    /// Vertical shear amount ~ U[-|shear_y_max|, +|shear_y_max|].
+    /// y' = y + shear_y * x. 0 = off. MNIST slant is mostly horizontal.
+    /// Require |shear_x_max| * |shear_y_max| < 0.95 so the shear matrix stays
+    /// comfortably invertible (det = 1 - sx*sy).
+    float shear_y_max = 0.0f;
+
+    /// Elastic displacement scale in **pixels** (max |component| after normalize).
+    /// 0 = off. Requires elastic_sigma in [kElasticSigmaMin, kElasticSigmaMax].
+    float elastic_alpha = 0.0f;
+
+    /// Gaussian smooth sigma (pixels) for the elastic displacement field.
+    /// Larger = smoother / more global warp. Ignored when elastic_alpha == 0.
+    float elastic_sigma = 0.0f;
+
     /// Additive Gaussian noise N(0, noise_sigma^2) after warp. 0 = off.
     float noise_sigma = 0.0f;
 
@@ -59,6 +76,10 @@ struct HCNNSpatialAugConfig {
     /// Master switch. false => apply() copies in->out (no RNG draws).
     bool enabled = true;
 
+    /// Min/max elastic_sigma when elastic_alpha > 0 (inclusive).
+    static constexpr float kElasticSigmaMin = 0.25f;
+    static constexpr float kElasticSigmaMax = 32.0f;
+
     /// True when apply() is a pure copy under this config (no RNG).
     bool is_identity() const;
 
@@ -71,11 +92,12 @@ struct HCNNSpatialAugConfig {
 
 /**
  * @class HCNNSpatialAugmenter
- * @brief Stateless (aside from config) 2D spatial augmenter.
+ * @brief Config-owned 2D spatial augmenter (per-thread scratch for elastic).
  *
  * Thread-safe for concurrent apply() calls with distinct rng instances
  * when config is not mutated. Not safe to call set_config concurrently
- * with apply.
+ * with apply. Elastic path uses thread_local scratch (safe per thread;
+ * buffers grow to the max H×W seen on that thread and do not shrink).
  *
  * @code
  * hcnn::HCNNSpatialAugConfig cfg;
@@ -83,6 +105,9 @@ struct HCNNSpatialAugConfig {
  * cfg.scale_min = 0.9f;
  * cfg.scale_max = 1.1f;
  * cfg.shift_max = 2;
+ * cfg.shear_x_max = 0.15f;
+ * // cfg.elastic_alpha = 1.0f;  // optional; enable after shear A/B
+ * // cfg.elastic_sigma = 5.0f;
  * cfg.noise_sigma = 0.03f;
  * cfg.border_value = -1.0f;
  *
@@ -105,7 +130,7 @@ public:
      *
      * @param in      Source, length height*width. May equal out only when
      *                the config is identity or noise-only (no geometry).
-     *                Geometric warp requires in != out.
+     *                Affine or elastic warp requires in != out.
      * @param out     Destination, length height*width.
      * @param height  Image rows (>= 1).
      * @param width   Image cols (>= 1).

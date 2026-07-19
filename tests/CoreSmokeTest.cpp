@@ -1423,6 +1423,193 @@ static void test_spatial_aug() {
         catch (const std::runtime_error&) { threw = true; }
         check(threw, "negative noise_sigma rejected");
     }
+
+    // Shear: non-identity, deterministic, changes a non-uniform field
+    {
+        HCNNSpatialAugConfig cfg;
+        cfg.shear_x_max = 0.2f;
+        cfg.shear_y_max = 0.0f;
+        cfg.border_value = -1.0f;
+        check(!cfg.is_identity(), "shear_x_max makes config non-identity");
+        HCNNSpatialAugmenter aug(cfg);
+        const int H = 12, W = 12, n = H * W;
+        std::vector<float> src(n);
+        for (int y = 0; y < H; ++y)
+            for (int x = 0; x < W; ++x)
+                src[y * W + x] = static_cast<float>(x) / static_cast<float>(W - 1);
+
+        std::vector<float> a(n), b(n);
+        {
+            std::mt19937 rng(4242);
+            aug.apply(src.data(), a.data(), H, W, rng);
+        }
+        {
+            std::mt19937 rng(4242);
+            aug.apply(src.data(), b.data(), H, W, rng);
+        }
+        bool same = true;
+        for (int i = 0; i < n; ++i) if (a[i] != b[i]) same = false;
+        check(same, "fixed seed reproduces shear aug");
+
+        bool differ = false;
+        for (int i = 0; i < n; ++i) if (a[i] != src[i]) { differ = true; break; }
+        check(differ, "shear aug changes a horizontal gradient");
+
+        bool finite = true;
+        for (float v : a) if (!std::isfinite(v)) finite = false;
+        check(finite, "shear aug produces finite values");
+    }
+
+    // Elastic: validation, deterministic, changes content
+    {
+        HCNNSpatialAugConfig bad0;
+        bad0.elastic_alpha = 1.0f;
+        bad0.elastic_sigma = 0.0f;
+        bool threw = false;
+        try { HCNNSpatialAugmenter aug(bad0); (void)aug; }
+        catch (const std::runtime_error&) { threw = true; }
+        check(threw, "elastic_alpha without elastic_sigma rejected");
+
+        HCNNSpatialAugConfig bad_lo;
+        bad_lo.elastic_alpha = 1.0f;
+        bad_lo.elastic_sigma = 0.1f; // below kElasticSigmaMin
+        threw = false;
+        try { HCNNSpatialAugmenter aug(bad_lo); (void)aug; }
+        catch (const std::runtime_error&) { threw = true; }
+        check(threw, "elastic_sigma below min rejected");
+
+        HCNNSpatialAugConfig bad_hi;
+        bad_hi.elastic_alpha = 1.0f;
+        bad_hi.elastic_sigma = 100.0f;
+        threw = false;
+        try { HCNNSpatialAugmenter aug(bad_hi); (void)aug; }
+        catch (const std::runtime_error&) { threw = true; }
+        check(threw, "elastic_sigma above max rejected");
+
+        HCNNSpatialAugConfig bad_shear;
+        bad_shear.shear_x_max = 1.0f;
+        bad_shear.shear_y_max = 1.0f; // product 1.0 >= 0.95
+        threw = false;
+        try { HCNNSpatialAugmenter aug(bad_shear); (void)aug; }
+        catch (const std::runtime_error&) { threw = true; }
+        check(threw, "near-singular shear product rejected");
+
+        // Note: isfinite guards in validate() are best-effort; Release may use
+        // -ffast-math which can break NaN tests, so we do not smoke NaN here.
+
+        HCNNSpatialAugConfig cfg;
+        cfg.elastic_alpha = 1.5f;
+        cfg.elastic_sigma = 4.0f;
+        cfg.border_value = -1.0f;
+        check(!cfg.is_identity(), "elastic_alpha makes config non-identity");
+        HCNNSpatialAugmenter aug(cfg);
+        const int H = 16, W = 16, n = H * W;
+        std::vector<float> src(n);
+        for (int i = 0; i < n; ++i)
+            src[i] = std::sin(0.2f * static_cast<float>(i));
+
+        std::vector<float> a(n), b(n);
+        {
+            std::mt19937 rng(777);
+            aug.apply(src.data(), a.data(), H, W, rng);
+        }
+        {
+            std::mt19937 rng(777);
+            aug.apply(src.data(), b.data(), H, W, rng);
+        }
+        bool same = true;
+        for (int i = 0; i < n; ++i) if (a[i] != b[i]) same = false;
+        check(same, "fixed seed reproduces elastic aug");
+
+        bool differ = false;
+        for (int i = 0; i < n; ++i) if (std::fabs(a[i] - src[i]) > 1e-6f) {
+            differ = true; break;
+        }
+        check(differ, "elastic aug changes a sinusoidal field");
+
+        // Mild elastic should not destroy a constant field interior into border.
+        std::vector<float> solid(n, 0.5f), out_s(n);
+        {
+            std::mt19937 rng(3);
+            aug.apply(solid.data(), out_s.data(), H, W, rng);
+        }
+        int interior_ok = 0;
+        int interior_n = 0;
+        for (int y = 2; y < H - 2; ++y) {
+            for (int x = 2; x < W - 2; ++x) {
+                ++interior_n;
+                const float v = out_s[y * W + x];
+                if (std::isfinite(v) && std::fabs(v - 0.5f) < 0.25f)
+                    ++interior_ok;
+            }
+        }
+        check(interior_ok * 2 >= interior_n,
+              "mild elastic keeps most solid-field interior near constant");
+
+        // in == out rejected for elastic
+        std::vector<float> buf = src;
+        std::mt19937 rng(0);
+        threw = false;
+        try { aug.apply(buf.data(), buf.data(), H, W, rng); }
+        catch (const std::runtime_error&) { threw = true; }
+        check(threw, "elastic aug rejects in == out");
+    }
+
+    // Shear geometry: horizontal ramp f=x tilts under shear_x (row profiles differ)
+    {
+        HCNNSpatialAugConfig cfg;
+        cfg.shear_x_max = 0.25f;
+        cfg.border_value = -1.0f;
+        HCNNSpatialAugmenter aug(cfg);
+        const int H = 20, W = 20, n = H * W;
+        std::vector<float> src(n), dst(n);
+        for (int y = 0; y < H; ++y)
+            for (int x = 0; x < W; ++x)
+                src[y * W + x] = static_cast<float>(x);
+        std::mt19937 rng(42);
+        aug.apply(src.data(), dst.data(), H, W, rng);
+
+        // Compare mid columns of top vs bottom rows (excluding borders).
+        // Pure horizontal ramp is constant down columns; shear mixes x with y.
+        float top_mid = 0.0f, bot_mid = 0.0f;
+        int cnt = 0;
+        for (int x = 4; x < W - 4; ++x) {
+            top_mid += dst[2 * W + x];
+            bot_mid += dst[(H - 3) * W + x];
+            ++cnt;
+        }
+        top_mid /= static_cast<float>(cnt);
+        bot_mid /= static_cast<float>(cnt);
+        check(std::fabs(top_mid - bot_mid) > 0.05f,
+              "shear_x tilts horizontal ramp across rows");
+    }
+
+    // Affine + elastic composition is deterministic
+    {
+        HCNNSpatialAugConfig cfg;
+        cfg.rot_deg_max = 8.0f;
+        cfg.shear_x_max = 0.1f;
+        cfg.elastic_alpha = 1.0f;
+        cfg.elastic_sigma = 5.0f;
+        cfg.border_value = -1.0f;
+        HCNNSpatialAugmenter aug(cfg);
+        const int H = 14, W = 14, n = H * W;
+        std::vector<float> src(n, 0.3f);
+        for (int i = 0; i < n; ++i)
+            src[i] = 0.01f * static_cast<float>(i % 17);
+        std::vector<float> a(n), b(n);
+        {
+            std::mt19937 rng(13579);
+            aug.apply(src.data(), a.data(), H, W, rng);
+        }
+        {
+            std::mt19937 rng(13579);
+            aug.apply(src.data(), b.data(), H, W, rng);
+        }
+        bool same = true;
+        for (int i = 0; i < n; ++i) if (a[i] != b[i]) same = false;
+        check(same, "fixed seed reproduces shear+elastic composition");
+    }
 }
 
 // ---------------------------------------------------------------------------

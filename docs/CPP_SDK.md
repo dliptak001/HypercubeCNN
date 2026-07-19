@@ -46,7 +46,7 @@ Consumers include `"HCNN.h"` and link against `HypercubeCNNCore`. `HCNN` is the 
 
 **Spatial preprocess** (optional, image demos):
 
-- **`HCNNSpatialAug.h`** — 2D geometric aug on any **H×W** grid (DIM-agnostic): rotate / scale / shift + noise.
+- **`HCNNSpatialAug.h`** — 2D geometric aug on any **H×W** grid (DIM-agnostic): rotate / scale / shift / shear, optional mild elastic, then noise.
 - **`HCNNSpatialEmbed.h`** — map a 2D image into a length **N = 2^dim** buffer with pattern length **P ≤ N**: row-major pad, resize-to-fit square, or dual-plane (ink ‖ |grad|).
 
 Typical order: aug at native resolution → embed into N → `HCNN` train/infer. Full guide: [`docs/spatial_preprocess.md`](spatial_preprocess.md).

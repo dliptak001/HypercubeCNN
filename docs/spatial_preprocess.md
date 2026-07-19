@@ -9,10 +9,6 @@ each other beyond a recommended pipeline order.
 | Spatial aug | `HCNNSpatialAug.h` | Stochastic 2D geometry / noise on any **H×W** grid | No |
 | Spatial embed | `HCNNSpatialEmbed.h` | Layout a 2D image into length **N = 2^dim** with **pattern length P ≤ N** | Yes (`dim`) |
 
-**Deferred (`TODO(aug-next)` in `HCNNSpatialAug.h`):** shear in the affine warp,
-then mild elastic — wanted for the MNIST plateau after other threads; see
-`examples/mnist_train.md` “Deferred TODO”.
-
 Native hypercube data (already length ≤ N) can ignore both modules and use
 `HCNN::Embed` / `TrainEpoch` directly.
 
@@ -134,10 +130,18 @@ Cartesian Gray / Hilbert maps see `examples/mnist_locality_aware_packing.md`
 
 See `HCNNSpatialAug.h`:
 
-- Config: rotate ±deg, scale range, integer shift, Gaussian noise, border, clip.
-- One inverse bilinear warp for geometry; noise after.
+- **Affine (one inverse bilinear warp):** rotate ±deg, scale range, integer
+  shift, shear_x / shear_y (about center). Order: scale → shear → rotate → shift.
+  Require `|shear_x_max| * |shear_y_max| < 0.95` (invertible shear).
+- **Elastic (optional, after affine):** Simard-style smooth random displacement;
+  `elastic_alpha` = max |component| in pixels after field normalize;
+  `elastic_sigma` in `[0.25, 32]` when alpha > 0.
+  Cost is **O(H·W·⌈3σ⌉)** per field (two fields) — usually dominates aug time.
+- **Noise:** Gaussian after geometry; clip to `[value_min, value_max]`.
 - Any **H×W**; no `dim` field.
-- Geometric path requires `in != out`.
+- Affine or elastic requires `in != out`. Elastic uses thread_local scratch
+  (grows to max size seen on the thread).
+- Prefer **shear A/B first**, then enable elastic (MNIST demo defaults elastic off).
 
 ---
 
@@ -154,6 +158,9 @@ acfg.rot_deg_max = 12.f;
 acfg.scale_min = 0.9f;
 acfg.scale_max = 1.1f;
 acfg.shift_max = 2;
+acfg.shear_x_max = 0.15f;   // next-level: shear first
+// acfg.elastic_alpha = 1.f; // optional after shear A/B
+// acfg.elastic_sigma = 5.f;
 acfg.noise_sigma = 0.03f;
 acfg.border_value = -1.f;
 hcnn::HCNNSpatialAugmenter aug(acfg);
