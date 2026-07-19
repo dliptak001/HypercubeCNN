@@ -49,6 +49,14 @@ void HCNN::SetOptimizer(OptimizerType type, float beta1, float beta2, float eps)
     net_->set_optimizer(type, beta1, beta2, eps);
 }
 
+void HCNN::SetReadoutGradInLoop(ReadoutGradInLoop loop) {
+    net_->get_readout().set_grad_in_loop(loop);
+}
+
+ReadoutGradInLoop HCNN::GetReadoutGradInLoop() const {
+    return net_->get_readout().get_grad_in_loop();
+}
+
 void HCNN::PrepareBuffers() {
     net_->prepare_all_buffers();
 }

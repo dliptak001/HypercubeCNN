@@ -13,6 +13,23 @@
 namespace hcnn {
 
 /**
+ * Loop nest used when forming grad_in = W^T * grad_logits.
+ *
+ * Both orders compute the same sums (same add order per feature when
+ * OutputOuter zeros then accumulates o = 0 .. O-1).  They differ only in
+ * memory traffic / vectorization — for A/B timing of the linear head.
+ *
+ *   OutputOuter  — for each output o, stream weight row o into grad_in.
+ *                  Sequential W reads; grad_in is RMW'd O times. (default)
+ *   FeatureOuter — for each feature f, sum over outputs (legacy A/B).
+ *                  Touches W column-strided (stride = num_features).
+ */
+enum class ReadoutGradInLoop {
+    FeatureOuter,
+    OutputOuter
+};
+
+/**
  * @class HCNNReadout
  * @brief Final pipeline stage: linear map from a flat feature vector to
  *        `num_outputs` real-valued scalars (FLATTEN head).
@@ -56,6 +73,7 @@ public:
                   float weight_decay = 0.0f, int timestep = 0);
 
     /// Write raw weight/bias/input gradients; no weight update.
+    /// `grad_in`, `weight_grad`, and `bias_grad` may each be null if unused.
     void compute_gradients(const float* grad_logits, const float* in,
                            float* grad_in, float* weight_grad, float* bias_grad) const;
 
@@ -68,6 +86,11 @@ public:
     void set_optimizer(OptimizerType type, float beta1 = 0.9f,
                        float beta2 = 0.999f, float eps = 1e-8f);
 
+    /// Select grad_in loop nest (A/B). Default OutputOuter. Does not affect
+    /// forward, dW, or optimizer math — only how W^T * grad_logits is formed.
+    void set_grad_in_loop(ReadoutGradInLoop loop) { grad_in_loop_ = loop; }
+    ReadoutGradInLoop get_grad_in_loop() const { return grad_in_loop_; }
+
     int get_num_outputs() const { return num_outputs; }
     int get_num_features() const { return num_features; }
 
@@ -79,6 +102,9 @@ public:
     int get_bias_size() const { return static_cast<int>(bias.size()); }
 
 private:
+    /// Fill grad_in[0..num_features) = W^T * grad_logits using grad_in_loop_.
+    void fill_grad_in(const float* grad_logits, float* grad_in) const;
+
     int num_outputs;
     int num_features;
     std::vector<float> weights;     // [num_outputs * num_features], row = output
@@ -89,6 +115,7 @@ private:
     std::vector<float> bias_m2;
     OptimizerType optimizer_type_ = OptimizerType::SGD;
     float adam_beta1_ = 0.9f, adam_beta2_ = 0.999f, adam_eps_ = 1e-8f;
+    ReadoutGradInLoop grad_in_loop_ = ReadoutGradInLoop::OutputOuter;
 };
 
 } // namespace hcnn

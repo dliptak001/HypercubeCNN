@@ -162,6 +162,18 @@ num_outputs * (c_final * N_final) + num_outputs
 
 Often dominates total params when pools are few and N is large (MNIST-style demos).
 
+### 4.1 `grad_in` loop A/B (`ReadoutGradInLoop`)
+
+Backprop into features is `grad_in = W^T * grad_logits`. Two loop nests (same
+math; pick via `HCNN::SetReadoutGradInLoop` or `HCNNReadout::set_grad_in_loop`):
+
+| Enum | Nest | W access |
+|------|------|----------|
+| `OutputOuter` (default) | for o: stream row into `grad_in` | sequential rows |
+| `FeatureOuter` | for f: sum over o | column-strided |
+
+Default is `OutputOuter` (faster on MNIST-scale heads in Release A/B). Setting survives `RandomizeWeights`.
+
 ---
 
 ## 5. Training architecture (`HCNNNetwork`)

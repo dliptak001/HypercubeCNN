@@ -125,6 +125,12 @@ public:
     void SetOptimizer(OptimizerType type, float beta1 = 0.9f,
                       float beta2 = 0.999f, float eps = 1e-8f);
 
+    /// A/B: how the FLATTEN head forms grad_in = W^T * grad_logits.
+    /// Default OutputOuter. Survives RandomizeWeights. No effect on
+    /// forward or weight-update math — only the input-gradient loop nest.
+    void SetReadoutGradInLoop(ReadoutGradInLoop loop);
+    ReadoutGradInLoop GetReadoutGradInLoop() const;
+
     /// Eagerly allocate all internal work buffers (single-step, batch,
     /// and inference).  Normally these are allocated lazily on first use;
     /// call this after architecture setup to move the cost to startup.

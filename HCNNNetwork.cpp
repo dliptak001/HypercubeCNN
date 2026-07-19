@@ -94,7 +94,10 @@ void HCNNNetwork::randomize_all_weights(float scale, unsigned seed) {
     int final_channels = channel_counts.back();
     int final_N = 1 << current_dim;
 
+    // Preserve A/B grad_in loop choice across re-allocation of the head.
+    const ReadoutGradInLoop gin_loop = readout.get_grad_in_loop();
     readout = HCNNReadout(num_outputs, final_channels * final_N);
+    readout.set_grad_in_loop(gin_loop);
 
     std::mt19937 rng(seed);
     for (auto& layer : conv_layers) {

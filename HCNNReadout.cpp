@@ -63,6 +63,30 @@ void HCNNReadout::forward(const float* in, float* out) const {
     }
 }
 
+void HCNNReadout::fill_grad_in(const float* grad_logits, float* grad_in) const {
+    if (grad_in_loop_ == ReadoutGradInLoop::FeatureOuter) {
+        // Legacy A/B: for each feature, sum over outputs (column of W).
+        for (int f = 0; f < num_features; ++f) {
+            float g = 0.0f;
+            for (int o = 0; o < num_outputs; ++o) {
+                g += grad_logits[o] * weights[static_cast<size_t>(o) * num_features + f];
+            }
+            grad_in[f] = g;
+        }
+        return;
+    }
+
+    // OutputOuter (default): stream each weight row into grad_in.
+    std::fill(grad_in, grad_in + num_features, 0.0f);
+    for (int o = 0; o < num_outputs; ++o) {
+        const float go = grad_logits[o];
+        const float* wrow = weights.data() + static_cast<size_t>(o) * num_features;
+        for (int f = 0; f < num_features; ++f) {
+            grad_in[f] += go * wrow[f];
+        }
+    }
+}
+
 void HCNNReadout::backward(const float* grad_logits, const float* in,
                            float* grad_in, float learning_rate, float momentum,
                            float weight_decay, int timestep) {
@@ -71,13 +95,7 @@ void HCNNReadout::backward(const float* grad_logits, const float* in,
     const float bc2 = use_adam ? 1.0f - static_cast<float>(std::pow(adam_beta2_, timestep)) : 1.0f;
 
     if (grad_in) {
-        for (int f = 0; f < num_features; ++f) {
-            float g = 0.0f;
-            for (int o = 0; o < num_outputs; ++o) {
-                g += grad_logits[o] * weights[static_cast<size_t>(o) * num_features + f];
-            }
-            grad_in[f] = g;
-        }
+        fill_grad_in(grad_logits, grad_in);
     }
 
     for (int o = 0; o < num_outputs; ++o) {
@@ -116,20 +134,21 @@ void HCNNReadout::compute_gradients(const float* grad_logits, const float* in,
                                     float* grad_in, float* weight_grad,
                                     float* bias_grad) const {
     if (grad_in) {
-        for (int f = 0; f < num_features; ++f) {
-            float g = 0.0f;
-            for (int o = 0; o < num_outputs; ++o) {
-                g += grad_logits[o] * weights[static_cast<size_t>(o) * num_features + f];
-            }
-            grad_in[f] = g;
-        }
+        fill_grad_in(grad_logits, grad_in);
+    }
+
+    // weight_grad / bias_grad may be null (e.g. microbench of grad_in only).
+    if (!weight_grad && !bias_grad) {
+        return;
     }
 
     for (int o = 0; o < num_outputs; ++o) {
         const float go = grad_logits[o];
-        float* wg = weight_grad + static_cast<size_t>(o) * num_features;
-        for (int f = 0; f < num_features; ++f) {
-            wg[f] = go * in[f];
+        if (weight_grad) {
+            float* wg = weight_grad + static_cast<size_t>(o) * num_features;
+            for (int f = 0; f < num_features; ++f) {
+                wg[f] = go * in[f];
+            }
         }
         if (bias_grad) bias_grad[o] = go;
     }

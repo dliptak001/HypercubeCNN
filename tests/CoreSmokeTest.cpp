@@ -8,11 +8,13 @@
 // readout-type variations.
 
 #include "HCNN.h"
+#include "HCNNReadout.h"
 #include "HCNNSpatialAug.h"
 #include "HCNNSpatialEmbed.h"
 #include "HCNNTrainHelpers.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <iostream>
 #include <random>
@@ -21,6 +23,8 @@
 #include <vector>
 
 using hcnn::HCNN;
+using hcnn::HCNNReadout;
+using hcnn::ReadoutGradInLoop;
 using hcnn::PoolType;
 using hcnn::TaskType;
 using hcnn::LossType;
@@ -725,6 +729,92 @@ static void test_flatten_readout() {
               "FLATTEN + Adam: loss decreased ("
               + std::to_string(loss_before) + " -> " + std::to_string(loss_after) + ")");
     }
+}
+
+// A/B: FeatureOuter vs OutputOuter for grad_in = W^T * g.
+// Power-user path (HCNNReadout) for a pure head microbench + numerical match.
+// Also checks HCNN facade preserves the setting across RandomizeWeights.
+static void test_readout_grad_in_loop_ab() {
+    std::cout << "\n[Readout grad_in loop A/B]\n";
+
+    // --- Facade: setting survives RandomizeWeights ---
+    {
+        HCNN net(5, 4);
+        net.AddConv(8);
+        check(net.GetReadoutGradInLoop() == ReadoutGradInLoop::OutputOuter,
+              "default grad_in loop is OutputOuter");
+        net.SetReadoutGradInLoop(ReadoutGradInLoop::FeatureOuter);
+        net.RandomizeWeights(0.0f, 99);
+        check(net.GetReadoutGradInLoop() == ReadoutGradInLoop::FeatureOuter,
+              "SetReadoutGradInLoop survives RandomizeWeights");
+        net.SetReadoutGradInLoop(ReadoutGradInLoop::OutputOuter);
+        check(net.GetReadoutGradInLoop() == ReadoutGradInLoop::OutputOuter,
+              "can switch back to OutputOuter");
+    }
+
+    // MNIST-ish head size: 16 * 2048 -> 10
+    const int O = 10;
+    const int F = 16 * 2048;
+    HCNNReadout ro(O, F);
+    std::mt19937 rng(12345);
+    ro.randomize_weights(0.0f, rng);
+
+    std::vector<float> in(F), glog(O), gin_a(F), gin_b(F);
+    std::vector<float> wgrad(static_cast<size_t>(O) * F), bgrad(O);
+    std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+    for (auto& v : in) v = dist(rng);
+    for (auto& v : glog) v = dist(rng);
+
+    ro.set_grad_in_loop(ReadoutGradInLoop::FeatureOuter);
+    ro.compute_gradients(glog.data(), in.data(), gin_a.data(),
+                         wgrad.data(), bgrad.data());
+
+    ro.set_grad_in_loop(ReadoutGradInLoop::OutputOuter);
+    ro.compute_gradients(glog.data(), in.data(), gin_b.data(),
+                         wgrad.data(), bgrad.data());
+
+    float max_abs = 0.0f;
+    for (int f = 0; f < F; ++f) {
+        max_abs = std::max(max_abs, std::abs(gin_a[f] - gin_b[f]));
+    }
+    // Same add order per feature → expect exact match; allow tiny slack.
+    check(max_abs == 0.0f || max_abs < 1e-5f,
+          "FeatureOuter vs OutputOuter grad_in match (max_abs="
+          + std::to_string(max_abs) + ")");
+
+    // Microbench: grad_in only (weight_grad/bias_grad null so dW is skipped).
+    auto time_loop = [&](ReadoutGradInLoop loop, int iters) {
+        ro.set_grad_in_loop(loop);
+        for (int i = 0; i < 50; ++i) {
+            ro.compute_gradients(glog.data(), in.data(), gin_a.data(),
+                                 nullptr, nullptr);
+        }
+        const auto t0 = std::chrono::steady_clock::now();
+        for (int i = 0; i < iters; ++i) {
+            ro.compute_gradients(glog.data(), in.data(), gin_a.data(),
+                                 nullptr, nullptr);
+        }
+        const auto t1 = std::chrono::steady_clock::now();
+        return std::chrono::duration<double, std::milli>(t1 - t0).count();
+    };
+
+    const int iters = 500;
+    const double ms_feat = time_loop(ReadoutGradInLoop::FeatureOuter, iters);
+    const double ms_out  = time_loop(ReadoutGradInLoop::OutputOuter, iters);
+    std::cout << "  INFO  grad_in-only A/B (O=" << O << " F=" << F
+              << " iters=" << iters << "):\n";
+    std::cout << "  INFO    FeatureOuter: " << ms_feat << " ms  ("
+              << (ms_feat / iters) << " ms/call)\n";
+    std::cout << "  INFO    OutputOuter:  " << ms_out << " ms  ("
+              << (ms_out / iters) << " ms/call)\n";
+    if (ms_feat > 0.0) {
+        std::cout << "  INFO    OutputOuter/FeatureOuter ratio: "
+                  << (ms_out / ms_feat)
+                  << "  (<1 => OutputOuter faster on this machine)\n";
+    }
+    check(std::isfinite(ms_feat) && std::isfinite(ms_out) && ms_feat > 0.0
+              && ms_out > 0.0,
+          "grad_in A/B microbench produced finite positive times");
 }
 
 static void test_avg_pool_training() {
@@ -2148,6 +2238,7 @@ int main() {
     test_activations();
     test_adam();
     test_flatten_readout();
+    test_readout_grad_in_loop_ab();
     test_avg_pool_training();
     test_weight_decay();
     test_embed_padding_and_truncation();
