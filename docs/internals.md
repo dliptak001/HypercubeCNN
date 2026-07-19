@@ -61,8 +61,10 @@ activations:    data[c * N + v]   (channel-major)
 
 Self is **never** implemented as `1 << DIM` (that shift is undefined for large DIM). It is a contiguous multiply-add over `in[v]`.
 
-Constraints: `3 ≤ DIM ≤ 30` at network construction (`N = 2^DIM` in 32-bit int).
-Conv layers accept the same practical range as the host network dimension.
+Constraints: `3 ≤ DIM ≤ 30` for both `HCNNNetwork` and `HCNNConv`
+(`N = 2^DIM` fits in signed 32-bit int). BN backward requires the
+`bn_save` buffer from the matching forward (`get_bn_save_size()` =
+`3 * c_out`: inv_std, mean, var).
 
 ### 2.2 Forward path structure
 

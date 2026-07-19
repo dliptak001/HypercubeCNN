@@ -107,7 +107,8 @@ public:
      * directions (indices 0 .. DIM-1).  Kernel and bias weights are
      * initialized to zero; call randomize_weights() before training.
      *
-     * Requires dim >= 3.
+     * Requires 3 <= dim <= 30 (N = 2^dim fits in signed 32-bit int) and
+     * c_in >= 1, c_out >= 1.
      *
      * @param dim            Hypercube dimension.  The layer operates on N = 2^dim vertices.
      * @param c_in           Number of input channels.
@@ -153,36 +154,38 @@ public:
      * @param[out] out      Output activations, channel-major [c_out * N].
      * @param[out] pre_act  If non-null, receives the pre-activation values
      *                      [c_out * N].  Required by backward().
-     * @param[out] bn_save  If non-null and BN enabled, receives per-channel
-     *                      inv_std values [c_out].  Required by backward() in
-     *                      training mode.
+     * @param[out] bn_save  If non-null and BN enabled, receives layout
+     *                      [inv_std(c_out), mean(c_out), var(c_out)] —
+     *                      length get_bn_save_size().  Required for backward
+     *                      / compute_gradients when BN is enabled.
      */
     void forward(const float* in, float* out, float* pre_act = nullptr,
                  float* bn_save = nullptr) const;
 
     /**
-     * @brief Backward pass: compute input gradients and update weights via SGD.
+     * @brief Backward pass: input gradients + in-place optimizer step
+     *        (SGD+momentum or Adam, per set_optimizer).
      *
-     * Applies the chain rule through the activation function, then:
-     *   -# Computes grad_in (if non-null) using the same XOR-lookup structure
-     *      as forward (XOR is self-inverse, so the transpose is itself).
-     *   -# Updates kernel weights using momentum SGD:
-     *      v <- mu*v + g,  w <- w - eta*v
-     *   -# Updates bias weights similarly (if bias is enabled).
+     * Applies the chain rule through the activation (and BN if enabled), then:
+     *   -# Computes grad_in (if non-null) using the same XOR/self structure
+     *      as forward (XOR is self-inverse).
+     *   -# Updates kernel / bias / BN params via the configured optimizer.
+     *      Weight decay applies to kernels only (not bias or BN affine).
+     *
+     * When use_batchnorm, bn_save from the matching forward is required.
      *
      * @param[in]  grad_out      Gradient of loss w.r.t. output activations [c_out * N].
      * @param[in]  in            Input activations from the forward pass [c_in * N].
      * @param[in]  pre_act       Pre-activation values from the forward pass [c_out * N].
      * @param[out] grad_in       Gradient of loss w.r.t. input activations [c_in * N],
      *                           or nullptr if not needed (e.g. first layer).
-     * @param      learning_rate SGD learning rate (eta).
-     * @param      momentum      SGD momentum coefficient (mu); default 0 (no momentum).
-     * @param      weight_decay  L2 regularization coefficient; default 0 (no decay).
-     * @param[in]  post_act      Optional post-activation values [c_out * N] from the
-     *                           forward pass.  When supplied and activation==TANH,
-     *                           the activation derivative is computed as 1 - y^2
-     *                           from the post-activation, avoiding a redundant
-     *                           std::tanh call per element.  Numerically equivalent.
+     * @param      learning_rate Learning rate (eta).
+     * @param      momentum      SGD momentum coefficient (mu); ignored by Adam.
+     * @param      weight_decay  L2 / decoupled decay on kernels; default 0.
+     * @param[in]  bn_save       BN cache from forward (required if BN enabled).
+     * @param      timestep      Adam bias-correction step (t >= 1); ignored by SGD.
+     * @param[in]  post_act      Optional post-activation [c_out * N].  When set
+     *                           and activation==TANH, derivative uses 1 - y^2.
      */
     void backward(const float* grad_out, const float* in, const float* pre_act,
                   float* grad_in, float learning_rate, float momentum = 0.0f,
@@ -190,11 +193,13 @@ public:
                   int timestep = 0, const float* post_act = nullptr);
 
     /**
-     * @brief Compute gradients without applying an SGD update.
+     * @brief Compute gradients without applying an optimizer update.
      *
-     * Identical to the gradient-computation portion of backward(), but writes
-     * raw gradients into caller-provided buffers instead of updating internal
-     * weights.  Used for numerical gradient checking.
+     * Same gradient math as backward(), but writes raw grads into caller
+     * buffers.  Used by mini-batch training (accumulate then apply_gradients)
+     * and by numerical gradient checks.
+     *
+     * When use_batchnorm, bn_save from the matching forward is required.
      *
      * @param[in]  grad_out    Gradient of loss w.r.t. output activations [c_out * N].
      * @param[in]  in          Input activations from the forward pass [c_in * N].
@@ -204,11 +209,10 @@ public:
      * @param[out] kernel_grad Gradient of loss w.r.t. kernel weights [c_out * c_in * K].
      * @param[out] bias_grad   Gradient of loss w.r.t. bias [c_out],
      *                         or nullptr if bias is disabled.
-     * @param[in]  post_act    Optional post-activation values [c_out * N] from the
-     *                         forward pass.  When supplied and activation==TANH,
-     *                         the activation derivative is computed as 1 - y^2
-     *                         from the post-activation, avoiding a redundant
-     *                         std::tanh call per element.  Numerically equivalent.
+     * @param      work_buf    Optional scratch [c_out * N]; heap fallback if null.
+     * @param[in]  bn_save     BN cache from forward (required if BN enabled).
+     * @param[out] bn_gamma_grad / bn_beta_grad  BN affine grads, or null.
+     * @param[in]  post_act    Optional post-activation for TANH 1-y^2 path.
      */
     void compute_gradients(const float* grad_out, const float* in, const float* pre_act,
                            float* grad_in, float* kernel_grad, float* bias_grad,
@@ -218,16 +222,18 @@ public:
                            const float* post_act = nullptr) const;
 
     /**
-     * @brief Apply externally computed gradients via momentum SGD.
+     * @brief Apply externally computed (e.g. batch-averaged) gradients.
      *
-     * Used by mini-batch training: gradients are computed per-sample via
-     * compute_gradients(), averaged across the batch, then applied here.
+     * Used by mini-batch training after compute_gradients + reduce.
+     * Optimizer is SGD+momentum or Adam (same formulas as backward).
      *
      * @param kernel_grad  Averaged kernel gradients [c_out * c_in * K].
      * @param bias_grad    Averaged bias gradients [c_out], or nullptr if no bias.
-     * @param learning_rate SGD learning rate.
-     * @param momentum      SGD momentum coefficient.
-     * @param weight_decay  L2 regularization coefficient; default 0.
+     * @param learning_rate Learning rate.
+     * @param momentum      SGD momentum; ignored by Adam.
+     * @param weight_decay  Kernel decay; default 0.
+     * @param bn_gamma_grad / bn_beta_grad  BN affine grads when BN enabled.
+     * @param timestep      Adam bias-correction step (t >= 1).
      */
     void apply_gradients(const float* kernel_grad, const float* bias_grad,
                          float learning_rate, float momentum, float weight_decay = 0.0f,

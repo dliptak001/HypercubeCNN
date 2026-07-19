@@ -5,7 +5,9 @@
 #include "ThreadPool.h"
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <stdexcept>
+#include <string>
 
 namespace hcnn {
 
@@ -51,8 +53,8 @@ namespace {
 //   kw[dim]         = self / center weight (multiplies in[v], not a neighbor)
 //
 // Never form (1 << dim) as a mask — self is handled as a contiguous SAXPY.
-// Max dim is 32; stack buffers use K_MAX = 33.
-static constexpr int K_MAX = 33;  // DIM_MAX + 1
+// Max dim is 30; K_MAX = 31 would suffice; keep 33 for stack headroom.
+static constexpr int K_MAX = 33;  // >= DIM_MAX + 1
 
 // Forward accumulate:
 //   out_co[v] = b
@@ -248,22 +250,33 @@ inline void conv_grad_in_range(float* gi, const float* grad_pre,
 
 HCNNConv::HCNNConv(int dim, int c_in, int c_out, Activation activation,
                    bool use_bias, bool use_batchnorm)
-    : DIM(dim), N(1 << dim), c_in(c_in), c_out(c_out),
+    : DIM(dim), N(0), c_in(c_in), c_out(c_out),
       K(dim + 1),  // DIM neighbor directions + 1 self tap
-      activation(activation), use_bias(use_bias), use_batchnorm(use_batchnorm),
-      kernel(c_out * c_in * K, 0.0f),
-      bias(use_bias ? c_out : 0, 0.0f),
-      kernel_m(c_out * c_in * K, 0.0f),
-      bias_m(use_bias ? c_out : 0, 0.0f),
-      bn_gamma(use_batchnorm ? c_out : 0, 1.0f),
-      bn_beta(use_batchnorm ? c_out : 0, 0.0f),
-      bn_running_mean(use_batchnorm ? c_out : 0, 0.0f),
-      bn_running_var(use_batchnorm ? c_out : 0, 1.0f),
-      bn_gamma_m(use_batchnorm ? c_out : 0, 0.0f),
-      bn_beta_m(use_batchnorm ? c_out : 0, 0.0f) {
-    if (DIM < 3 || DIM > 32) {
-        throw std::runtime_error("HCNNConv requires 3 <= DIM <= 32");
+      activation(activation), use_bias(use_bias), use_batchnorm(use_batchnorm) {
+    // Align with HCNNNetwork: N = 2^dim must fit in signed 32-bit int.
+    if (DIM < 3 || DIM > 30) {
+        throw std::runtime_error("HCNNConv requires 3 <= DIM <= 30");
     }
+    if (c_in < 1) {
+        throw std::runtime_error("HCNNConv requires c_in >= 1");
+    }
+    if (c_out < 1) {
+        throw std::runtime_error("HCNNConv requires c_out >= 1");
+    }
+    N = static_cast<int>(std::uint32_t{1} << DIM);
+
+    const size_t k_elems = static_cast<size_t>(c_out) * static_cast<size_t>(c_in)
+                         * static_cast<size_t>(K);
+    kernel.assign(k_elems, 0.0f);
+    bias.assign(use_bias ? static_cast<size_t>(c_out) : 0, 0.0f);
+    kernel_m.assign(k_elems, 0.0f);
+    bias_m.assign(use_bias ? static_cast<size_t>(c_out) : 0, 0.0f);
+    bn_gamma.assign(use_batchnorm ? static_cast<size_t>(c_out) : 0, 1.0f);
+    bn_beta.assign(use_batchnorm ? static_cast<size_t>(c_out) : 0, 0.0f);
+    bn_running_mean.assign(use_batchnorm ? static_cast<size_t>(c_out) : 0, 0.0f);
+    bn_running_var.assign(use_batchnorm ? static_cast<size_t>(c_out) : 0, 1.0f);
+    bn_gamma_m.assign(use_batchnorm ? static_cast<size_t>(c_out) : 0, 0.0f);
+    bn_beta_m.assign(use_batchnorm ? static_cast<size_t>(c_out) : 0, 0.0f);
 }
 
 void HCNNConv::randomize_weights(float scale, std::mt19937& rng) {
@@ -485,7 +498,15 @@ void HCNNConv::backward(const float* grad_out, const float* in, const float* pre
                     float* grad_in, float learning_rate, float momentum,
                     float weight_decay, const float* bn_save, int timestep,
                     const float* post_act) {
-    const bool use_adam = (optimizer_type_ == OptimizerType::ADAM && timestep > 0);
+    if (use_batchnorm && !bn_save) {
+        throw std::runtime_error(
+            "HCNNConv::backward: batchnorm requires bn_save from forward");
+    }
+    if (optimizer_type_ == OptimizerType::ADAM && timestep <= 0) {
+        throw std::runtime_error(
+            "HCNNConv::backward: Adam requires timestep >= 1");
+    }
+    const bool use_adam = (optimizer_type_ == OptimizerType::ADAM);
     const bool use_threads = thread_pool && DIM >= THREAD_DIM_THRESHOLD;
 
     // Adam bias-correction denominators — constant for the entire update.
@@ -512,7 +533,7 @@ void HCNNConv::backward(const float* grad_out, const float* in, const float* pre
     }
 
     // BN backward: transform grad from "w.r.t. BN output" to "w.r.t. raw sum"
-    if (use_batchnorm && bn_save) {
+    if (use_batchnorm) {
         for (int co = 0; co < c_out; ++co) {
             float* gp = grad_pre + co * N;
             const float* pa = pre_act + co * N;
@@ -646,6 +667,10 @@ void HCNNConv::compute_gradients(const float* grad_out, const float* in, const f
                              float* work_buf, const float* bn_save,
                              float* bn_gamma_grad, float* bn_beta_grad,
                              const float* post_act) const {
+    if (use_batchnorm && !bn_save) {
+        throw std::runtime_error(
+            "HCNNConv::compute_gradients: batchnorm requires bn_save from forward");
+    }
     const bool use_threads = thread_pool && DIM >= THREAD_DIM_THRESHOLD;
 
     // work_buf must be at least c_out * N floats if provided.
@@ -655,7 +680,7 @@ void HCNNConv::compute_gradients(const float* grad_out, const float* in, const f
     if (work_buf) {
         grad_pre = work_buf;
     } else {
-        grad_pre_storage.resize(c_out * N);
+        grad_pre_storage.resize(static_cast<size_t>(c_out) * static_cast<size_t>(N));
         grad_pre = grad_pre_storage.data();
     }
     // For TANH, derivative is 1 - tanh(x)^2 = 1 - y^2 where y is the
@@ -673,7 +698,7 @@ void HCNNConv::compute_gradients(const float* grad_out, const float* in, const f
     }
 
     // BN backward: transform grad from "w.r.t. BN output" to "w.r.t. raw sum"
-    if (use_batchnorm && bn_save) {
+    if (use_batchnorm) {
         for (int co = 0; co < c_out; ++co) {
             float* gp = grad_pre + co * N;
             const float* pa = pre_act + co * N;
@@ -766,7 +791,11 @@ void HCNNConv::apply_gradients(const float* kernel_grad, const float* bias_grad,
                            float learning_rate, float momentum, float weight_decay,
                            const float* bn_gamma_grad_in, const float* bn_beta_grad_in,
                            int timestep) {
-    const bool use_adam = (optimizer_type_ == OptimizerType::ADAM && timestep > 0);
+    if (optimizer_type_ == OptimizerType::ADAM && timestep <= 0) {
+        throw std::runtime_error(
+            "HCNNConv::apply_gradients: Adam requires timestep >= 1");
+    }
+    const bool use_adam = (optimizer_type_ == OptimizerType::ADAM);
     const float bc1 = use_adam ? 1.0f - static_cast<float>(std::pow(adam_beta1_, timestep)) : 1.0f;
     const float bc2 = use_adam ? 1.0f - static_cast<float>(std::pow(adam_beta2_, timestep)) : 1.0f;
     int total_k = c_out * c_in * K;
@@ -829,6 +858,7 @@ void HCNNConv::apply_gradients(const float* kernel_grad, const float* bias_grad,
 }
 
 void HCNNConv::update_running_stats(const float* mean, const float* var) {
+    if (!use_batchnorm || !mean || !var) return;
     for (int co = 0; co < c_out; ++co) {
         float unbiased_var = var[co] * static_cast<float>(N)
                            / static_cast<float>(N - 1);

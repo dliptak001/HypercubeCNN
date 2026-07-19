@@ -146,6 +146,46 @@ static void test_self_contribution() {
     const int N = 1 << dim;
     const int K = dim + 1;
 
+    auto throws = [](auto&& fn) {
+        try { fn(); } catch (const std::exception&) { return true; }
+        return false;
+    };
+    check(throws([&] {
+        hcnn::HCNNConv bad(31, 1, 2, Activation::NONE, true, false);
+    }), "HCNNConv(DIM=31) throws (max 30)");
+    check(throws([&] {
+        hcnn::HCNNConv bad(5, 0, 2, Activation::NONE, true, false);
+    }), "HCNNConv(c_in=0) throws");
+    check(throws([&] {
+        hcnn::HCNNConv bad(5, 1, 0, Activation::NONE, true, false);
+    }), "HCNNConv(c_out=0) throws");
+
+    // BN backward without bn_save must fail closed (not silent wrong grads).
+    {
+        hcnn::HCNNConv bn_layer(5, 1, 2, Activation::RELU, true, /*bn=*/true);
+        std::mt19937 rng(1);
+        bn_layer.randomize_weights(0.0f, rng);
+        std::vector<float> in(static_cast<size_t>(N), 0.1f);
+        std::vector<float> out(static_cast<size_t>(2 * N));
+        std::vector<float> pre(static_cast<size_t>(2 * N));
+        std::vector<float> save(static_cast<size_t>(bn_layer.get_bn_save_size()));
+        bn_layer.forward(in.data(), out.data(), pre.data(), save.data());
+        std::vector<float> gout(static_cast<size_t>(2 * N), 0.01f);
+        std::vector<float> kg(static_cast<size_t>(bn_layer.get_kernel_size()));
+        std::vector<float> bg(static_cast<size_t>(bn_layer.get_bias_size()));
+        check(throws([&] {
+            bn_layer.compute_gradients(gout.data(), in.data(), pre.data(),
+                                       nullptr, kg.data(), bg.data(),
+                                       nullptr, /*bn_save=*/nullptr);
+        }), "BN compute_gradients without bn_save throws");
+        // With bn_save: OK
+        bn_layer.compute_gradients(gout.data(), in.data(), pre.data(),
+                                   nullptr, kg.data(), bg.data(),
+                                   nullptr, save.data());
+        check(all_finite(kg.data(), bn_layer.get_kernel_size()),
+              "BN compute_gradients with bn_save produces finite kernel grads");
+    }
+
     hcnn::HCNNConv conv(dim, /*c_in=*/1, /*c_out=*/2,
                         Activation::NONE, /*bias=*/true, /*bn=*/false);
     check(conv.get_K() == K, "get_K() == DIM + 1");
