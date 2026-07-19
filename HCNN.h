@@ -122,7 +122,8 @@ public:
     /// Switch all batch-norm layers between training and eval mode.
     void SetTraining(bool training);
 
-    /// Configure the optimizer for all layers.  Resets the timestep.
+    /// Configure the optimizer for all layers.  Resets the timestep and
+    /// re-inits second-moment buffers for Adam.  Survives RandomizeWeights.
     void SetOptimizer(OptimizerType type, float beta1 = 0.9f,
                       float beta2 = 0.999f, float eps = 1e-8f);
 
@@ -133,18 +134,18 @@ public:
     ReadoutGradInLoop GetReadoutGradInLoop() const;
 
     /// Eagerly allocate all internal work buffers (single-step, batch,
-    /// and inference).  Normally these are allocated lazily on first use;
-    /// call this after architecture setup to move the cost to startup.
+    /// and inference).  Prefer calling **after** RandomizeWeights so
+    /// readout-sized buffers match the FLATTEN head.  Idempotent.
     void PrepareBuffers();
 
     // -----------------------------------------------------------------
     //  Inference
     // -----------------------------------------------------------------
 
-    /// Map a raw scalar array onto N = 2^start_dim hypercube vertices via
-    /// Direct Linear Assignment.  Values must be in [-1.0, 1.0].
-    /// `embedded_out` must hold GetStartN() floats.  Caller-owned buffer
-    /// (designed for reuse across calls -- no hidden allocation).
+    /// Map a raw scalar array onto N = 2^start_dim hypercube vertices
+    /// (direct index assignment + zero-pad to capacity).  Values are
+    /// **conventionally** in [-1, 1]; this method does not clamp.
+    /// `embedded_out` must hold GetStartN() floats (caller-owned).
     void Embed(const float* raw_input, int input_length,
                float* embedded_out) const;
 
@@ -260,33 +261,49 @@ public:
     // -----------------------------------------------------------------
     int GetStartDim() const;
     int GetStartN() const;
+    int GetCurrentDim() const;   ///< DIM after pools (for param accounting)
     int GetInputChannels() const;
     int GetNumOutputs() const;
+    size_t GetNumConv() const;
+    size_t GetNumPool() const;
     TaskType GetTaskType() const;
     LossType GetLossType() const;
+    OptimizerType GetOptimizerType() const;
+    /// True after RandomizeWeights (full FLATTEN head sized).
+    bool WeightsInitialized() const;
 
     // -----------------------------------------------------------------
     //  Weight serialization
     // -----------------------------------------------------------------
 
-    /// @brief Total number of trainable parameters across all layers.
+    /// @brief Total floats in the GetWeights blob (requires WeightsInitialized).
+    /// @throws std::logic_error if RandomizeWeights has not been called.
     [[nodiscard]] size_t GetWeightCount() const;
 
-    /// @brief Flatten all trainable parameters into a contiguous vector.
+    /// @brief Flatten parameters + BN running stats into a contiguous vector.
     ///
-    /// Layout (contiguous, in order):
+    /// Layout (contiguous, in order) — requires WeightsInitialized():
     ///   for each conv layer i = 0 .. num_conv-1:
-    ///     conv[i] kernel   (c_out * c_in * K floats; K = DIM + 1 self+neighbors)
-    ///     conv[i] bias     (c_out floats, or 0 if bias disabled)
-    ///   readout weights    (num_outputs * num_features floats;
-    ///                       num_features = c_final * N_final, FLATTEN)
-    ///   readout bias       (num_outputs floats)
+    ///     kernel   (c_out * c_in * K; K = DIM+1)
+    ///     bias     (c_out, or empty if bias off)
+    ///     if batchnorm:
+    ///       gamma, beta, running_mean, running_var  (each c_out)
+    ///   readout weights  (num_outputs * num_features; FLATTEN)
+    ///   readout bias     (num_outputs)
+    ///
+    /// Does **not** include optimizer moments or Adam timestep.
+    /// @throws std::logic_error if not yet randomized.
     [[nodiscard]] std::vector<float> GetWeights() const;
 
-    /// @brief Restore all trainable parameters from a contiguous vector.
+    /// @brief Restore parameters from GetWeights layout.
+    /// @param reset_optimizer_moments  If true, zero all layer moments and
+    ///        Adam timestep (safe if you will continue training).  If false
+    ///        (default), only weights/BN stats change — preferred for
+    ///        eval/export restore after dual-checkpoint.
+    /// @throws std::logic_error if not yet randomized.
     /// @throws std::invalid_argument if blob.size() != GetWeightCount().
-    void SetWeights(const std::vector<float>& blob);
-
+    void SetWeights(const std::vector<float>& blob,
+                    bool reset_optimizer_moments = false);
 
 private:
     std::unique_ptr<HCNNNetwork> net_;
@@ -303,6 +320,18 @@ private:
     std::vector<float> shuffle_inputs_;       // batch_size * input_length
     std::vector<int>   shuffle_targets_;      // batch_size (classification)
     std::vector<float> shuffle_targets_f_;    // batch_size * num_outputs (regression)
+
+    void require_weights_initialized_(const char* api) const;
+
+    /// Shared TrainEpoch / TrainEpochRegression body.
+    /// gather_targets(chunk_i, sample_j) — shuffle path only.
+    /// train_chunk(inputs_ptr, targets_base_or_null, chunk, start_index, shuffled)
+    template <typename GatherTargets, typename TrainChunk>
+    void train_epoch_impl_(const float* flat_inputs, int input_length,
+                           int sample_count, int batch_size,
+                           unsigned shuffle_seed,
+                           GatherTargets&& gather_targets,
+                           TrainChunk&& train_chunk);
 };
 
 } // namespace hcnn

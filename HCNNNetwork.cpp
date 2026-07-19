@@ -102,6 +102,12 @@ void HCNNNetwork::set_optimizer(OptimizerType type, float beta1,
     adam_timestep_ = 0;
 }
 
+void HCNNNetwork::reset_optimizer_moments() {
+    for (auto& layer : conv_layers) layer.clear_optimizer_moments();
+    readout.clear_optimizer_moments();
+    adam_timestep_ = 0;
+}
+
 void HCNNNetwork::add_pool(PoolType type) {
     // Leave at least dim 1 (N=2). Pooling at dim 0 is shift-UB in HCNNPool.
     if (current_dim < 2) {
@@ -137,6 +143,7 @@ void HCNNNetwork::randomize_all_weights(float scale, unsigned seed) {
     // Head size (and any prior PrepareBuffers) may have been wrong before
     // randomize; drop caches so next train/infer reallocates to match.
     invalidate_cached_buffers();
+    weights_initialized_ = true;
 }
 
 void HCNNNetwork::embed_input(const float* raw_input, int input_length,

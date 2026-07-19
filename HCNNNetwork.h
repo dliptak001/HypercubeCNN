@@ -182,6 +182,12 @@ public:
     LossType get_loss_type() const { return loss_type_; }
     OptimizerType get_optimizer_type() const { return optimizer_type_; }
 
+    /// Zero all layer optimizer moments and reset the Adam timestep to 0.
+    void reset_optimizer_moments();
+
+    /// True after a successful randomize_all_weights (full FLATTEN head sized).
+    bool weights_initialized() const { return weights_initialized_; }
+
     HCNNConv& get_conv(size_t i) { return conv_layers[i]; }
     const HCNNConv& get_conv(size_t i) const { return conv_layers[i]; }
     HCNNReadout& get_readout() { return readout; }
@@ -212,6 +218,7 @@ private:
     int adam_timestep_{0};     // Global optimizer timestep (incremented per train_step/train_batch)
     OptimizerType optimizer_type_ = OptimizerType::SGD;
     float adam_beta1_ = 0.9f, adam_beta2_ = 0.999f, adam_eps_ = 1e-8f;
+    bool weights_initialized_{false};  // true after randomize_all_weights
     std::vector<HCNNConv> conv_layers;
     std::vector<HCNNPool> pool_layers;
     std::vector<bool> is_conv_layer;

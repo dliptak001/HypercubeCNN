@@ -279,18 +279,33 @@ public:
     /// Size of the BN gamma/beta gradient buffers (c_out if BN, else 0).
     int get_bn_grad_size() const { return use_batchnorm ? c_out : 0; }
 
+    /// Length of each BN affine / running-stats vector (c_out if BN, else 0).
+    int get_bn_param_size() const { return use_batchnorm ? c_out : 0; }
+
     /// Update running mean/var from externally computed batch statistics.
     /// Applies Bessel's correction (N/(N-1)) to var before EMA update.
     void update_running_stats(const float* mean, const float* var);
 
+    /// Zero first/second moments (SGD velocity / Adam m,v) including BN affine.
+    /// Does not change optimizer type or weights.
+    void clear_optimizer_moments();
+
     /** @name Raw weight access (for serialization and gradient checking) */
     ///@{
-    float* get_kernel_data() { return kernel.data(); }                           ///< Pointer to kernel weight array.
-    const float* get_kernel_data() const { return kernel.data(); }              ///< Const pointer to kernel weight array.
-    int get_kernel_size() const { return static_cast<int>(kernel.size()); }      ///< Total kernel weight count.
-    float* get_bias_data() { return bias.data(); }                               ///< Pointer to bias array.
-    const float* get_bias_data() const { return bias.data(); }                  ///< Const pointer to bias array.
-    int get_bias_size() const { return static_cast<int>(bias.size()); }          ///< Bias element count (0 if bias disabled).
+    float* get_kernel_data() { return kernel.data(); }
+    const float* get_kernel_data() const { return kernel.data(); }
+    int get_kernel_size() const { return static_cast<int>(kernel.size()); }
+    float* get_bias_data() { return bias.data(); }
+    const float* get_bias_data() const { return bias.data(); }
+    int get_bias_size() const { return static_cast<int>(bias.size()); }
+    float* get_bn_gamma_data() { return bn_gamma.data(); }
+    const float* get_bn_gamma_data() const { return bn_gamma.data(); }
+    float* get_bn_beta_data() { return bn_beta.data(); }
+    const float* get_bn_beta_data() const { return bn_beta.data(); }
+    float* get_bn_running_mean_data() { return bn_running_mean.data(); }
+    const float* get_bn_running_mean_data() const { return bn_running_mean.data(); }
+    float* get_bn_running_var_data() { return bn_running_var.data(); }
+    const float* get_bn_running_var_data() const { return bn_running_var.data(); }
     ///@}
 
 private:

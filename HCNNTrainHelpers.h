@@ -146,15 +146,14 @@ struct HCNNDualCheckpointUpdate {
  *   - best (lowest) loss, with higher accuracy as tie-break
  *   - best (highest) accuracy, with lower loss as tie-break
  *
- * Uses HCNN::GetWeights / SetWeights.  The blob is **weights only**:
- *   - BN scale/shift (gamma/beta) are not currently included
- *   - optimizer state (SGD velocity / Adam m,v and network timestep) is not
- *     included
+ * Uses HCNN::GetWeights / SetWeights.  The blob includes kernels, biases,
+ * BN gamma/beta, and BN running mean/var when layers use batchnorm.
+ * Optimizer moments and Adam timestep are **not** in the blob.
  *
  * Intended for **eval / export** of the best snapshot (as in the MNIST demo).
- * Restoring then continuing training reuses stale optimizer moments against
- * the restored weights unless the caller also resets optimizer state
- * (e.g. SetOptimizer) or otherwise re-inits moments.
+ * restore_* calls SetWeights(blob) with default reset_optimizer_moments=false.
+ * To continue training after restore, call SetWeights(blob, true) or
+ * SetOptimizer.
  */
 class HCNNDualCheckpoint {
 public:

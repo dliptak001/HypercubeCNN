@@ -52,6 +52,13 @@ void HCNNReadout::set_optimizer(OptimizerType type, float beta1, float beta2, fl
     }
 }
 
+void HCNNReadout::clear_optimizer_moments() {
+    std::fill(weight_m.begin(), weight_m.end(), 0.0f);
+    std::fill(bias_m.begin(), bias_m.end(), 0.0f);
+    std::fill(weight_m2.begin(), weight_m2.end(), 0.0f);
+    std::fill(bias_m2.begin(), bias_m2.end(), 0.0f);
+}
+
 void HCNNReadout::forward(const float* in, float* out) const {
     for (int o = 0; o < num_outputs; ++o) {
         float sum = bias[o];

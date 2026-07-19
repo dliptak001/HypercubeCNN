@@ -869,6 +869,17 @@ void HCNNConv::update_running_stats(const float* mean, const float* var) {
     }
 }
 
+void HCNNConv::clear_optimizer_moments() {
+    std::fill(kernel_m.begin(), kernel_m.end(), 0.0f);
+    std::fill(bias_m.begin(), bias_m.end(), 0.0f);
+    std::fill(kernel_m2.begin(), kernel_m2.end(), 0.0f);
+    std::fill(bias_m2.begin(), bias_m2.end(), 0.0f);
+    std::fill(bn_gamma_m.begin(), bn_gamma_m.end(), 0.0f);
+    std::fill(bn_beta_m.begin(), bn_beta_m.end(), 0.0f);
+    std::fill(bn_gamma_m2.begin(), bn_gamma_m2.end(), 0.0f);
+    std::fill(bn_beta_m2.begin(), bn_beta_m2.end(), 0.0f);
+}
+
 // Compile-time switch: HCNN_FAST_TANH replaces std::tanh with a rational
 // Padé/Lambert approximation.  README option 3b.  When the macro is not
 // defined the build remains bit-identical to the exact-tanh baseline.

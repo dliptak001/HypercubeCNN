@@ -93,6 +93,9 @@ public:
 
     OptimizerType get_optimizer_type() const { return optimizer_type_; }
 
+    /// Zero first/second moments without changing weights or optimizer type.
+    void clear_optimizer_moments();
+
     int get_num_outputs() const { return num_outputs; }
     int get_num_features() const { return num_features; }
 

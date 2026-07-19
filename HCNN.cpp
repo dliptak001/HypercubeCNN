@@ -4,7 +4,6 @@
 #include "HCNN.h"
 
 #include <algorithm>
-#include <cassert>
 #include <cstring>
 #include <numeric>
 #include <random>
@@ -96,15 +95,17 @@ void HCNN::TrainBatch(const float* flat_inputs, int input_length,
                       learning_rate, momentum, weight_decay, class_weights);
 }
 
-void HCNN::TrainEpoch(const float* flat_inputs, int input_length,
-                      const int* targets, int sample_count, int batch_size,
-                      float learning_rate, float momentum, float weight_decay,
-                      const float* class_weights, unsigned shuffle_seed) {
+template <typename GatherTargets, typename TrainChunk>
+void HCNN::train_epoch_impl_(const float* flat_inputs, int input_length,
+                             int sample_count, int batch_size,
+                             unsigned shuffle_seed,
+                             GatherTargets&& gather_targets,
+                             TrainChunk&& train_chunk) {
     if (batch_size <= 0) {
-        throw std::invalid_argument("HCNN::TrainEpoch: batch_size must be > 0");
+        throw std::invalid_argument("HCNN::TrainEpoch*: batch_size must be > 0");
     }
     if (sample_count < 0) {
-        throw std::invalid_argument("HCNN::TrainEpoch: sample_count must be >= 0");
+        throw std::invalid_argument("HCNN::TrainEpoch*: sample_count must be >= 0");
     }
     if (sample_count == 0) return;
 
@@ -112,41 +113,57 @@ void HCNN::TrainEpoch(const float* flat_inputs, int input_length,
     const auto il = static_cast<size_t>(input_length);
     const auto bs = static_cast<size_t>(batch_size);
 
-    // Build shuffle permutation if requested.
     if (shuffle_seed != 0) {
         if (shuffle_idx_.size() < n) shuffle_idx_.resize(n);
-        std::iota(shuffle_idx_.begin(), shuffle_idx_.begin() + n, 0);
+        std::iota(shuffle_idx_.begin(),
+                  shuffle_idx_.begin() + static_cast<std::ptrdiff_t>(n), 0);
         std::mt19937 rng(shuffle_seed);
-        std::shuffle(shuffle_idx_.begin(), shuffle_idx_.begin() + n, rng);
+        std::shuffle(shuffle_idx_.begin(),
+                     shuffle_idx_.begin() + static_cast<std::ptrdiff_t>(n), rng);
+        if (shuffle_inputs_.size() < bs * il)
+            shuffle_inputs_.resize(bs * il);
     }
 
     for (int start = 0; start < sample_count; start += batch_size) {
-        int chunk = std::min(batch_size, sample_count - start);
+        const int chunk = std::min(batch_size, sample_count - start);
 
         if (shuffle_seed != 0) {
-            // Gather this chunk into contiguous scratch buffers.
-            if (shuffle_inputs_.size() < bs * il)
-                shuffle_inputs_.resize(bs * il);
-            if (shuffle_targets_.size() < bs)
-                shuffle_targets_.resize(bs);
-
             for (int i = 0; i < chunk; ++i) {
-                int j = shuffle_idx_[start + i];
-                std::memcpy(shuffle_inputs_.data() + i * il,
-                            flat_inputs + j * il, il * sizeof(float));
-                shuffle_targets_[i] = targets[j];
+                const int j = shuffle_idx_[static_cast<size_t>(start + i)];
+                std::memcpy(shuffle_inputs_.data() + static_cast<size_t>(i) * il,
+                            flat_inputs + static_cast<size_t>(j) * il,
+                            il * sizeof(float));
+                gather_targets(i, j);
             }
-            net_->train_batch(shuffle_inputs_.data(), input_length,
-                              shuffle_targets_.data(), chunk,
-                              learning_rate, momentum, weight_decay,
-                              class_weights);
+            train_chunk(shuffle_inputs_.data(), chunk, start, /*shuffled=*/true);
         } else {
-            net_->train_batch(flat_inputs + start * il, input_length,
-                              targets + start, chunk,
-                              learning_rate, momentum, weight_decay,
-                              class_weights);
+            train_chunk(flat_inputs + static_cast<size_t>(start) * il,
+                        chunk, start, /*shuffled=*/false);
         }
     }
+}
+
+void HCNN::TrainEpoch(const float* flat_inputs, int input_length,
+                      const int* targets, int sample_count, int batch_size,
+                      float learning_rate, float momentum, float weight_decay,
+                      const float* class_weights, unsigned shuffle_seed) {
+    if (shuffle_seed != 0) {
+        const auto bs = static_cast<size_t>(batch_size);
+        if (shuffle_targets_.size() < bs) shuffle_targets_.resize(bs);
+    }
+
+    train_epoch_impl_(
+        flat_inputs, input_length, sample_count, batch_size, shuffle_seed,
+        [&](int chunk_i, int sample_j) {
+            shuffle_targets_[static_cast<size_t>(chunk_i)] = targets[sample_j];
+        },
+        [&](const float* inputs, int chunk, int start, bool shuffled) {
+            const int* tgt = shuffled ? shuffle_targets_.data()
+                                      : (targets + start);
+            net_->train_batch(inputs, input_length, tgt, chunk,
+                              learning_rate, momentum, weight_decay,
+                              class_weights);
+        });
 }
 
 // ---------------------------------------------------------------------------
@@ -173,53 +190,28 @@ void HCNN::TrainEpochRegression(const float* flat_inputs, int input_length,
                                 int sample_count, int batch_size,
                                 float learning_rate, float momentum,
                                 float weight_decay, unsigned shuffle_seed) {
-    if (batch_size <= 0) {
-        throw std::invalid_argument("HCNN::TrainEpochRegression: batch_size must be > 0");
-    }
-    if (sample_count < 0) {
-        throw std::invalid_argument("HCNN::TrainEpochRegression: sample_count must be >= 0");
-    }
-    if (sample_count == 0) return;
+    const auto K  = static_cast<size_t>(net_->get_num_outputs());
+    const auto bs = static_cast<size_t>(batch_size);
 
-    const auto n   = static_cast<size_t>(sample_count);
-    const auto il  = static_cast<size_t>(input_length);
-    const auto bs  = static_cast<size_t>(batch_size);
-    const auto K   = static_cast<size_t>(net_->get_num_outputs());
-
-    // Build shuffle permutation if requested.
     if (shuffle_seed != 0) {
-        if (shuffle_idx_.size() < n) shuffle_idx_.resize(n);
-        std::iota(shuffle_idx_.begin(), shuffle_idx_.begin() + n, 0);
-        std::mt19937 rng(shuffle_seed);
-        std::shuffle(shuffle_idx_.begin(), shuffle_idx_.begin() + n, rng);
+        if (shuffle_targets_f_.size() < bs * K)
+            shuffle_targets_f_.resize(bs * K);
     }
 
-    for (int start = 0; start < sample_count; start += batch_size) {
-        int chunk = std::min(batch_size, sample_count - start);
-
-        if (shuffle_seed != 0) {
-            // Gather this chunk into contiguous scratch buffers.
-            if (shuffle_inputs_.size() < bs * il)
-                shuffle_inputs_.resize(bs * il);
-            if (shuffle_targets_f_.size() < bs * K)
-                shuffle_targets_f_.resize(bs * K);
-
-            for (int i = 0; i < chunk; ++i) {
-                int j = shuffle_idx_[start + i];
-                std::memcpy(shuffle_inputs_.data() + i * il,
-                            flat_inputs + j * il, il * sizeof(float));
-                std::memcpy(shuffle_targets_f_.data() + i * K,
-                            flat_targets + j * K, K * sizeof(float));
-            }
-            net_->train_batch_regression(shuffle_inputs_.data(), input_length,
-                                         shuffle_targets_f_.data(), chunk,
+    train_epoch_impl_(
+        flat_inputs, input_length, sample_count, batch_size, shuffle_seed,
+        [&](int chunk_i, int sample_j) {
+            std::memcpy(shuffle_targets_f_.data() + static_cast<size_t>(chunk_i) * K,
+                        flat_targets + static_cast<size_t>(sample_j) * K,
+                        K * sizeof(float));
+        },
+        [&](const float* inputs, int chunk, int start, bool shuffled) {
+            const float* tgt = shuffled
+                ? shuffle_targets_f_.data()
+                : (flat_targets + static_cast<size_t>(start) * K);
+            net_->train_batch_regression(inputs, input_length, tgt, chunk,
                                          learning_rate, momentum, weight_decay);
-        } else {
-            net_->train_batch_regression(flat_inputs + start * il, input_length,
-                                         flat_targets + start * K, chunk,
-                                         learning_rate, momentum, weight_decay);
-        }
-    }
+        });
 }
 
 // ---------------------------------------------------------------------------
@@ -227,21 +219,39 @@ void HCNN::TrainEpochRegression(const float* flat_inputs, int input_length,
 // ---------------------------------------------------------------------------
 int HCNN::GetStartDim() const       { return net_->get_start_dim(); }
 int HCNN::GetStartN() const         { return net_->get_start_N(); }
+int HCNN::GetCurrentDim() const     { return net_->get_current_dim(); }
 int HCNN::GetInputChannels() const  { return net_->get_input_channels(); }
 int HCNN::GetNumOutputs() const     { return net_->get_num_outputs(); }
+size_t HCNN::GetNumConv() const     { return net_->get_num_conv(); }
+size_t HCNN::GetNumPool() const     { return net_->get_num_pool(); }
 TaskType HCNN::GetTaskType() const  { return net_->get_task_type(); }
 LossType HCNN::GetLossType() const  { return net_->get_loss_type(); }
+OptimizerType HCNN::GetOptimizerType() const { return net_->get_optimizer_type(); }
+bool HCNN::WeightsInitialized() const { return net_->weights_initialized(); }
+
+void HCNN::require_weights_initialized_(const char* api) const {
+    if (!net_->weights_initialized()) {
+        throw std::logic_error(
+            std::string(api) + ": call RandomizeWeights() first "
+            "(weight blob requires a sized FLATTEN head)");
+    }
+}
 
 // ---------------------------------------------------------------------------
 //  Weight serialization
 // ---------------------------------------------------------------------------
 
 size_t HCNN::GetWeightCount() const {
+    require_weights_initialized_("HCNN::GetWeightCount");
     size_t total = 0;
     for (size_t i = 0; i < net_->get_num_conv(); ++i) {
         const auto& conv = net_->get_conv(i);
         total += static_cast<size_t>(conv.get_kernel_size());
         total += static_cast<size_t>(conv.get_bias_size());
+        if (conv.has_batchnorm()) {
+            const size_t p = static_cast<size_t>(conv.get_bn_param_size());
+            total += 4 * p;  // gamma, beta, running_mean, running_var
+        }
     }
     const auto& ro = net_->get_readout();
     total += static_cast<size_t>(ro.get_weight_size());
@@ -250,6 +260,7 @@ size_t HCNN::GetWeightCount() const {
 }
 
 std::vector<float> HCNN::GetWeights() const {
+    require_weights_initialized_("HCNN::GetWeights");
     std::vector<float> blob;
     blob.reserve(GetWeightCount());
 
@@ -259,6 +270,17 @@ std::vector<float> HCNN::GetWeights() const {
         blob.insert(blob.end(), k, k + conv.get_kernel_size());
         const float* b = conv.get_bias_data();
         blob.insert(blob.end(), b, b + conv.get_bias_size());
+        if (conv.has_batchnorm()) {
+            const int p = conv.get_bn_param_size();
+            const float* g = conv.get_bn_gamma_data();
+            const float* bt = conv.get_bn_beta_data();
+            const float* rm = conv.get_bn_running_mean_data();
+            const float* rv = conv.get_bn_running_var_data();
+            blob.insert(blob.end(), g, g + p);
+            blob.insert(blob.end(), bt, bt + p);
+            blob.insert(blob.end(), rm, rm + p);
+            blob.insert(blob.end(), rv, rv + p);
+        }
     }
 
     const auto& ro = net_->get_readout();
@@ -270,7 +292,9 @@ std::vector<float> HCNN::GetWeights() const {
     return blob;
 }
 
-void HCNN::SetWeights(const std::vector<float>& blob) {
+void HCNN::SetWeights(const std::vector<float>& blob,
+                      bool reset_optimizer_moments) {
+    require_weights_initialized_("HCNN::SetWeights");
     if (blob.size() != GetWeightCount()) {
         throw std::invalid_argument(
             "HCNN::SetWeights: blob size " + std::to_string(blob.size()) +
@@ -282,22 +306,49 @@ void HCNN::SetWeights(const std::vector<float>& blob) {
     for (size_t i = 0; i < net_->get_num_conv(); ++i) {
         auto& conv = net_->get_conv(i);
         int ks = conv.get_kernel_size();
-        std::memcpy(conv.get_kernel_data(), blob.data() + offset, ks * sizeof(float));
+        std::memcpy(conv.get_kernel_data(), blob.data() + offset,
+                    static_cast<size_t>(ks) * sizeof(float));
         offset += static_cast<size_t>(ks);
         int bs = conv.get_bias_size();
-        std::memcpy(conv.get_bias_data(), blob.data() + offset, bs * sizeof(float));
-        offset += static_cast<size_t>(bs);
+        if (bs > 0) {
+            std::memcpy(conv.get_bias_data(), blob.data() + offset,
+                        static_cast<size_t>(bs) * sizeof(float));
+            offset += static_cast<size_t>(bs);
+        }
+        if (conv.has_batchnorm()) {
+            const int p = conv.get_bn_param_size();
+            const size_t bytes = static_cast<size_t>(p) * sizeof(float);
+            std::memcpy(conv.get_bn_gamma_data(), blob.data() + offset, bytes);
+            offset += static_cast<size_t>(p);
+            std::memcpy(conv.get_bn_beta_data(), blob.data() + offset, bytes);
+            offset += static_cast<size_t>(p);
+            std::memcpy(conv.get_bn_running_mean_data(), blob.data() + offset, bytes);
+            offset += static_cast<size_t>(p);
+            std::memcpy(conv.get_bn_running_var_data(), blob.data() + offset, bytes);
+            offset += static_cast<size_t>(p);
+        }
     }
 
     auto& ro = net_->get_readout();
     int ws = ro.get_weight_size();
-    std::memcpy(ro.get_weight_data(), blob.data() + offset, ws * sizeof(float));
+    std::memcpy(ro.get_weight_data(), blob.data() + offset,
+                static_cast<size_t>(ws) * sizeof(float));
     offset += static_cast<size_t>(ws);
-    int bs = ro.get_bias_size();
-    std::memcpy(ro.get_bias_data(), blob.data() + offset, bs * sizeof(float));
-    offset += static_cast<size_t>(bs);
+    int rbs = ro.get_bias_size();
+    std::memcpy(ro.get_bias_data(), blob.data() + offset,
+                static_cast<size_t>(rbs) * sizeof(float));
+    offset += static_cast<size_t>(rbs);
 
-    assert(offset == blob.size());
+    if (offset != blob.size()) {
+        throw std::logic_error(
+            "HCNN::SetWeights: internal layout mismatch (offset "
+            + std::to_string(offset) + " vs blob " + std::to_string(blob.size())
+            + ")");
+    }
+
+    if (reset_optimizer_moments) {
+        net_->reset_optimizer_moments();
+    }
 }
 
 } // namespace hcnn

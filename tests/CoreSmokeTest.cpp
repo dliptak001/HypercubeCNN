@@ -238,11 +238,35 @@ static void test_self_contribution() {
     // HCNN weight blob includes self taps (K = DIM+1).
     HCNN net(5, /*num_outputs=*/4);
     net.AddConv(8, Activation::RELU, /*bias=*/true, /*bn=*/false);
+    check(!net.WeightsInitialized(), "WeightsInitialized false before Randomize");
+    check(throws([&] { (void)net.GetWeightCount(); }),
+          "GetWeightCount before RandomizeWeights throws");
     net.RandomizeWeights();
+    check(net.WeightsInitialized(), "WeightsInitialized true after Randomize");
     // kernel: 1*8*6 + bias 8; readout FLATTEN 8*32 -> 4 + bias 4
     const size_t expected = static_cast<size_t>(1 * 8 * 6 + 8 + 8 * 32 * 4 + 4);
     check(net.GetWeightCount() == expected,
           "GetWeightCount includes self taps (K=DIM+1)");
+
+    // BN blob: + gamma, beta, running_mean, running_var (4 * c_out)
+    HCNN net_bn(5, 4);
+    net_bn.AddConv(8, Activation::RELU, true, /*bn=*/true);
+    net_bn.RandomizeWeights();
+    const size_t expected_bn = expected + static_cast<size_t>(4 * 8);
+    check(net_bn.GetWeightCount() == expected_bn,
+          "GetWeightCount includes BN gamma/beta/running stats");
+
+    auto w = net_bn.GetWeights();
+    // Mutate gamma[0] via round-trip after scribbling
+    w[static_cast<size_t>(1 * 8 * 6 + 8)] = 2.5f;  // first float of gamma
+    net_bn.SetWeights(w, /*reset_optimizer_moments=*/true);
+    auto w2 = net_bn.GetWeights();
+    check(std::fabs(w2[static_cast<size_t>(1 * 8 * 6 + 8)] - 2.5f) < 1e-6f,
+          "BN gamma survives Get/SetWeights round-trip");
+    check(net_bn.GetOptimizerType() == OptimizerType::SGD,
+          "GetOptimizerType default SGD");
+    check(net_bn.GetNumConv() == 1 && net_bn.GetNumPool() == 0,
+          "GetNumConv/GetNumPool facade");
 }
 
 static void test_forward_pass() {

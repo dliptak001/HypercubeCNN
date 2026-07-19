@@ -292,17 +292,22 @@ Constructor `num_threads`:
 
 ## 7. Weight blob (`GetWeights` / `SetWeights`)
 
-**Included (in order):** each conv kernel, each conv bias (if any), readout weights, readout bias.
+Requires `RandomizeWeights` first (`WeightsInitialized()`).
 
-**Not included:** BN γ/β, BN running stats, SGD/Adam moments, Adam timestep.
+**Included (in order), per conv:**
 
-Implications:
+```text
+kernel[c_out * c_in * K]
+bias[c_out]                         // if bias enabled
+if BN: gamma, beta, running_mean, running_var   // each c_out
+```
 
-- Checkpoints via `HCNNDualCheckpoint` / `HCNNBestMetricCheckpoint` are **weights-only**.
-- Resume training after restore: call `SetOptimizer` again (or accept stale moments).
-- BN nets need extra serialization if you care about exact BN state.
+then readout weights + readout bias.
 
-Layout matches `HCNN::GetWeightCount()`; `SetWeights` throws on size mismatch.
+**Not included:** SGD/Adam moments, Adam timestep.
+
+`SetWeights(blob, reset_optimizer_moments=false)` restores params only (eval/export).
+Pass `true` (or call `SetOptimizer`) to clear moments before continuing training.
 
 ---
 

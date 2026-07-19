@@ -268,22 +268,27 @@ Calling the wrong family’s train methods throws `std::logic_error`.
 
 | Method | Meaning |
 |--------|---------|
-| `GetStartDim()` / `GetStartN()` | `DIM` and `N = 2^DIM` |
+| `GetStartDim()` / `GetStartN()` / `GetCurrentDim()` | Start DIM, `N`, DIM after pools |
 | `GetInputChannels()` / `GetNumOutputs()` | Buffer sizes |
-| `GetTaskType()` / `GetLossType()` | Resolved enums (`Default` already expanded) |
-| `GetWeightCount()` / `GetWeights()` / `SetWeights()` | Kernel + bias + readout only |
+| `GetNumConv()` / `GetNumPool()` | Layer counts |
+| `GetTaskType()` / `GetLossType()` / `GetOptimizerType()` | Resolved enums |
+| `WeightsInitialized()` | True after `RandomizeWeights` |
+| `GetWeightCount()` / `GetWeights()` / `SetWeights()` | Full param blob (incl. BN when used) |
 
-**Weight blob layout:**
+**Weight blob layout** (requires `RandomizeWeights` first):
 
 ```text
 for each conv:
   kernel[c_out * c_in * K]   // K = DIM_layer + 1
   bias[c_out]                // if enabled
+  if BN: gamma, beta, running_mean, running_var  // each c_out
 readout weights[num_outputs * (c_final * N_final)]
 readout bias[num_outputs]
 ```
 
-**Not in the blob:** BN γ/β, BN running stats, optimizer moments, Adam timestep. Checkpoints based on `GetWeights` are for **eval/export**, not perfect mid-train resume (call `SetOptimizer` again if you continue training after restore).
+**Not in the blob:** optimizer moments, Adam timestep.  
+`SetWeights(blob)` — eval restore.  
+`SetWeights(blob, /*reset_optimizer_moments=*/true)` — safe train resume.
 
 ---
 
@@ -440,7 +445,7 @@ best.observe(net, static_cast<float>(re.mse), epoch + 1);
 best.restore(net);
 ```
 
-**Weights only.** Checkpoints use `GetWeights` / `SetWeights`: **no** BN γ/β, **no** optimizer state. Fine for eval/export on no-BN demos. To continue training after restore, call `SetOptimizer` again (or accept stale moments).
+Checkpoints use `GetWeights` / `SetWeights` (kernels, biases, BN γ/β + running stats when present). **No** optimizer moments. Dual-checkpoint restore is eval-oriented; for train resume after restore use `SetWeights(blob, true)` or `SetOptimizer`.
 
 ### Flat classification dataset
 
