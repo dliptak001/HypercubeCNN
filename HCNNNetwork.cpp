@@ -150,7 +150,6 @@ void HCNNNetwork::forward(const float* first_layer_activations, float* logits) c
     if (static_cast<int>(fwd_buf1_.size()) < max_size) {
         fwd_buf1_.resize(max_size);
         fwd_buf2_.resize(max_size);
-        fwd_readout_avg_.resize(readout.get_input_channels());
     }
     float* current  = fwd_buf1_.data();
     float* next_buf = fwd_buf2_.data();
@@ -173,7 +172,9 @@ void HCNNNetwork::forward(const float* first_layer_activations, float* logits) c
         std::swap(current, next_buf);
     }
 
-    readout.forward(current, logits, 1, fwd_readout_avg_.data());
+    // Final map is channel-major [c * N + v]; FLATTEN treats that buffer as
+    // a flat feature vector of length c_final * N_final.
+    readout.forward(current, logits);
 }
 
 void HCNNNetwork::prepare_inference_buffers() {
@@ -239,7 +240,7 @@ void HCNNNetwork::forward_batch(const float* flat_inputs, int input_length,
             }
             std::swap(current, next_buf);
         }
-        readout.forward(current, logits_out + s * K, 1);
+        readout.forward(current, logits_out + s * K);
     };
 
     if (thread_pool && batch_size > 1) {
@@ -375,9 +376,8 @@ void HCNNNetwork::prepare_batch_buffers() {
             b.bn_bg[ci].resize(conv_layers[ci].get_bn_grad_size());
             b.bn_save[ci].resize(conv_layers[ci].get_bn_save_size());
         }
-        // Work buffers for compute_gradients (avoid per-call heap allocs)
-        b.conv_work.resize(max_layer_size); // HCNNConv needs c_out*N, max_layer_size >= that
-        b.readout_work.resize(readout.get_input_channels());
+        // Work buffer for HCNNConv::compute_gradients (avoid per-call heap allocs)
+        b.conv_work.resize(max_layer_size); // c_out*N, max_layer_size >= that
     }
 
     batch_bufs_ready = true;
@@ -611,7 +611,6 @@ void HCNNNetwork::prepare_step_buffers() {
     step_buf_.logits.resize(num_outputs);
     step_buf_.probs.resize(num_outputs);
     step_buf_.grad_logits.resize(num_outputs);
-    step_buf_.readout_avg.resize(readout.get_input_channels());
     step_buf_.grad_a.resize(max_act_size);
     step_buf_.grad_b.resize(max_act_size);
 
@@ -659,8 +658,7 @@ void HCNNNetwork::train_step_impl(const float* raw_input, int input_length,
 
     std::fill(step_buf_.logits.begin(), step_buf_.logits.end(), 0.0f);
     readout.forward(cache[num_layers].activation.data(),
-                    step_buf_.logits.data(), 1,
-                    step_buf_.readout_avg.data());
+                    step_buf_.logits.data());
 
     loss_grad(step_buf_.logits.data(), step_buf_.grad_logits.data(),
               step_buf_.probs.data());
@@ -669,9 +667,8 @@ void HCNNNetwork::train_step_impl(const float* raw_input, int input_length,
     std::fill(step_buf_.grad_a.begin(), step_buf_.grad_a.begin() + final_sz, 0.0f);
     readout.backward(step_buf_.grad_logits.data(),
                      cache[num_layers].activation.data(),
-                     1, step_buf_.grad_a.data(), learning_rate, momentum,
-                     weight_decay, adam_timestep_,
-                     step_buf_.readout_avg.data());
+                     step_buf_.grad_a.data(), learning_rate, momentum,
+                     weight_decay, adam_timestep_);
 
     ci = conv_layers.size();
     pi = pool_layers.size();
@@ -770,8 +767,7 @@ void HCNNNetwork::train_batch_impl(const float* flat_inputs, int input_length,
         // Readout forward
         auto& final_c = b.cache[num_layers];
         std::fill(b.logits.begin(), b.logits.end(), 0.0f);
-        readout.forward(final_c.activation.data(), b.logits.data(), 1,
-                        b.readout_work.data());
+        readout.forward(final_c.activation.data(), b.logits.data());
 
         // Loss gradient (provided by caller).  b.probs is per-thread scratch
         // for classification softmax; regression callbacks ignore it.
@@ -781,9 +777,8 @@ void HCNNNetwork::train_batch_impl(const float* flat_inputs, int input_length,
         int final_size = layer_info_[num_layers].channels * layer_info_[num_layers].N;
         std::fill(b.grad_a.begin(), b.grad_a.begin() + final_size, 0.0f);
         readout.compute_gradients(b.grad_logits.data(), final_c.activation.data(),
-                                  1, b.grad_a.data(),
-                                  b.rw_grad.data(), b.rb_grad.data(),
-                                  b.readout_work.data());
+                                  b.grad_a.data(),
+                                  b.rw_grad.data(), b.rb_grad.data());
 
         for (int i = 0; i < readout.get_weight_size(); ++i)
             a.readout_weight_grad[i] += b.rw_grad[i];

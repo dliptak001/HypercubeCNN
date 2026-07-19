@@ -140,19 +140,21 @@ for each channel, for v in [0, N/2):
 
 ---
 
-## 4. Readout wiring (`HCNNReadout` + orchestrator)
+## 4. Readout (`HCNNReadout` — FLATTEN linear only)
 
-The class implements **average-over-N then linear**. The network **never** uses that as GAP for the default stack:
+No global average pool. After the last conv/pool, activations stay channel-major
+`[c * N + v]`. The head treats that buffer as a flat feature vector:
 
 ```text
 // randomize_all_weights:
-readout = HCNNReadout(num_outputs, final_channels * final_N);
+num_features = final_channels * final_N
+readout = HCNNReadout(num_outputs, num_features)
 
-// every forward:
-readout.forward(activations, outputs, /*N=*/1, work);
+// every forward / backward:
+out[o] = bias[o] + sum_f W[o, f] * in[f]
 ```
 
-With `N = 1`, the “average” is a no-op, so every final `(channel, vertex)` is an independent feature (**FLATTEN**). Parameter count of the head is:
+Parameter count of the head:
 
 ```text
 num_outputs * (c_final * N_final) + num_outputs

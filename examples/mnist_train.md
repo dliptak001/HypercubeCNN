@@ -247,18 +247,12 @@ Leaving vertices 784–2047 at zero wasted most of N at DIM=11. The 32×32 ‖ |
 
 Antipodal MAX is correct mathematically (winner-take-all backprop checks out) but a poor fit for this layout: every pair at DIM=11 straddles the ink half and the grad half, and pooling halves the FLATTEN head. Keeping full N=2048 lets both views stay addressable through all three convs into the linear readout.
 
-### Why FLATTEN, not GAP (tried early)
+### Why FLATTEN only (no GAP)
 
-**Global average pool (GAP) over vertices performed poorly** in early MNIST
-experiments on this stack and was abandoned. That matches the rest of the
-design: DualPlane is a row-major multi-view pack, not a locality-preserving
-map, and the linear head is allowed to be **position-addressable**. GAP
-throws away vertex identity and collapses ink-half / grad-half structure into
-a single channel vector — exactly the signal FLATTEN + geometric aug are set
-up to use. Mainstream spatial CNNs use GAP after a hierarchy that has already
-built translation-tolerant features; here there is no such hierarchy, so GAP
-is the wrong readout. Prefer full-N FLATTEN for this demo; do not re-litigate
-GAP without a new packing story (e.g. locality-aware embed).
+The SDK head is **FLATTEN linear only** (`num_features = c × N`). Global average
+pool over vertices performed poorly in early MNIST experiments and is not part
+of `HCNNReadout`. DualPlane is a row-major multi-view pack, not a locality-
+preserving map, so the head is intentionally **position-addressable**.
 
 ### Why three convs
 

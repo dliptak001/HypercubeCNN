@@ -29,7 +29,7 @@ raw floats
 ```
 
 - **Body** = stacked hypercube convolutions (+ optional pools). Multilayer feature mixing lives here.
-- **Head** = **one linear layer** over every final `(channel, vertex)` feature (no MLP head).
+- **Head** = **one linear layer** over every final `(channel, vertex)` feature (no GAP, no MLP).
 - **Task** chooses how those outputs are trained (classification CE vs regression MSE), not the forward graph.
 
 ---
@@ -509,7 +509,7 @@ See [`spatial_preprocess.md`](spatial_preprocess.md) and `examples/mnist_train.c
 
 - `HCNNConv` — kernels, BN, `compute_gradients` / `apply_gradients`
 - `HCNNPool` — antipodal MAX/AVG
-- `HCNNReadout` — linear head (orchestrator always uses FLATTEN by sizing features as `c*N` and passing `N=1` into an average-then-linear primitive)
+- `HCNNReadout` — FLATTEN linear head (`num_features = c_final * N_final`; no GAP)
 - `HCNNNetwork` — orchestrator behind the PIMPL
 - `ThreadPool` — non-reentrant fork-join
 

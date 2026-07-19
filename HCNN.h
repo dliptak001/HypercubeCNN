@@ -271,7 +271,8 @@ public:
     ///   for each conv layer i = 0 .. num_conv-1:
     ///     conv[i] kernel   (c_out * c_in * K floats; K = DIM + 1 self+neighbors)
     ///     conv[i] bias     (c_out floats, or 0 if bias disabled)
-    ///   readout weights    (num_outputs * input_features floats)
+    ///   readout weights    (num_outputs * num_features floats;
+    ///                       num_features = c_final * N_final, FLATTEN)
     ///   readout bias       (num_outputs floats)
     [[nodiscard]] std::vector<float> GetWeights() const;
 

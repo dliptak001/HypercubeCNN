@@ -14,57 +14,52 @@ namespace hcnn {
 
 /**
  * @class HCNNReadout
- * @brief Final pipeline stage: collapses the hypercube activations into
- *        `num_outputs` real-valued scalars.
+ * @brief Final pipeline stage: linear map from a flat feature vector to
+ *        `num_outputs` real-valued scalars (FLATTEN head).
  *
- * The readout is loss-agnostic and task-agnostic.  It outputs
- * `num_outputs` raw scalars which downstream code interprets either as
- * classification logits (fed through softmax + cross-entropy) or as
- * regression predictions (fed through MSE or other continuous losses).
- * No activation, no softmax — the linear layer output is final.
+ * The orchestrator builds features as every final (channel, vertex) activation
+ * laid out channel-major and contiguous:
  *
- * The constructor receives `input_channels = c_final * N_final` and
- * the network passes `N = 1` to forward(), so the internal channel-wise
- * average is a no-op and the linear layer sees every (channel, vertex)
- * activation as an independent input (FLATTEN readout).
+ *   num_features = c_final * N_final
+ *   in[c * N + v]  is feature index (c * N + v)
  *
- * Owns: weight matrix + bias + matching first / second moment buffers
- * (Adam allocates the second moments on demand via set_optimizer).
+ * Then:
+ *
+ *   out[o] = bias[o] + sum_f  weights[o, f] * in[f]
+ *
+ * No global average pool, no activation, no softmax — raw linear outputs.
+ * Classification CE / regression MSE live upstream of this class.
+ *
+ * Owns: weight matrix [num_outputs × num_features] + bias + optimizer moments.
  *
  * Two backward paths mirror HCNNConv:
- *   - backward(): apply gradients in-place via the configured optimizer.
- *   - compute_gradients() + apply_gradients(): write raw gradients into
- *     caller buffers, then apply once after batch reduction.  The caller
- *     is responsible for computing the upstream loss gradient with
- *     respect to the outputs (`grad_logits`) — the readout itself has no
- *     notion of loss.
+ *   - backward(): gradients + in-place optimizer step (TrainStep)
+ *   - compute_gradients() + apply_gradients(): batch accumulate then apply
  *
  * Power-user class: ordinary SDK consumers should use HCNN.
  */
 class HCNNReadout {
 public:
-    HCNNReadout(int num_outputs, int input_channels);
+    /// @param num_outputs  Output dimension (classes or regression dims).
+    /// @param num_features Flat feature count (typically c_final * N_final).
+    HCNNReadout(int num_outputs, int num_features);
 
     void randomize_weights(float scale, std::mt19937& rng);
 
-    // work_buf: optional pre-allocated buffer of at least input_channels floats.
-    void forward(const float* in, float* out, int N,
-                 float* work_buf = nullptr) const;
+    /// @param in   Length `num_features` (channel-major flatten of final map).
+    /// @param out  Length `num_outputs`.
+    void forward(const float* in, float* out) const;
 
-    // Backward: computes grad_in (if non-null) and updates weights via SGD with optional momentum.
-    // work_buf: optional pre-allocated buffer of at least input_channels floats.
-    void backward(const float* grad_logits, const float* in, int N,
+    /// Gradients + optimizer step.  `grad_in` may be null (first-layer-like).
+    void backward(const float* grad_logits, const float* in,
                   float* grad_in, float learning_rate, float momentum = 0.0f,
-                  float weight_decay = 0.0f, int timestep = 0,
-                  float* work_buf = nullptr);
+                  float weight_decay = 0.0f, int timestep = 0);
 
-    // Compute gradients without applying SGD update.
-    // work_buf: optional pre-allocated buffer of at least input_channels floats.
-    void compute_gradients(const float* grad_logits, const float* in, int N,
-                           float* grad_in, float* weight_grad, float* bias_grad,
-                           float* work_buf = nullptr) const;
+    /// Write raw weight/bias/input gradients; no weight update.
+    void compute_gradients(const float* grad_logits, const float* in,
+                           float* grad_in, float* weight_grad, float* bias_grad) const;
 
-    // Apply externally computed (averaged) gradients via momentum SGD.
+    /// Apply averaged gradients via the configured optimizer.
     void apply_gradients(const float* weight_grad, const float* bias_grad,
                          float learning_rate, float momentum, float weight_decay = 0.0f,
                          int timestep = 0);
@@ -74,7 +69,7 @@ public:
                        float beta2 = 0.999f, float eps = 1e-8f);
 
     int get_num_outputs() const { return num_outputs; }
-    int get_input_channels() const { return input_channels; }
+    int get_num_features() const { return num_features; }
 
     float* get_weight_data() { return weights.data(); }
     const float* get_weight_data() const { return weights.data(); }
@@ -85,13 +80,13 @@ public:
 
 private:
     int num_outputs;
-    int input_channels;
-    std::vector<float> weights;
+    int num_features;
+    std::vector<float> weights;     // [num_outputs * num_features], row = output
     std::vector<float> bias;
     std::vector<float> weight_m;    // first moment (SGD velocity / Adam m)
-    std::vector<float> bias_m;      // first moment for bias
+    std::vector<float> bias_m;
     std::vector<float> weight_m2;   // second moment (Adam only)
-    std::vector<float> bias_m2;     // second moment (Adam only)
+    std::vector<float> bias_m2;
     OptimizerType optimizer_type_ = OptimizerType::SGD;
     float adam_beta1_ = 0.9f, adam_beta2_ = 0.999f, adam_eps_ = 1e-8f;
 };

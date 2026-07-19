@@ -45,7 +45,7 @@ raw floats  →  Embed onto N vertices
 ```
 
 - **Body** can be multilayer (stack `AddConv` / `AddPool`).
-- **Head** is a **single linear** map over every final `(channel, vertex)` — no MLP classifier.
+- **Head** is a **single linear** map over every final `(channel, vertex)` (FLATTEN; no GAP, no MLP).
 - **Pool** (optional) is **antipodal**: pair each vertex with its complement at max Hamming distance, reduce DIM by 1. Not 2×2 spatial pooling.
 - **Tasks:** classification (softmax CE) or regression (MSE); same forward path, different loss + train API.
 

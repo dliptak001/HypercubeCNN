@@ -59,8 +59,8 @@ enum class LossType { Default, CrossEntropy, MSE };
  *
  * Owns:
  *   - `vector<HCNNConv>` and `vector<HCNNPool>` interleaved per `is_conv_layer`
- *   - `HCNNReadout` (sized lazily by `randomize_all_weights` based on
- *     readout type and final layer geometry)
+ *   - `HCNNReadout` (sized by `randomize_all_weights` as FLATTEN linear:
+ *     num_features = c_final * N_final)
  *   - A `ThreadPool` shared across all layers
  *   - Persistent per-thread inference buffers (`ibufs_`)
  *   - Persistent per-thread training buffers and gradient accumulators
@@ -227,7 +227,6 @@ private:
         std::vector<std::vector<float>> bn_gg, bn_bg;  // per-conv BN gamma/beta grads
         std::vector<std::vector<float>> bn_save;        // per-conv BN inv_std cache
         std::vector<float> conv_work;     // work buf for HCNNConv::compute_gradients
-        std::vector<float> readout_work;  // work buf for HCNNReadout::compute_gradients
     };
 
     bool batch_bufs_ready{false};
@@ -309,7 +308,6 @@ private:
     // layer in the network and reused across calls.
     mutable std::vector<float> fwd_buf1_;
     mutable std::vector<float> fwd_buf2_;
-    mutable std::vector<float> fwd_readout_avg_;
 
     // --- Persistent single-step training buffers (allocated once, reused every train_step) ---
     struct StepCache {
@@ -325,7 +323,6 @@ private:
         std::vector<int> layer_ch;
         std::vector<float> logits, probs, grad_logits;
         std::vector<float> grad_a, grad_b;
-        std::vector<float> readout_avg;
     };
     bool step_buf_ready_{false};
     StepBuf step_buf_;

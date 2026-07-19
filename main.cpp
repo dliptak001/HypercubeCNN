@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 David Liptak
+//
+// Quick check only; full suite is CoreSmokeTest.
 
 #include "HCNN.h"
 #include <algorithm>
@@ -9,7 +11,7 @@
 #include <vector>
 
 int main() {
-    std::cout << "HypercubeCNN v0.1.0 -- Quick Check\n\n";
+    std::cout << "HypercubeCNN v0.2.0 -- Quick Check\n\n";
     int failures = 0;
 
     // Build a small network: DIM=5, N=32, 4 classes
@@ -18,6 +20,7 @@ int main() {
     net.AddPool(hcnn::PoolType::MAX);
     net.AddConv(16);
     net.RandomizeWeights();
+    net.SetOptimizer(hcnn::OptimizerType::ADAM);
 
     int N = net.GetStartN();
     int K = net.GetNumOutputs();
