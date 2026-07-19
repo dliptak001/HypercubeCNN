@@ -53,11 +53,10 @@ using hcnn_demo::ArchParamSummary;
 // DEVELOPER CONFIG - edit knobs here; the rest of the file follows
 // ---------------------------------------------------------------------------
 //
-// Documented default recipe (seed 398479293): DIM=11 DualPlane, three 16-wide
-// RELU convs, no pool/BN, rot/scale/shift + shear_x (elastic off), Adam,
-// cosine 1e-3->1e-4, 100 epochs, batch 256, wd 1e-3. K=DIM+1 (self+neighbors).
-// Measured: 99.46% best-acc @ ep 60 / best-loss CE 0.0155 @ ep 81 (99.45%).
-// Multi-seed TBD — see examples/mnist_train.md.
+// Documented default recipe: DIM=11 DualPlane, 3x Conv16 RELU, no pool/BN,
+// rot/scale/shift + shear_x (elastic off), Adam, cosine 1e-3->1e-4, 100 epochs,
+// batch 256, wd 1e-3. K=DIM+1. Closed 3-seed mean best-acc ~99.44%
+// (see examples/mnist_train.md).
 // ---------------------------------------------------------------------------
 
 static constexpr int   kImgSide     = 28;      // MNIST native side (loader)
@@ -80,7 +79,7 @@ struct DemoConfig {
     int num_outputs    = 10;   // MNIST classes
     int input_channels = 1;    // must stay 1 (Spatial* is single-channel)
     std::vector<ArchLayer> layers = {
-        // Documented ~99.3% recipe: three 16-wide RELU convs, no pool
+        // Documented ~99.44% mean recipe: three 16-wide RELU convs, no pool
         ArchLayer::Conv(16, hcnn::Activation::RELU, /*bias=*/true, /*bn=*/false),
         ArchLayer::Conv(16, hcnn::Activation::RELU, /*bias=*/true, /*bn=*/false),
         ArchLayer::Conv(16, hcnn::Activation::RELU, /*bias=*/true, /*bn=*/false)
@@ -91,8 +90,8 @@ struct DemoConfig {
     };
 
     // ----- Weight init / optimizer -----
-    // Documented default seed: 99.46% best-acc / 99.45% at best-loss (shear on).
-    unsigned weight_seed = 77279213;
+    // Default seed (see mnist_train.md 3-seed table); peak 99.46% best-acc.
+    unsigned weight_seed = 398479293;
     hcnn::OptimizerType optimizer = hcnn::OptimizerType::ADAM;
 
     // ----- Schedule -----
@@ -104,17 +103,16 @@ struct DemoConfig {
     float momentum        = 0.9f;     // passed to TrainEpoch (Adam ignores)
 
     // ----- Train-time spatial aug (test path uses None()) -----
-    // Affine: rot/scale/shift/shear (one inverse warp). Optional mild elastic
-    // (off by default — enable after shear A/B). Then Gaussian noise.
-    // See HCNNSpatialAug.h. Elastic dominates aug cost when on.
+    // Affine: rot/scale/shift/shear (one inverse warp). Elastic off (α=1,σ=5
+    // underperformed on seed 398479293). Then Gaussian noise. See HCNNSpatialAug.h.
     float aug_rot_deg_max = 12.0f;    // uniform +/-deg about center
     float aug_scale_min   = 0.9f;
     float aug_scale_max   = 1.1f;
     int   aug_shift_max   = 2;        // integer px dy,dx in {-s..+s}
     float aug_shear_x_max = 0.15f;    // horizontal shear ~ U[-m,m]; MNIST slant
     float aug_shear_y_max = 0.0f;     // vertical shear off by default
-    float aug_elastic_alpha = 0.0f;   // 0=off; try 1.0 after shear A/B
-    float aug_elastic_sigma = 5.0f;   // used when elastic_alpha > 0 (in [0.25,32])
+    float aug_elastic_alpha = 0.0f;   // 0=off (recommended for this recipe)
+    float aug_elastic_sigma = 5.0f;   // used only when elastic_alpha > 0
     float aug_noise_sigma = 0.03f;    // Gaussian after geometry; then clip
     // Aug RNG: seed = aug_seed_base + epoch * aug_seed_stride (reproducible).
     unsigned aug_seed_base   = 0xC0FFEEu;
