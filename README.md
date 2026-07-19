@@ -9,7 +9,7 @@ A convolutional neural network that operates on Boolean hypercubes instead of sp
 
 ## What is HypercubeCNN?
 
-Standard CNNs convolve over 2D pixel grids, exploiting spatial locality with sliding kernels. HypercubeCNN replaces the grid with a DIM-dimensional binary hypercube (N = 2^DIM vertices) and replaces the spatial kernel with a Hamming-distance kernel: each vertex has exactly DIM nearest neighbors, reached by flipping a single bit (one XOR), and the convolution learns one weight per flip direction. This is the direct analogue of a 3x3 kernel shared across all pixel positions -- except the geometry is bitwise, not spatial.
+Standard CNNs convolve over 2D pixel grids, exploiting spatial locality with sliding kernels. HypercubeCNN replaces the grid with a DIM-dimensional binary hypercube (N = 2^DIM vertices) and replaces the spatial kernel with a Hamming-distance kernel: each vertex has a self/center tap plus exactly DIM nearest neighbors (single-bit XOR flips), and the convolution learns one weight per tap (K = DIM + 1), shared across all vertices. This is the direct analogue of a 3x3 kernel (center + edges) -- except the geometry is bitwise, not spatial.
 
 A clarification on terminology: "Boolean hypercube" refers to the *topology* -- vertices are addressed by DIM-bit binary indices, and connectivity is defined by bitwise operations on those indices. The *values* stored at each vertex are ordinary floating-point scalars (activations in [-1, 1]), not bits. The hypercube is the graph that data lives on, not a constraint on the data itself.
 
@@ -51,7 +51,7 @@ Input (flat scalars in [-1, 1])
 Embed onto 2^DIM hypercube vertices (Direct Linear Assignment)
   |
   v
-Conv (HCNNConv) -- K=DIM XOR masks, one weight per neighbor direction
+Conv (HCNNConv) -- K=DIM+1 taps (self + DIM XOR neighbor directions)
   |
   v
 Pool (HCNNPool) -- antipodal pairing, DIM -> DIM-1

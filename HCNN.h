@@ -269,7 +269,7 @@ public:
     ///
     /// Layout (contiguous, in order):
     ///   for each conv layer i = 0 .. num_conv-1:
-    ///     conv[i] kernel   (c_out * c_in * K floats)
+    ///     conv[i] kernel   (c_out * c_in * K floats; K = DIM + 1 self+neighbors)
     ///     conv[i] bias     (c_out floats, or 0 if bias disabled)
     ///   readout weights    (num_outputs * input_features floats)
     ///   readout bias       (num_outputs floats)

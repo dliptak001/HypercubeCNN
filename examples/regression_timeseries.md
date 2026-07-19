@@ -100,15 +100,15 @@ Architecture: Conv(1->16, RELU, bias)  DIM=10  N=1024
               -> Conv(16->16, TANH, bias)  DIM=10  N=1024
               -> FLATTEN
               -> Linear(16384 -> 1)
-Parameters:   19137 (176 conv1 + 2576 conv2 + 16385 readout)
+Parameters:   19409 (192 conv1 + 2832 conv2 + 16385 readout)  # K=DIM+1 (self+neighbors)
 ```
 
 | Component | Count |
 |-----------|------:|
-| Conv1 (1×16×10 kernel + 16 bias) | 176 |
-| Conv2 (16×16×10 kernel + 16 bias) | 2,576 |
+| Conv1 (1×16×11 kernel + 16 bias) | 192 |
+| Conv2 (16×16×11 kernel + 16 bias) | 2,832 |
 | Readout (16×1024 → 1 + bias) | 16,385 |
-| **Total** | **19,137** |
+| **Total** | **19,409** |
 
 Startup throws if `summarize_arch` total ≠ `GetWeightCount()` (kernel + bias;
 BN gamma/beta are not in the weight blob if you enable BN).
@@ -242,7 +242,7 @@ Architecture: Conv(1->16, RELU, bias)  DIM=10  N=1024
               -> Conv(16->16, TANH, bias)  DIM=10  N=1024
               -> FLATTEN
               -> Linear(16384 -> 1)
-Parameters:   19137 (176 conv1 + 2576 conv2 + 16385 readout)
+Parameters:   19409 (192 conv1 + 2832 conv2 + 16385 readout)  # K=DIM+1 (self+neighbors)
 ```
 
 ### Curve (logged epochs)

@@ -133,6 +133,73 @@ static void test_construction() {
     check(net.GetNumOutputs() == 4, "GetNumOutputs() unchanged after build");
 }
 
+// Self/center kernel tap: K = DIM + 1, last index multiplies in[v] (not a neighbor).
+static void test_self_contribution() {
+    std::cout << "\n[Self contribution]\n";
+
+    const int dim = 5;
+    const int N = 1 << dim;
+    const int K = dim + 1;
+
+    hcnn::HCNNConv conv(dim, /*c_in=*/1, /*c_out=*/2,
+                        Activation::NONE, /*bias=*/true, /*bn=*/false);
+    check(conv.get_K() == K, "get_K() == DIM + 1");
+    check(conv.get_self_index() == dim, "get_self_index() == DIM");
+    check(conv.get_kernel_size() == 2 * 1 * K, "kernel size = c_out*c_in*(DIM+1)");
+
+    // Zero all taps, then set self only (+ bias).
+    float* ker = conv.get_kernel_data();
+    for (int i = 0; i < conv.get_kernel_size(); ++i) ker[i] = 0.0f;
+    // layout: (co * c_in + ci) * K + k; self at k == dim
+    ker[0 * K + dim] = 2.0f;    // co=0
+    ker[1 * K + dim] = -0.5f;   // co=1
+    float* bias = conv.get_bias_data();
+    bias[0] = 0.1f;
+    bias[1] = -0.2f;
+
+    std::vector<float> in(static_cast<size_t>(N));
+    for (int v = 0; v < N; ++v)
+        in[static_cast<size_t>(v)] = 0.01f * static_cast<float>(v) - 0.5f;
+
+    std::vector<float> out(static_cast<size_t>(2 * N));
+    conv.forward(in.data(), out.data());
+
+    bool self_ok = true;
+    for (int v = 0; v < N; ++v) {
+        const float x = in[static_cast<size_t>(v)];
+        const float e0 = 0.1f + 2.0f * x;
+        const float e1 = -0.2f + (-0.5f) * x;
+        if (std::fabs(out[static_cast<size_t>(v)] - e0) > 1e-5f ||
+            std::fabs(out[static_cast<size_t>(N + v)] - e1) > 1e-5f) {
+            self_ok = false;
+            break;
+        }
+    }
+    check(self_ok, "self-only kernel: out[v] = bias + w_self * in[v]");
+
+    // Turning on a neighbor tap must change the output.
+    ker[0 * K + 0] = 1.0f;  // co=0, bit-0 neighbor
+    std::vector<float> out2(static_cast<size_t>(2 * N));
+    conv.forward(in.data(), out2.data());
+    bool differ = false;
+    for (int v = 0; v < N; ++v) {
+        if (std::fabs(out2[static_cast<size_t>(v)] - out[static_cast<size_t>(v)]) > 1e-5f) {
+            differ = true;
+            break;
+        }
+    }
+    check(differ, "neighbor tap changes output beyond self-only");
+
+    // HCNN weight blob includes self taps (K = DIM+1).
+    HCNN net(5, /*num_outputs=*/4);
+    net.AddConv(8, Activation::RELU, /*bias=*/true, /*bn=*/false);
+    net.RandomizeWeights();
+    // kernel: 1*8*6 + bias 8; readout FLATTEN 8*32 -> 4 + bias 4
+    const size_t expected = static_cast<size_t>(1 * 8 * 6 + 8 + 8 * 32 * 4 + 4);
+    check(net.GetWeightCount() == expected,
+          "GetWeightCount includes self taps (K=DIM+1)");
+}
+
 static void test_forward_pass() {
     std::cout << "\n[Forward pass]\n";
 
@@ -2069,6 +2136,7 @@ int main() {
     std::cout << "===================\n";
 
     test_construction();
+    test_self_contribution();
     test_forward_pass();
     test_training_step();
     test_train_batch();

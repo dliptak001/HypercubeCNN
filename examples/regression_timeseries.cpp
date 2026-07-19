@@ -49,7 +49,8 @@ using hcnn_demo::ArchParamSummary;
 // =============================================================================
 //
 // Documented default (seed 42): DIM=10 (N=1024), Conv16 RELU -> Conv16 TANH,
-// no pool, Adam, cosine LR 0.002 -> 2e-4, 50 epochs. Best test MSE ~3.25e-8.
+// no pool, Adam, cosine LR 0.002 -> 2e-4, 50 epochs. K=DIM+1 (self+neighbors).
+// Best test MSE historically ~3e-8 (neighbor-only era); re-check after self tap.
 // First-layer RELU beat dual-TANH on this seed; raise dim / depth to stress scale.
 // =============================================================================
 

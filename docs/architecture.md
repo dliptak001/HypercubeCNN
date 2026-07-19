@@ -35,26 +35,31 @@ All data flows through the pipeline as flat `float*` arrays. No tensors, no mult
 For each output channel co, each vertex v:
 
 ```
-out[co, v] = bias[co] + sum over (ci, k) of w[co, ci, k] * in[ci, v ^ (1 << k)]
+out[co, v] = bias[co]
+           + sum over ci of w[co, ci, SELF] * in[ci, v]
+           + sum over (ci, k) of w[co, ci, k] * in[ci, v ^ (1 << k)]
 ```
 
 where:
 - `ci` iterates over input channels
-- `k` iterates over [0, DIM) -- the DIM bit-flip directions
+- `k` iterates over [0, DIM) -- the DIM bit-flip (Hamming-1 neighbor) directions
+- `SELF = DIM` is the self/center tap (mask 0)
 - `v ^ (1 << k)` is the neighbor of v obtained by flipping bit k (XOR)
-- `w[co, ci, k]` is the learned weight for output channel co, input channel ci, direction k
+- `w[co, ci, k]` is the learned weight for output channel co, input channel ci, tap k
 
-This is a direct analogue of a spatial convolution: instead of sliding a 3x3 kernel across a 2D grid, we apply a DIM-direction kernel at every hypercube vertex. The kernel is indexed by bit-flip direction, not by spatial offset.
+This is a direct analogue of a spatial convolution that includes the center pixel: instead of sliding a 3x3 kernel across a 2D grid, we apply a (self + DIM-direction) kernel at every hypercube vertex. Neighbor taps are indexed by bit-flip direction; the last tap is self.
 
 ### Kernel shape
 
 ```
-kernel[co * c_in * K + ci * K + k]     where K = DIM
+kernel[co * c_in * K + ci * K + k]     where K = DIM + 1
+  k in [0, DIM)  = neighbor bit k
+  k == DIM       = self / center
 ```
 
-Total kernel parameters per layer: `c_out * c_in * K`. At DIM=10 with 64→128 channels: 64 * 128 * 10 = 81,920 weights.
+Total kernel parameters per layer: `c_out * c_in * K` with `K = DIM + 1`. At DIM=10 with 64→128 channels: 64 * 128 * 11 = 90,112 weights.
 
-For comparison, a standard 3x3 conv with the same channel dimensions: 64 * 128 * 9 = 73,728. Similar ballpark -- the hypercube kernel has DIM directions where a spatial kernel has 9 (or 25 for 5x5).
+For comparison, a standard 3x3 conv with the same channel dimensions: 64 * 128 * 9 = 73,728. Similar ballpark -- the hypercube kernel has DIM neighbor directions plus one self tap.
 
 ### Why this works
 
@@ -137,13 +142,13 @@ The forward path is **identical** in both task types. For classification, the `n
 
 ```cpp
 hcnn::HCNN net(10);                       // DIM=10, N=1024
-net.AddConv(32);                          // 1→32 channels,   K=10 (DIM=10)
+net.AddConv(32);                          // 1→32 channels,   K=11 (DIM=10 + self)
 net.AddPool(hcnn::PoolType::MAX);         // DIM 10→9,        N 1024→512
-net.AddConv(64);                          // 32→64 channels,  K=9  (DIM=9)
+net.AddConv(64);                          // 32→64 channels,  K=10 (DIM=9 + self)
 net.AddPool(hcnn::PoolType::MAX);         // DIM 9→8,         N 512→256
-net.AddConv(128);                         // 64→128 channels, K=8  (DIM=8)
+net.AddConv(128);                         // 64→128 channels, K=9  (DIM=8 + self)
 net.AddPool(hcnn::PoolType::MAX);         // DIM 8→7,         N 256→128
-net.AddConv(128);                         // 128→128 channels, K=7  (DIM=7)
+net.AddConv(128);                         // 128→128 channels, K=8  (DIM=7 + self)
 net.AddPool(hcnn::PoolType::MAX);         // DIM 7→6,         N 128→64
 net.RandomizeWeights();                   // Xavier/He init
 ```
@@ -152,7 +157,7 @@ Internally `HCNN` owns an `HCNNNetwork` and forwards every call through a thin P
 
 Key properties:
 - DIM shrinks only at pool layers. Conv layers preserve dimensionality.
-- K = DIM at each conv layer, so deeper layers have fewer kernel directions (but operate on more abstract features).
+- K = DIM + 1 at each conv layer (self + neighbors), so deeper layers have fewer neighbor directions after pooling (but operate on more abstract features).
 - Channel count typically increases with depth (same as spatial CNNs).
 - The readout is automatically configured from the final channel count and vertex count.
 
@@ -172,7 +177,7 @@ For MNIST (784 pixels → 1024 vertices): pixels land on vertices 0-783, vertice
 - `scale <= 0` (default) -- auto:
   - **He/Kaiming uniform** for ReLU/LeakyReLU layers with `c_in > 1`: `s = sqrt(6 / fan_in)`. Accounts for the variance-halving effect of ReLU.
   - **Xavier/Glorot uniform** otherwise (NONE, TANH, or first layer with `c_in = 1` whose input is raw data, not post-activation): `s = sqrt(6 / (fan_in + fan_out))`.
-  - `fan_in = c_in * K`, `fan_out = c_out * K`. Computed per-layer since K = DIM varies after pooling.
+  - `fan_in = c_in * K`, `fan_out = c_out * K` with `K = DIM + 1`. Computed per-layer since K shrinks after pooling (DIM drops).
 
 Biases are reset to zero. Optimizer state buffers (SGD velocity / Adam first and second moments) are cleared. Batch-norm parameters are reset to `γ = 1, β = 0` and running stats to `mean = 0, var = 1`.
 
@@ -276,12 +281,12 @@ Reference configuration (DIM=10, 4 conv+pool stages, MNIST classification):
 
 | Layer | Shape | Kernel | Bias | Total |
 |-------|-------|--------|------|-------|
-| Conv1 | 1→32, K=10 | 320 | 32 | 352 |
-| Conv2 | 32→64, K=9 | 18,432 | 64 | 18,496 |
-| Conv3 | 64→128, K=8 | 65,536 | 128 | 65,664 |
-| Conv4 | 128→128, K=7 | 114,688 | 128 | 114,816 |
+| Conv1 | 1→32, K=11 | 352 | 32 | 384 |
+| Conv2 | 32→64, K=10 | 20,480 | 64 | 20,544 |
+| Conv3 | 64→128, K=9 | 73,728 | 128 | 73,856 |
+| Conv4 | 128→128, K=8 | 131,072 | 128 | 131,200 |
 | Readout | 128→10 | 1,280 | 10 | 1,290 |
-| **Total** | | | | **~200K** |
+| **Total** | | | | **~227K** |
 
 ## Implementation
 

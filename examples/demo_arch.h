@@ -107,8 +107,9 @@ inline ArchParamSummary summarize_arch(int dim,
         if (L.kind == ArchLayer::Kind::Conv) {
             if (L.c_out < 1)
                 throw std::runtime_error("demo_arch: conv c_out must be >= 1");
+            // K = DIM + 1 (DIM Hamming-1 neighbors + 1 self/center tap)
             const long long k_params =
-                static_cast<long long>(c_in) * L.c_out * d
+                static_cast<long long>(c_in) * L.c_out * (d + 1)
                 + (L.use_bias ? L.c_out : 0);
             s.conv_params.push_back(k_params);
             s.total += k_params;

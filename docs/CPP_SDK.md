@@ -204,7 +204,7 @@ void RandomizeWeights(float scale = 0.0f, unsigned seed = 42);
 
 | Method | Description |
 |--------|-------------|
-| `AddConv` | Append a convolutional layer with `c_out` output channels. K = current DIM (one weight per Hamming-distance-1 neighbor). Optional per-channel bias and batch normalization. Activation is `RELU` by default; pass `Activation::LEAKY_RELU` for LeakyReLU (slope 0.01), `Activation::TANH` for tanh, or `Activation::NONE` for a linear layer. |
+| `AddConv` | Append a convolutional layer with `c_out` output channels. K = current DIM + 1 (self/center tap + one weight per Hamming-distance-1 neighbor). Optional per-channel bias and batch normalization. Activation is `RELU` by default; pass `Activation::LEAKY_RELU` for LeakyReLU (slope 0.01), `Activation::TANH` for tanh, or `Activation::NONE` for a linear layer. |
 | `AddPool` | Append an antipodal pooling layer. Reduces DIM by 1. |
 | `RandomizeWeights` | Initialize all weights. `scale > 0`: uniform `[-scale, +scale]` (deterministic, primarily for testing). `scale <= 0` (default): per-layer auto-init -- He/Kaiming uniform for ReLU/LeakyReLU layers with `c_in > 1`, Xavier/Glorot uniform otherwise. Resets biases to zero, optimizer state to zero, and BN parameters to (γ=1, β=0). |
 

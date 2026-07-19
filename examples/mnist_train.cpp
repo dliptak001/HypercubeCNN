@@ -81,8 +81,8 @@ struct DemoConfig {
     int input_channels = 1;    // must stay 1 (Spatial* is single-channel)
     std::vector<ArchLayer> layers = {
         // Documented ~99.3% recipe: three 16-wide RELU convs, no pool
-        ArchLayer::Conv(16, hcnn::Activation::RELU, /*bias=*/true, /*bn=*/false),
-        ArchLayer::Conv(16, hcnn::Activation::RELU, /*bias=*/true, /*bn=*/false),
+        ArchLayer::Conv(16, hcnn::Activation::NONE, /*bias=*/true, /*bn=*/false),
+        ArchLayer::Conv(16, hcnn::Activation::TANH, /*bias=*/true, /*bn=*/false),
         ArchLayer::Conv(16, hcnn::Activation::RELU, /*bias=*/true, /*bn=*/false)
         // Examples:
         // ArchLayer::Conv(32),

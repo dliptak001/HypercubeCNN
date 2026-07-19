@@ -11,15 +11,18 @@
  * channels on the same hypercube.  For each output vertex v, the layer
  * computes:
  *
- *   out_co(v) = b_co + sum over (ci, k) of w[co,ci,k] * in[ci, v ^ (1 << k)]
+ *   out_co(v) = b_co
+ *             + sum over (ci)     of w[co,ci,SELF] * in[ci, v]
+ *             + sum over (ci, k)  of w[co,ci,k]    * in[ci, v ^ (1 << k)]
  *
- * where k ranges over [0, DIM), so each mask is a single-bit flip
- * selecting the nearest neighbor at Hamming distance 1 along bit k.
+ * where k ranges over [0, DIM) (Hamming-distance-1 neighbors) and SELF = DIM
+ * is the center / self tap (mask 0).  Kernel width K = DIM + 1.
  *
- * Each mask selects exactly one neighbor per vertex; each gets its own learned
- * weight, shared across all vertices (CNN-style weight sharing).
+ * Each tap has its own learned weight, shared across all vertices (CNN-style
+ * weight sharing).  The self tap is the hypercube analogue of the center
+ * weight in a spatial 3x3 kernel; neighbors are the bit-axis directions.
  *
- * All geometry is bitwise — neighbor lookup uses XOR with single-bit masks;
+ * All neighbor geometry is bitwise — lookup uses XOR with single-bit masks;
  * there are no adjacency lists or spatial padding.
  *
  * Memory layout is **channel-major**: element [c*N + v] stores channel c,
@@ -60,12 +63,13 @@ enum class OptimizerType { SGD, ADAM };
  * @class HCNNConv
  * @brief One hypercube convolutional layer.  Maps c_in input channels on a
  *        DIM-dimensional binary hypercube to c_out output channels on the
- *        same hypercube using K = DIM single-bit-flip XOR neighbor masks.
+ *        same hypercube using K = DIM + 1 kernel taps: one self (center)
+ *        weight plus DIM single-bit-flip XOR neighbor directions.
  *
- * Each output channel learns one weight per (input channel, neighbor
- * direction) pair plus an optional bias.  Weight sharing across vertices is
- * exact (the hypercube is vertex-transitive), so there is no padding,
- * border handling, or adjacency table.
+ * Each output channel learns one weight per (input channel, tap) pair plus
+ * an optional bias.  Weight sharing across vertices is exact (the hypercube
+ * is vertex-transitive), so there is no padding, border handling, or
+ * adjacency table.
  *
  * Owns: kernel + (optional) bias + (optional) batch-norm parameters, plus
  * the matching first / second moment buffers for SGD-momentum or Adam.
@@ -99,10 +103,11 @@ public:
     /**
      * @brief Construct a hypercube convolutional layer.
      *
-     * Uses K = DIM nearest-neighbor XOR masks (computed inline).  Kernel and
-     * bias weights are initialized to zero; call randomize_weights() before training.
+     * Uses K = DIM + 1 taps: self (index DIM) plus DIM nearest-neighbor XOR
+     * directions (indices 0 .. DIM-1).  Kernel and bias weights are
+     * initialized to zero; call randomize_weights() before training.
      *
-     * Requires dim >= 3 so that K >= 3.
+     * Requires dim >= 3.
      *
      * @param dim            Hypercube dimension.  The layer operates on N = 2^dim vertices.
      * @param c_in           Number of input channels.
@@ -123,7 +128,7 @@ public:
      *   ReLU/LeakyReLU with c_in > 1: He/Kaiming uniform, s = sqrt(6 / fan_in).
      *   Otherwise (NONE, TANH, or first layer with c_in=1):
      *     Xavier/Glorot uniform, s = sqrt(6 / (fan_in + fan_out)).
-     * fan_in = c_in * K, fan_out = c_out * K.
+     * fan_in = c_in * K, fan_out = c_out * K  (K = DIM + 1, self + neighbors).
      *
      * Biases are reset to zero.  Momentum velocity buffers are cleared.
      *
@@ -135,9 +140,9 @@ public:
     /**
      * @brief Execute the forward pass over all output channels.
      *
-     * For each output channel and each vertex, looks up K specific neighbors
-     * via XOR masks, multiplies by the corresponding kernel weight, sums,
-     * adds bias, and applies the activation function.
+     * For each output channel and each vertex, accumulates the self tap and
+     * DIM Hamming-1 neighbors (XOR masks), multiplies by the corresponding
+     * kernel weights, adds bias, and applies the activation function.
      *
      * When batch normalization is enabled, normalization is applied between
      * the weighted sum and activation.  In training mode, per-sample statistics
@@ -236,7 +241,9 @@ public:
     int get_N() const { return N; }           ///< Vertex count (2^DIM).
     int get_c_in() const { return c_in; }     ///< Number of input channels.
     int get_c_out() const { return c_out; }   ///< Number of output channels.
-    int get_K() const { return K; }           ///< Number of connection masks (= DIM).
+    int get_K() const { return K; }           ///< Kernel taps (= DIM + 1: neighbors + self).
+    /// Index of the self/center tap in the last axis of the kernel (always DIM).
+    int get_self_index() const { return DIM; }
     ///@}
 
     /// Set the thread pool for parallel execution (nullptr = single-threaded).
@@ -285,14 +292,14 @@ private:
     int N;            ///< Number of vertices, always 2^DIM.
     int c_in;         ///< Input channel count.
     int c_out;        ///< Output channel count (number of filters).
-    int K;            ///< Number of connection masks (= DIM).
+    int K;            ///< Number of kernel taps (= DIM + 1: bit-flips 0..DIM-1 + self at DIM).
     Activation activation;  ///< Activation function applied after convolution.
     bool use_bias;       ///< Whether a learnable bias term is added per output channel.
     bool use_batchnorm;  ///< Whether batch normalization is applied between conv and activation.
     mutable bool training_ = true; ///< Training mode (true) or eval mode (false) for BN.
     mutable bool skip_running_stats_ = false; ///< When true, forward() skips EMA updates (batch-parallel mode).
 
-    std::vector<float> kernel;          ///< Kernel weights, layout [c_out * c_in * K].
+    std::vector<float> kernel;          ///< Kernel weights, layout [c_out * c_in * K]; k in [0,DIM) = bit k, k==DIM = self.
     std::vector<float> bias;            ///< Per-output-channel bias, size c_out (empty if bias disabled).
     std::vector<float> kernel_m;        ///< First moment (SGD velocity / Adam m) for kernel.
     std::vector<float> bias_m;          ///< First moment for bias.
@@ -323,7 +330,7 @@ private:
      * @brief Compute the flat index into the kernel array.
      * @param co Output channel index.
      * @param ci Input channel index.
-     * @param k  Mask index (0 .. K-1).
+     * @param k  Tap index: 0 .. DIM-1 = neighbor bit k; DIM = self.
      * @return   Index into the kernel vector.
      */
     int kernel_idx(int co, int ci, int k) const {

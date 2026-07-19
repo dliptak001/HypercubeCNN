@@ -57,14 +57,14 @@ Topology and all other knobs live in **`DemoConfig`** near the top of `mnist_tra
 ```
 Input: SpatialEmbed DualPlane 2048 floats (DIM=11, 1 channel)
   |
-Conv1: 1  -> 16 channels, K=11, ReLU, bias
-Conv2: 16 -> 16 channels, K=11, ReLU, bias
-Conv3: 16 -> 16 channels, K=11, ReLU, bias
+Conv1: 1  -> 16 channels, K=12 (DIM+1 self+neighbors), NONE, bias
+Conv2: 16 -> 16 channels, K=12, TANH, bias
+Conv3: 16 -> 16 channels, K=12, RELU, bias
   |
 Readout: FLATTEN -> linear 32768->10 -> logits
 ```
 
-Total parameters: **333,546** (192 conv1 + 2,832 conv2 + 2,832 conv3 + 327,690 readout).
+Total parameters: **334,082** (208 conv1 + 3,092 conv2 + 3,092 conv3 + 327,690 readout).
 
 To try another stack or schedule, edit `DemoConfig` fields at the top of the `.cpp` (layers, `dim`, `weight_seed`, `epochs`, `lr_max`, aug, …). Pools reduce DIM by 1 and shrink the FLATTEN head; BN is available per conv but is not the documented MNIST recipe.
 
@@ -133,7 +133,7 @@ cmake --build cmake-build-release --target MNISTTrain
 
 ## Results
 
-60K train / 10K test, **DIM=11**, **3× Conv 16 RELU** (no antipodal pool), dense pack (32×32 image ‖ 32×32 \|∇\|), train aug (**rot ±12°**, **scale [0.9, 1.1]**, shift ±2, **shear_x ±0.15**, elastic **off**, noise σ=0.03), Adam, batch=256, wd=1e-3, cosine LR **0.001 → 1e-4**, **60 epochs**. Only the **weight init seed** varies; aug and shuffle streams are fixed. Epoch timing includes pack+aug rebuild + `TrainEpoch`. Throughput ~1.09–1.11k samples/s on 32 threads (~54–56 s/epoch). Parameters: **333,546**.
+60K train / 10K test, **DIM=11**, **3× Conv 16** NONE→TANH→RELU (no antipodal pool), dense pack (32×32 image ‖ 32×32 \|∇\|), train aug (**rot ±12°**, **scale [0.9, 1.1]**, shift ±2, **shear_x ±0.15**, elastic **off**, noise σ=0.03), Adam, batch=256, wd=1e-3, cosine LR **0.001 → 1e-4**, **60 epochs**. Only the **weight init seed** varies; aug and shuffle streams are fixed. Epoch timing includes pack+aug rebuild + `TrainEpoch`. Throughput ~1.09–1.11k samples/s on 32 threads (~54–56 s/epoch). Parameters: **334,082** (K=DIM+1 self+neighbors). Accuracy figures below were measured **before** the self tap (`pre_self_contribution` tag); re-run before quoting post-self numbers.
 
 Documented numbers below are the **default recipe including shear_x** (elastic off). Same weight seeds as the pre-shear table for fair multi-seed fill-in.
 
@@ -172,7 +172,7 @@ only the conv channel list changes. When **last map = 16**, FLATTEN is
 
 | Stack | Params | Best acc | Best loss | Acc @ best-loss | Throughput |
 |-------|--------|----------|-----------|-----------------|------------|
-| **16→16→16** (default) | 333,546 | **99.28%** @ ep 56 | **0.02099** @ ep 60 | 99.25% | ~1.1k samples/s (~55 s/ep) |
+| **16→16→16** (default) | 334,082 | **99.28%** @ ep 56 | **0.02099** @ ep 60 | 99.25% | ~1.1k samples/s (~55 s/ep) |
 | **16→8→16** | 330,722 | 99.22% @ ep 35 | 0.02170 @ ep 60 | 99.19% | ~1.9–2.0k samples/s (~30 s/ep) |
 | **4→8→16** | 329,522 | 98.96% @ ep 58 | 0.03160 @ ep 58 | 98.96% | ~2.5–2.7k samples/s (~23 s/ep) |
 | **8→16→32** | 662,554 | 99.25% @ ep 60 | 0.02221 @ ep 60 | 99.25% | ~0.82k samples/s (~73 s/ep) |
