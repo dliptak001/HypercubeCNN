@@ -5,144 +5,156 @@
 [![C++23](https://img.shields.io/badge/C%2B%2B-23-blue.svg)]()
 [![CMake](https://img.shields.io/badge/CMake-3.21+-blue.svg)]()
 
-A convolutional neural network that operates on Boolean hypercubes instead of spatial grids -- the same XOR-addressed topology used by [HypercubeRC](https://github.com/dliptak001/HypercubeRC) and [HypercubeHopfield](https://github.com/dliptak001/HypercubeHopfield), with learned convolution kernels and end-to-end backpropagation.
+HypercubeCNN is a **convolutional neural network that lives on a Boolean hypercube** instead of a 2D pixel grid. It keeps the familiar CNN story — shared local kernels, stacked layers, end-to-end backpropagation — but replaces spatial neighborhoods with **bitwise (XOR) geometry**. The library is **pure C++23**, ships as a static SDK (`HypercubeCNNCore`), and is meant for research, coursework, and as a **learned readout** beside [HypercubeESN](https://github.com/dliptak001/HypercubeESN) and [HypercubeHopfield](https://github.com/dliptak001/HypercubeHopfield).
+
+---
 
 ## What is HypercubeCNN?
 
-Standard CNNs convolve over 2D pixel grids, exploiting spatial locality with sliding kernels. HypercubeCNN replaces the grid with a DIM-dimensional binary hypercube (N = 2^DIM vertices) and replaces the spatial kernel with a Hamming-distance kernel: each vertex has a self/center tap plus exactly DIM nearest neighbors (single-bit XOR flips), and the convolution learns one weight per tap (K = DIM + 1), shared across all vertices. This is the direct analogue of a 3x3 kernel (center + edges) -- except the geometry is bitwise, not spatial.
+A standard CNN slides a small kernel (e.g. 3×3) across an image, reusing the same weights at every location. **HypercubeCNN does the same thing on a different domain:** a `DIM`-dimensional binary hypercube with **N = 2^DIM** vertices. Each vertex has a **self** (center) contribution plus exactly **DIM** nearest neighbors, reached by flipping one bit of its address (`v ^ (1 << k)`). The layer learns one weight per tap — **`K = DIM + 1`** total — shared across all vertices.
 
-A clarification on terminology: "Boolean hypercube" refers to the *topology* -- vertices are addressed by DIM-bit binary indices, and connectivity is defined by bitwise operations on those indices. The *values* stored at each vertex are ordinary floating-point scalars (activations in [-1, 1]), not bits. The hypercube is the graph that data lives on, not a constraint on the data itself.
+| Spatial CNN | HypercubeCNN |
+|-------------|--------------|
+| Pixels on a rectangle | Vertices of a `DIM`-cube (`N = 2^DIM`) |
+| Neighbors by grid offset | Neighbors by **bit flip** + **self** |
+| Shared 3×3 (center + edges) | Shared **`K = DIM + 1`** taps (self + one weight per bit axis) |
+| Borders, padding, edge cases | No borders — the cube is **vertex-transitive** |
 
-Why this topology? The binary hypercube is vertex-transitive: every vertex looks structurally identical to every other. Weight sharing is not an approximation forced by implementation convenience (as it arguably is at image boundaries in spatial CNNs) -- it is mathematically exact, respecting the symmetry group Z_2^n. All topology is implicit in the bit representation of vertex indices. There are no adjacency lists, no padding, no border effects, and neighbor lookup is a single XOR instruction.
+**Terminology:** “Boolean hypercube” names the **topology** — indices are DIM-bit integers and connectivity is bitwise. Values on vertices are ordinary **floats** (typically in `[-1, 1]`), not bits. The cube is the graph data lives on, not a constraint that activations be binary.
 
-Pooling pairs each vertex with its bitwise complement -- the maximally distant point on the hypercube -- and reduces DIM by 1, producing a perfect (DIM-1)-dimensional sub-hypercube. Stacking conv + pool stages builds a feature hierarchy analogous to standard CNN architectures, with DIM shrinking and channel count growing at each stage.
+Because every vertex looks the same under the symmetry group of the cube, weight sharing is mathematically exact (not a convenience that breaks at image borders). Neighbor lookup is a single XOR; there are no adjacency lists.
 
-The architecture supports both classification (softmax + cross-entropy) and regression (MSE) via a unified conv/pool/readout pipeline -- only the loss gradient differs. Activations include ReLU, LeakyReLU, and tanh (the natural choice for bounded-output regression and reservoir-computing readouts).
+You stack convolutions (and optional **antipodal** pooling) into a feature body, then a **single linear readout** over every final `(channel, vertex)`. Classification (softmax cross-entropy) and regression (MSE) share that forward path; only the training loss and target type change.
 
-## Quick start (C++)
+**A good fit when:**
+
+- Inputs already live at length `2^D` (reservoir / ESN state, bit-indexed fingerprints, product-space features)
+- You want a small, dependency-free C++ CNN core with a clean teaching surface
+- You are exploring what “convolution” means outside Euclidean grids
+
+**Not a drop-in replacement for spatial vision stacks:** mapping images onto the cube is an explicit packing step (the MNIST demo does this for you). Hamming neighbors are **not** automatic 2D adjacency unless packing makes them so.
+
+---
+
+## 60-second tour
+
+```text
+raw floats  →  Embed onto N vertices
+            →  Conv*  (optional antipodal Pool*)
+            →  FLATTEN linear head  →  logits / predictions
+```
+
+- **Body** can be multilayer (stack `AddConv` / `AddPool`).
+- **Head** is a **single linear** map over every final `(channel, vertex)` — no MLP classifier.
+- **Pool** (optional) is **antipodal**: pair each vertex with its complement at max Hamming distance, reduce DIM by 1. Not 2×2 spatial pooling.
+- **Tasks:** classification (softmax CE) or regression (MSE); same forward path, different loss + train API.
 
 ```cpp
 #include "HCNN.h"
-
 using namespace hcnn;
 
-HCNN net(10);                       // DIM=10, N=1024
-net.AddConv(32);                    // 1->32 channels, K=10
-net.AddPool(PoolType::MAX);         // DIM 10->9, N 1024->512
-net.AddConv(64);                    // 32->64 channels, K=9
-net.AddPool(PoolType::MAX);         // DIM 9->8, N 512->256
-net.RandomizeWeights();             // Xavier/He init
+HCNN net(/*DIM=*/10, /*num_outputs=*/10);  // N = 1024
+net.AddConv(32);                           // K = 11 (self + 10 bit axes)
+net.AddPool(PoolType::MAX);                // DIM 10→9, N 1024→512
+net.AddConv(64);                           // K = 10 at DIM 9
+net.RandomizeWeights();
+net.SetOptimizer(OptimizerType::ADAM);     // recommended for demos
 
-// Forward pass -- caller-owned scratch buffers, designed for reuse.
-std::vector<float> embedded(net.GetStartN());
-std::vector<float> logits(net.GetNumOutputs());
-net.Embed(input_data, input_len, embedded.data());
-net.Forward(embedded.data(), logits.data());
+std::vector<float> emb(net.GetStartN()), logits(net.GetNumOutputs());
+net.Embed(input, input_len, emb.data());
+net.Forward(emb.data(), logits.data());    // raw logits — no softmax
 ```
 
-`hcnn::HCNN` is the canonical SDK front door -- a single class that wraps the entire pipeline (embed → conv/pool → readout). All public symbols live in `namespace hcnn`. Available as a CMake static library via `FetchContent` or `find_package`. See [docs/CPP_SDK.md](docs/CPP_SDK.md) for full API reference and integration guide.
+Full student-oriented API: **[docs/CPP_SDK.md](docs/CPP_SDK.md)**.
 
-## Pipeline
+---
 
-```
-Input (flat scalars in [-1, 1])
-  |
-  v
-Embed onto 2^DIM hypercube vertices (Direct Linear Assignment)
-  |
-  v
-Conv (HCNNConv) -- K=DIM+1 taps (self + DIM XOR neighbor directions)
-  |
-  v
-Pool (HCNNPool) -- antipodal pairing, DIM -> DIM-1
-  |
-  v
-[repeat conv + pool stages]
-  |
-  v
-Readout (HCNNReadout) -- flatten all (channel, vertex) activations -> linear -> output
-```
+## Quick start
 
-## Readout-throughput optimizations
-
-When HCNN is used as the learned readout for [HypercubeRC](https://github.com/dliptak001/HypercubeRC), HCNN consumes >95% of the combined system's training compute. Thread parallelism is already saturated (block-pair auto-vectorization, vertex- and channel-level threading, per-thread gradient accumulators), so wall-clock speedup must come from **algorithmic** changes. The hot path is `HCNNConv::compute_gradients` per sample; inside it, `std::tanh` on every conv output -- in both forward and backward -- is the dominant primitive. The two optimizations below target it.
-
-Measurements are paired runs of `RegressionTimeseries` at DIM=12 (4096 vertices, 50 epochs, Adam, two `Conv(TANH) + MaxPool` stages, FLATTEN readout).
-
-### 1. Post-activation TANH derivative (`1 - y^2` identity)
-
-`HCNNConv::backward` and `HCNNConv::compute_gradients` previously called `activate_derivative(pre_act[i])`, which re-ran `std::tanh`. Since `y = tanh(x)` is already cached in `cache[i+1].activation` throughout backward, the derivative is `1 - y*y` with no transcendental call. An optional `const float* post_act = nullptr` parameter on the two backward entry points selects the identity when supplied and the activation is `Activation::TANH`; the public `HCNN` API is unchanged.
-
-- **Measured:** -14.8% per-epoch wall-clock at DIM=12 (3.55 s -> 3.03 s). Numerics bit-identical.
-- **Files:** `HCNNConv.{h,cpp}`, `HCNNNetwork.cpp`.
-
-### 2. Compile-time fast TANH (`HCNN_FAST_TANH`, default ON)
-
-Both `std::tanh` call sites in `HCNNConv.cpp` -- `HCNNConv::activate` (forward) and the `post_act==nullptr` fallback in `HCNNConv::activate_derivative` -- route through a static `hcnn_tanh` helper guarded by `#ifdef HCNN_FAST_TANH`. With the macro defined, the helper uses a rational Padé approximation `tanh(x) ~= x*(27 + x^2) / (27 + 9*x^2)`, output-clamped to `[-1, 1]` since the rational form's asymptote is `x/9` rather than 1. The CMake option attaches the macro via `target_compile_definitions(HypercubeCNNCore PRIVATE ...)`, so the public include interface is untouched and downstream consumers (HypercubeRC) inherit whichever variant is built into `libHypercubeCNNCore.a`. Pass `-DHCNN_FAST_TANH=OFF` to fall back to exact `std::tanh`. Because option 1's backward branch reuses the cached post-activation, the approximation propagates from forward to backward with no separate code path.
-
-- **Measured:** -8.8% per-epoch wall-clock on top of #1 (3.03 s -> 2.76 s); cumulative -22% vs pre-optimization baseline.
-- **Numerics:** final test 1-R^2 shifts 9.92e-08 -> 1.20e-07 -- still seven nines of variance explained.
-- **Files:** `HCNNConv.cpp`, `CMakeLists.txt`.
-
-## Build targets
-
-| Target | Purpose |
-|--------|---------|
-| `HypercubeCNNCore` | Static library (HCNN front door + core layers) |
-| `HypercubeCNN` | Quick check runner (main.cpp) |
-| `MNISTTrain` | MNIST classification demo (examples/mnist_train.cpp) |
-| `RegressionTimeseries` | Regression demo -- next-step prediction (examples/regression_timeseries.cpp) |
-| `CoreSmokeTest` | HCNN SDK smoke test (tests/CoreSmokeTest.cpp) |
-
-## Building from source
-
-Requirements: C++23 compiler, CMake 3.21+.
+**Needs:** C++23, CMake ≥ 3.21.
 
 ```bash
+git clone https://github.com/dliptak001/HypercubeCNN.git
+cd HypercubeCNN
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build
+./build/CoreSmokeTest          # or build/CoreSmokeTest.exe on Windows
 ```
 
-Run the smoke test:
+### Use as a dependency (FetchContent)
+
+```cmake
+include(FetchContent)
+FetchContent_Declare(
+    HypercubeCNN
+    GIT_REPOSITORY https://github.com/dliptak001/HypercubeCNN.git
+    GIT_TAG        v0.1.0          # pin a tag or commit you trust
+)
+FetchContent_MakeAvailable(HypercubeCNN)
+target_link_libraries(my_app PRIVATE HypercubeCNNCore)
+```
+
+Include `"HCNN.h"`, symbols in `namespace hcnn`.
+
+---
+
+## Teaching demos
+
+Config lives at the top of each example (`DemoConfig`); thin train loops use optional helpers (`HCNNTrainHelpers`, spatial preprocess for images).
+
+| Target | What it teaches | Write-up |
+|--------|-----------------|----------|
+| **`CoreSmokeTest`** | Front-door API contract | `tests/CoreSmokeTest.cpp` |
+| **`MNISTTrain`** | Image → DualPlane pack → classify | [examples/mnist_train.md](examples/mnist_train.md) |
+| **`RegressionTimeseries`** | Length-N state → scalar next-step | [examples/regression_timeseries.md](examples/regression_timeseries.md) |
 
 ```bash
-./build/CoreSmokeTest
+cmake --build build --target MNISTTrain RegressionTimeseries
+# MNIST: place IDX files under data/ (see mnist_train.md)
 ```
 
-## Project structure
+**How to read the numbers:** demos prove the stack **learns** end-to-end. They are **not** leaderboard claims. MNIST uses engineered packing + aug + a large FLATTEN head — not “free” 2D CNN structure. Regression uses a synthetic uncoupled reservoir; near-perfect R² is an API smoke signal, not HypercubeESN production skill. Details and current recipes live in the example docs (they track the code more tightly than this page).
 
+---
+
+## Repository map
+
+```text
+HCNN.h / .cpp              SDK front door (start here)
+HCNNConv / Pool / Readout  Layers (re-exported via HCNN.h)
+HCNNSpatial*               Optional 2D aug + embed (images)
+HCNNTrainHelpers.*         Optional metrics, cosine LR, checkpoints
+examples/                  Teaching demos + demo_arch.h
+tests/CoreSmokeTest.cpp    Smoke tests for the public API
+docs/CPP_SDK.md            Canonical SDK guide
+docs/architecture.md       Implementation depth
+docs/report.md             Concept, applications, pitfalls
 ```
-HypercubeCNN/
-  HCNN.h/cpp              Top-level pipeline wrapper (canonical SDK API)
-  HCNNNetwork.h/cpp       Internal orchestrator (re-exported via HCNN.h)
-  HCNNConv.h/cpp          Conv layer
-  HCNNPool.h/cpp          Antipodal pooling
-  HCNNReadout.h/cpp       Linear readout
-  ThreadPool.h            Header-only fork-join pool
-  main.cpp                Quick check runner
-  dataloader/             MNIST dataset loader (in-tree example utility)
-  examples/               Training demos
-  tests/                  HCNN SDK smoke test
-  docs/                   Architecture and SDK reference
-  cmake/                  Package config template
-```
+
+CMake library target: **`HypercubeCNNCore`**. Optional targets: `MNISTTrain`, `RegressionTimeseries`, `CoreSmokeTest`, `HypercubeCNN` (quick runner).
+
+---
 
 ## Documentation
 
-| Document | Description |
-|----------|-------------|
-| [docs/CPP_SDK.md](docs/CPP_SDK.md) | C++ SDK API reference and integration guide |
-| [docs/architecture.md](docs/architecture.md) | Full technical architecture |
-| [examples/mnist_train.md](examples/mnist_train.md) | MNIST classification example, benchmark results, and analysis |
-| [examples/regression_timeseries.md](examples/regression_timeseries.md) | Regression example, DIM=10 results, and HypercubeRC integration notes |
+| Doc | Role |
+|-----|------|
+| **[docs/CPP_SDK.md](docs/CPP_SDK.md)** | Onboarding + API + educational train loops |
+| [docs/architecture.md](docs/architecture.md) | Geometry, training cores, threading |
+| [docs/report.md](docs/report.md) | Concept, where it shines / fails |
+| [docs/spatial_preprocess.md](docs/spatial_preprocess.md) | Image aug/embed (pad contracts) |
+| [docs/train_helpers.md](docs/train_helpers.md) | Metrics and checkpoints |
+| [examples/mnist_train.md](examples/mnist_train.md) | Classification demo |
+| [examples/regression_timeseries.md](examples/regression_timeseries.md) | Regression demo |
 
-## Results
+---
 
-Both benchmarks validate that hypercube convolution learns meaningful features via standard backpropagation -- they are not leaderboard targets.
+## Ecosystem
 
-**Classification -- MNIST** (no spatial inductive bias): **98.07%** test accuracy with ~84K parameters, 2 conv layers + 1 pool stage, Adam optimizer, cosine LR annealing. The network learns digit features from hypercube topology alone -- no 2D spatial locality is encoded. See [examples/mnist_train.md](examples/mnist_train.md).
+- **[HypercubeESN](https://github.com/dliptak001/HypercubeESN)** — echo-state / reservoir computing on the same topology; HCNN is a natural **learned readout**.
+- **[HypercubeHopfield](https://github.com/dliptak001/HypercubeHopfield)** — Hopfield-style dynamics on the cube.
 
-**Regression -- time-series prediction** (DIM=10, N=1,024 vertices): best test MSE **~3.3e-8** (R² ~1.0) predicting the next value of a sine wave from a 1,024-dimensional synthetic reservoir state, with **19,137** parameters (Conv16 RELU → Conv16 TANH, no pool). Validates HCNN as a learned readout layer for reservoir computing. See [examples/regression_timeseries.md](examples/regression_timeseries.md).
+---
 
 ## License
 
