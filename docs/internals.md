@@ -61,7 +61,8 @@ activations:    data[c * N + v]   (channel-major)
 
 Self is **never** implemented as `1 << DIM` (that shift is undefined for large DIM). It is a contiguous multiply-add over `in[v]`.
 
-Constraints: `3 ≤ DIM ≤ 32` at construction (same range as the network).
+Constraints: `3 ≤ DIM ≤ 30` at network construction (`N = 2^DIM` in 32-bit int).
+Conv layers accept the same practical range as the host network dimension.
 
 ### 2.2 Forward path structure
 
@@ -194,8 +195,8 @@ Shared cores own forward → loss grad → backward → weight update. Adding a 
 **Classification CE grad** (after stable softmax):  
 `dL/d logits[i] = class_weight * (p[i] - 1[i==target])`.
 
-**Regression MSE-style grad in code:**  
-`dL/d pred[i] = pred[i] - target[i]` (sum-style single-sample scale; LR absorbs constants).
+**Regression MSE-style grad in code (sum-style, not mean):**  
+`dL/d pred[i] = pred[i] - target[i]` (LR absorbs the usual 2/K mean-MSE scale).
 
 ### 5.2 Optimizers
 
@@ -233,6 +234,13 @@ Not owned by the network. Every train call takes `lr` explicitly. Optional helpe
 5. Recompute BN running stats from batch accumulators where needed.
 
 Buffers: `prepare_batch_buffers()` lazy, then reused (allocation-free steady state).
+`add_conv` / `add_pool` / `randomize_all_weights` invalidate step, batch, and
+inference caches so a later prepare matches the current arch and head size.
+`set_optimizer` is stored on the network and re-applied to new convs and to the
+rebuilt readout after randomize.
+
+`start_dim` is in **[3, 30]** (`N = 2^dim` fits in signed 32-bit int). `add_pool`
+requires `current_dim >= 2`.
 
 ### 5.5 Inference
 

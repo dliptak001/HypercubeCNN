@@ -91,6 +91,8 @@ public:
     void set_grad_in_loop(ReadoutGradInLoop loop) { grad_in_loop_ = loop; }
     ReadoutGradInLoop get_grad_in_loop() const { return grad_in_loop_; }
 
+    OptimizerType get_optimizer_type() const { return optimizer_type_; }
+
     int get_num_outputs() const { return num_outputs; }
     int get_num_features() const { return num_features; }
 

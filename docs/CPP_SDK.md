@@ -14,7 +14,7 @@ HypercubeCNN is a **CNN whose “grid” is a Boolean hypercube**, not a 2D pixe
 
 | Idea | Meaning in code |
 |------|-----------------|
-| Dimension `DIM` | Integer ≥ 3 (and ≤ 32). |
+| Dimension `DIM` | Integer ≥ 3 and ≤ 30 (`N = 2^DIM` fits in 32-bit int). |
 | Vertices | `N = 2^DIM` addresses `0 … N−1`. |
 | Neighbor of `v` along bit `k` | `v ^ (1 << k)` (XOR). |
 | Activation values | Ordinary `float`s (conventionally in `[-1, 1]`). The cube is topology, not bit-valued data. |

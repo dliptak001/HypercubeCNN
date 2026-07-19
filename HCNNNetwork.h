@@ -80,11 +80,17 @@ enum class LossType { Default, CrossEntropy, MSE };
  *
  * Non-copyable, non-movable -- the owned ThreadPool has live worker
  * threads.
+ *
+ * Threading model for the *instance*: all non-const training/inference entry
+ * points require exclusive use of this object.  Internal sample parallelism
+ * (train_batch / forward_batch) is fine; concurrent calls from two host
+ * threads on the same HCNNNetwork are not supported.
  */
 class HCNNNetwork {
 public:
     /// @param num_threads 0 = auto pool, 1 = single-threaded (no workers),
     ///        N > 1 = N background workers. See HCNN constructor.
+    /// @param start_dim Hypercube dimension in [3, 30] (N = 2^dim fits in int).
     HCNNNetwork(int start_dim, int num_outputs = 10,
                 int input_channels = 1,
                 TaskType task_type = TaskType::Classification,
@@ -99,27 +105,29 @@ public:
 
     void add_conv(int c_out, Activation activation = Activation::RELU,
                   bool use_bias = true, bool use_batchnorm = false);
+    /// Antipodal pool; requires current_dim >= 2 (leaves at least dim 1).
     void add_pool(PoolType type = PoolType::MAX);
 
     /// Set training mode (true) or eval mode (false) for all layers with BN.
     void set_training(bool training) const;
 
-    /// Configure the optimizer for all layers. Resets timestep.
+    /// Configure the optimizer for all layers (and any layers added later).
+    /// Resets the global Adam timestep. Survives randomize_all_weights.
     void set_optimizer(OptimizerType type, float beta1 = 0.9f,
                        float beta2 = 0.999f, float eps = 1e-8f);
 
     /// Initialize all weights.  scale > 0: uniform [-scale, +scale].
     /// scale <= 0 (default): Xavier/Glorot uniform per layer.
+    /// Rebuilds the FLATTEN readout to c_final * N_final; preserves
+    /// optimizer + grad_in loop; invalidates cached work buffers.
     void randomize_all_weights(float scale = 0.0f, unsigned seed = 42);
 
     void embed_input(const float* raw_input, int input_length,
                      float* first_layer_activations) const;
 
-    /// Single-sample forward pass.  Reads existing batch-norm mode (caller's
-    /// responsibility to call set_training(false) before inference).  Reuses
-    /// persistent ping-pong scratch buffers — no per-call allocation in steady
-    /// state.  Not thread-safe with respect to other forward() / train_step()
-    /// calls on the same network (the persistent scratch is shared).
+    /// Single-sample forward pass.  Reuses persistent ping-pong scratch —
+    /// no per-call allocation in steady state.  Not safe concurrent with
+    /// other forward() / train_* on the same instance.
     void forward(const float* first_layer_activations, float* logits) const;
 
     /// Batch inference: embed + forward for multiple samples in parallel.
@@ -135,8 +143,9 @@ public:
                     float weight_decay = 0.0f,
                     const float* class_weights = nullptr);
 
-    /// Mini-batch training: process batch_size samples in parallel, average
-    /// gradients, then apply a single weight update. Requires ThreadPool.
+    /// Mini-batch training: process batch_size samples in parallel (when a
+    /// ThreadPool is present and batch_size > 1), average gradients, then
+    /// apply a single weight update.  Serial path if no pool or batch_size==1.
     /// `flat_inputs` is `batch_size * input_length` contiguous floats.
     /// class_weights: optional per-class loss scaling (length num_outputs).
     /// Classification only — throws std::logic_error if task_type_ is
@@ -165,11 +174,13 @@ public:
                                 float weight_decay = 0.0f);
 
     int get_start_dim() const { return start_dim; }
-    int get_start_N() const { return 1 << start_dim; }
+    int get_start_N() const { return vertices_at_dim(start_dim); }
+    int get_current_dim() const { return current_dim; }
     int get_input_channels() const { return input_channels; }
     int get_num_outputs() const { return num_outputs; }
     TaskType get_task_type() const { return task_type_; }
     LossType get_loss_type() const { return loss_type_; }
+    OptimizerType get_optimizer_type() const { return optimizer_type_; }
 
     HCNNConv& get_conv(size_t i) { return conv_layers[i]; }
     const HCNNConv& get_conv(size_t i) const { return conv_layers[i]; }
@@ -182,9 +193,16 @@ public:
 
     /// Eagerly allocate all internal work buffers (single-step, batch,
     /// inference).  Each is idempotent — safe to call multiple times.
+    /// Prefer calling after randomize_all_weights so readout-sized buffers match.
     void prepare_all_buffers();
 
 private:
+    /// N = 2^dim for dim in [0, 30] (fits in signed 32-bit int).
+    static int vertices_at_dim(int dim);
+
+    /// Drop lazy step/batch/inference buffer caches (arch or head changed).
+    void invalidate_cached_buffers();
+
     int start_dim;
     int current_dim;
     int num_outputs;
@@ -192,6 +210,8 @@ private:
     TaskType task_type_;
     LossType loss_type_;
     int adam_timestep_{0};     // Global optimizer timestep (incremented per train_step/train_batch)
+    OptimizerType optimizer_type_ = OptimizerType::SGD;
+    float adam_beta1_ = 0.9f, adam_beta2_ = 0.999f, adam_eps_ = 1e-8f;
     std::vector<HCNNConv> conv_layers;
     std::vector<HCNNPool> pool_layers;
     std::vector<bool> is_conv_layer;

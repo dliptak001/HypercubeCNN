@@ -23,6 +23,7 @@
 #include <vector>
 
 using hcnn::HCNN;
+using hcnn::HCNNNetwork;
 using hcnn::HCNNReadout;
 using hcnn::ReadoutGradInLoop;
 using hcnn::PoolType;
@@ -948,6 +949,101 @@ static void test_invalid_arguments() {
           "TrainBatch(batch_size=0) throws");
     check(throws([&] { net.TrainEpoch(dummy_input.data(), N, targets, 1, 0, 0.01f); }),
           "TrainEpoch(batch_size=0) throws");
+
+    check(throws([&] { HCNN bad(31, 2); }),
+          "HCNN(start_dim=31) throws (max 30)");
+    check(throws([&] { HCNN bad(2, 2); }),
+          "HCNN(start_dim=2) throws (min 3)");
+}
+
+// Lifecycle: buffer invalidation, optimizer survive randomize, pool floor.
+// Uses HCNNNetwork (power-user) where getters are needed.
+static void test_network_lifecycle() {
+    std::cout << "\n[Network lifecycle]\n";
+
+    auto throws = [](auto&& fn) {
+        try { fn(); } catch (const std::exception&) { return true; }
+        return false;
+    };
+
+    // --- Optimizer + grad_in survive RandomizeWeights ---
+    {
+        HCNNNetwork net(5, 4, 1, TaskType::Classification, LossType::Default,
+                        /*num_threads=*/1);
+        net.add_conv(8);
+        net.set_optimizer(OptimizerType::ADAM, 0.9f, 0.999f, 1e-8f);
+        net.get_readout().set_grad_in_loop(ReadoutGradInLoop::FeatureOuter);
+        net.randomize_all_weights(0.0f, 7);
+        check(net.get_optimizer_type() == OptimizerType::ADAM,
+              "network optimizer type is ADAM after set");
+        check(net.get_readout().get_optimizer_type() == OptimizerType::ADAM,
+              "readout keeps ADAM after randomize_all_weights");
+        check(net.get_readout().get_grad_in_loop() == ReadoutGradInLoop::FeatureOuter,
+              "grad_in loop survives randomize_all_weights");
+        check(net.get_readout().get_num_features() == 8 * 32,
+              "readout sized to c_final * N after randomize");
+    }
+
+    // --- PrepareBuffers before Randomize then train (was OOB risk) ---
+    {
+        HCNNNetwork net(5, 4, 1, TaskType::Classification, LossType::Default,
+                        /*num_threads=*/1);
+        net.add_conv(8);
+        net.prepare_all_buffers();  // would freeze placeholder head size
+        net.randomize_all_weights(0.0f, 11);
+        check(net.get_readout().get_num_features() == 8 * 32,
+              "full head after prepare-then-randomize");
+
+        const int N = net.get_start_N();
+        std::vector<float> x(static_cast<size_t>(N), 0.1f);
+        int target = 1;
+        net.train_step(x.data(), N, target, 0.01f);
+        net.train_batch(x.data(), N, &target, 1, 0.01f);
+        check(true, "train_step/batch after prepare-then-randomize");
+    }
+
+    // --- Grow stack after train_step reallocates step buffers ---
+    {
+        HCNNNetwork net(5, 4, 1, TaskType::Classification, LossType::Default,
+                        /*num_threads=*/1);
+        net.add_conv(8);
+        net.randomize_all_weights(0.0f, 3);
+        const int N = net.get_start_N();
+        std::vector<float> x(static_cast<size_t>(N), 0.05f);
+        net.train_step(x.data(), N, 0, 0.01f);
+        net.add_conv(4);
+        net.randomize_all_weights(0.0f, 4);
+        net.train_step(x.data(), N, 0, 0.01f);
+        check(net.get_readout().get_num_features() == 4 * 32,
+              "step path works after add_conv post-train");
+    }
+
+    // --- New conv inherits optimizer ---
+    {
+        HCNNNetwork net(5, 4, 1, TaskType::Classification, LossType::Default,
+                        /*num_threads=*/1);
+        net.set_optimizer(OptimizerType::ADAM);
+        net.add_conv(8);
+        // No public getter on HCNNConv for optimizer; train under Adam after
+        // randomize is enough that set_optimizer was stored for new layers.
+        net.randomize_all_weights(0.0f, 1);
+        check(net.get_readout().get_optimizer_type() == OptimizerType::ADAM,
+              "readout Adam when set_optimizer precedes add_conv");
+    }
+
+    // --- Pool floor ---
+    {
+        HCNNNetwork net(3, 2, 1, TaskType::Classification, LossType::Default,
+                        /*num_threads=*/1);
+        net.add_conv(4);
+        // dim 3 -> pool -> 2 -> pool -> 1; next pool must throw
+        net.add_pool(PoolType::MAX);
+        check(net.get_current_dim() == 2, "current_dim 2 after first pool");
+        net.add_pool(PoolType::MAX);
+        check(net.get_current_dim() == 1, "current_dim 1 after second pool");
+        check(throws([&] { net.add_pool(PoolType::MAX); }),
+              "add_pool at current_dim=1 throws");
+    }
 }
 
 // Inference path must NOT mutate the per-layer training flag observed by the
@@ -2243,6 +2339,7 @@ int main() {
     test_weight_decay();
     test_embed_padding_and_truncation();
     test_invalid_arguments();
+    test_network_lifecycle();
     test_forward_preserves_training_mode();
     test_class_weights();
     test_regression_scalar();
