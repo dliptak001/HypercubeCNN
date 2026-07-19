@@ -12,6 +12,9 @@ each other beyond a recommended pipeline order.
 Native hypercube data (already length ≤ N) can ignore both modules and use
 `HCNN::Embed` / `TrainEpoch` directly.
 
+**See also:** end-to-end image recipe in [`examples/mnist_train.md`](../examples/mnist_train.md)
+(DualPlane embed, train aug, `input_length = N`).
+
 ---
 
 ## Pipeline
@@ -230,6 +233,7 @@ emb.embed_batch(tmp, batch, H, W, out);       // stride N
 |--------------|---------|
 | `HCNNSpatialAug.h` | Aug config + augmenter |
 | `HCNNSpatialEmbed.h` | Embed config, modes, plan, embedder |
-| `docs/CPP_SDK.md` | Install layout + pointers |
-| `docs/architecture.md` | Hypercube conv (after embed) |
-| `examples/mnist_locality_aware_packing.md` | Future locality maps (design) |
+| `docs/CPP_SDK.md` | SDK overview (§8: short pointer + pad contract) |
+| `docs/internals.md` | Hypercube conv (after embed) |
+| `examples/mnist_train.md` | Full image training demo |
+| `examples/mnist_locality_aware_packing.md` | Future locality maps (design only) |

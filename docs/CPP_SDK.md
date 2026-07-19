@@ -364,44 +364,105 @@ In-tree references (not part of the install):
 
 ## 8. Optional: spatial preprocess (images)
 
-**Not** part of the conv graph. Typical order:
+**Not** part of the conv graph. Headers: `HCNNSpatialAug.h`, `HCNNSpatialEmbed.h`.
 
 ```text
 H×W image  →  HCNNSpatialAugmenter (train only)  →  HCNNSpatialEmbedder  →  float[N]
                                                                          →  HCNN
 ```
 
-| Mode (`HCNNSpatialEmbedMode`) | Behavior |
-|-------------------------------|----------|
-| `RowMajorPad` | Copy `H*W` if ≤ N; pad rest with `pad_value` |
-| `ResizeToFit` | Bilinear to `S×S`, `S = floor(sqrt(N))` (or override) |
-| `DualPlaneResize` | Ink plane + max-normed \|grad\| plane (full fill e.g. DIM=11 → 32×32 ‖ 32×32) |
+Embed modes (summary): `RowMajorPad`, `ResizeToFit`, `DualPlaneResize` — see the spatial guide for layouts and capacity.
 
 **Pad contract (important):**
 
-1. Spatial embed may pad with **`pad_value`** (MNIST demos use **−1** background).
+1. Spatial embed may pad with **`pad_value`** (MNIST-like data: use **−1** for background).
 2. `HCNN::Embed` / train paths **zero-pad** any short tail (`input_length < capacity`).
 3. After spatial embed, pass **`input_length = emb.capacity()` (= N)**.  
-   Passing a short `P` **overwrites** nonzero spatial pad with 0.
+   A short `P` **overwrites** nonzero spatial pad with **0**.
 
-Details: [`spatial_preprocess.md`](spatial_preprocess.md).
+Depth (modes, capacity tables, aug knobs, API sketches): **[`spatial_preprocess.md`](spatial_preprocess.md)**.  
+End-to-end image demo: [`examples/mnist_train.md`](../examples/mnist_train.md).
 
 ---
 
 ## 9. Optional: train helpers
 
-Header: `HCNNTrainHelpers.h`. Does not change network math.
+Header: `HCNNTrainHelpers.h`. **Not** part of the conv/pool graph; does not change `HCNN` math. Include it when you want a thin teaching loop instead of re-implementing CE, cosine LR, or weight snapshots. Native cube apps that already own their loop can ignore this header.
 
-| Utility | Use |
-|---------|-----|
-| `evaluate_classification` / `HCNNClassEval` | Mean CE + accuracy % |
+| Utility | Role |
+|---------|------|
+| `argmax`, `softmax_cross_entropy` | Building blocks for custom eval |
+| `evaluate_classification` / `HCNNClassEval` | Mean CE + accuracy % over a flat batch |
 | `evaluate_regression` / `HCNNRegEval` | MSE, target variance, `r2()` |
-| `cosine_lr(lr_max, lr_min, epoch, num_epochs)` | Anneal; epoch 0 → max, last → min |
-| `HCNNFlatDataset` | Contiguous `inputs` + `targets` for classification |
-| `HCNNDualCheckpoint` | Best test loss **and** best test accuracy weight blobs |
+| `HCNNFlatDataset` | Contiguous `inputs` + int labels (classification only) |
+| `cosine_lr(lr_max, lr_min, epoch, num_epochs)` | Cosine anneal; epoch 0 → max, last → min |
+| `HCNNDualCheckpoint` | Best test loss **and** best test accuracy (`GetWeights` blobs) |
 | `HCNNBestMetricCheckpoint` | Best (lowest) scalar, e.g. test MSE |
 
-Guide: [`train_helpers.md`](train_helpers.md).
+### Cosine LR
+
+`HCNN` does not own a schedule — you pass `lr` into every train call.
+
+```text
+progress = epoch / max(num_epochs - 1, 1)     # clamped
+lr = lr_min + 0.5 * (lr_max - lr_min) * (1 + cos(pi * progress))
+```
+
+`num_epochs <= 1` returns `lr_max`. Typical floor: `lr_min = 0.1 * lr_max`.
+
+```cpp
+float lr = cosine_lr(1e-3f, 1e-4f, epoch, /*num_epochs=*/60);
+net.TrainEpoch(..., lr, ...);
+```
+
+### Metrics and checkpoints (sketch)
+
+```cpp
+#include "HCNNTrainHelpers.h"
+using namespace hcnn;
+
+// Classification eval
+HCNNClassEval r = evaluate_classification(net, flat_x, input_length, labels, count);
+// r.loss, r.accuracy (percent), r.correct, r.count
+
+// Regression eval
+HCNNRegEval re = evaluate_regression(net, flat_x, input_length, flat_t, count);
+// re.mse, re.target_var, re.r2()
+
+// Dual checkpoint (MNIST-style): best CE loss and best accuracy
+HCNNDualCheckpoint ckpt;
+ckpt.observe(net, r.loss, r.accuracy, /*epoch_1based=*/epoch + 1);
+ckpt.restore_best_acc(net);
+
+// Best-metric checkpoint (regression-style): minimize test MSE
+HCNNBestMetricCheckpoint best;
+best.observe(net, static_cast<float>(re.mse), epoch + 1);
+best.restore(net);
+```
+
+**Weights only.** Checkpoints use `GetWeights` / `SetWeights`: **no** BN γ/β, **no** optimizer state. Fine for eval/export on no-BN demos. To continue training after restore, call `SetOptimizer` again (or accept stale moments).
+
+### Flat classification dataset
+
+```cpp
+HCNNFlatDataset ds;
+ds.reset(n, input_length);   // inputs = n*len, targets = n
+// fill ds.sample_input(i) and ds.targets[i]
+net.TrainEpoch(ds.inputs.data(), ds.input_length,
+               ds.targets.data(), ds.count, batch, lr, ...);
+```
+
+Regression demos keep their own `float` target buffers; there is no regression twin of `HCNNFlatDataset`.
+
+### Image demo pipeline
+
+```text
+H×W → optional SpatialAug → SpatialEmbed (length N)
+    → HCNNFlatDataset → TrainEpoch + cosine_lr
+    → evaluate_classification + HCNNDualCheckpoint
+```
+
+See [`spatial_preprocess.md`](spatial_preprocess.md) and `examples/mnist_train.cpp` / `examples/regression_timeseries.cpp`.
 
 ---
 
@@ -454,16 +515,16 @@ Guide: [`train_helpers.md`](train_helpers.md).
 
 Coursework and apps should stay on **`HCNN`** unless you are writing tests or research instrumentation.
 
+How training cores, threading, block-pair kernels, and weight blobs actually work: **[internals.md](internals.md)**.
+
 ---
 
 ## 13. Further reading in this repo
 
 | Doc / path | Content |
 |------------|---------|
-| [`architecture.md`](architecture.md) | Deeper geometry and training implementation |
-| [`report.md`](report.md) | Concept, applications, confusion points |
+| [`internals.md`](internals.md) | Implementation notes (train cores, RAII, optimizers) |
 | [`spatial_preprocess.md`](spatial_preprocess.md) | Aug + embed contracts |
-| [`train_helpers.md`](train_helpers.md) | Metrics and checkpoints |
 | `examples/mnist_train.md` | Classification teaching write-up |
 | `examples/regression_timeseries.md` | Regression teaching write-up |
 

@@ -3,7 +3,7 @@
 Design memo: how to map 2D image data onto hypercube vertices so that
 HypercubeCNN’s Hamming convolutions see **spatially meaningful** structure,
 with reasonable assumptions and expectations. Grounded in the current MNIST
-demo stack (`examples/mnist_train.cpp`) and core geometry (`docs/architecture.md`).
+demo stack (`examples/mnist_train.cpp`) and core geometry (`docs/internals.md`, `docs/CPP_SDK.md`).
 
 **Status:** design only — not yet implemented. Empirical MNIST numbers cited
 below are for the **current row-major dense pack** (no locality-aware map).
@@ -550,7 +550,7 @@ changing documented default results in `mnist_train.md`.
 |-----|------|
 | `examples/mnist_train.md` | Current demo recipe, aug, multi-seed results |
 | `examples/mnist_train.cpp` | Pack + aug + train loop implementation |
-| `docs/architecture.md` | Hypercube conv, antipodal pool, FLATTEN, tiling |
+| `docs/internals.md` / `docs/CPP_SDK.md` | Hypercube conv, antipodal pool, FLATTEN, tiling |
 
 ---
 

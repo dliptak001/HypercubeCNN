@@ -127,8 +127,7 @@ HCNNTrainHelpers.*         Optional metrics, cosine LR, checkpoints
 examples/                  Teaching demos + demo_arch.h
 tests/CoreSmokeTest.cpp    Smoke tests for the public API
 docs/CPP_SDK.md            Canonical SDK guide
-docs/architecture.md       Implementation depth
-docs/report.md             Concept, applications, pitfalls
+docs/internals.md          Implementation depth (contributors)
 ```
 
 CMake library target: **`HypercubeCNNCore`**. Optional targets: `MNISTTrain`, `RegressionTimeseries`, `CoreSmokeTest`, `HypercubeCNN` (quick runner).
@@ -140,10 +139,8 @@ CMake library target: **`HypercubeCNNCore`**. Optional targets: `MNISTTrain`, `R
 | Doc | Role |
 |-----|------|
 | **[docs/CPP_SDK.md](docs/CPP_SDK.md)** | Onboarding + API + educational train loops |
-| [docs/architecture.md](docs/architecture.md) | Geometry, training cores, threading |
-| [docs/report.md](docs/report.md) | Concept, where it shines / fails |
+| [docs/internals.md](docs/internals.md) | Training cores, threading, optimizers, build options |
 | [docs/spatial_preprocess.md](docs/spatial_preprocess.md) | Image aug/embed (pad contracts) |
-| [docs/train_helpers.md](docs/train_helpers.md) | Metrics and checkpoints |
 | [examples/mnist_train.md](examples/mnist_train.md) | Classification demo |
 | [examples/regression_timeseries.md](examples/regression_timeseries.md) | Regression demo |
 
