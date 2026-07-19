@@ -108,12 +108,14 @@ Config lives at the top of each example (`DemoConfig`); thin train loops use opt
 | **`MNISTTrain`** | Image → DualPlane pack → classify | [examples/mnist_train.md](examples/mnist_train.md) |
 | **`RegressionTimeseries`** | Length-N state → scalar next-step | [examples/regression_timeseries.md](examples/regression_timeseries.md) |
 
+**MNIST (demo pack):** ~**99.44%** mean best test accuracy (3 weight seeds; peak **99.42–99.46%**) with DualPlane embed + train aug — not a leaderboard claim; full recipe and tables in [`examples/mnist_train.md`](examples/mnist_train.md).
+
 ```bash
 cmake --build build --target MNISTTrain RegressionTimeseries
 # MNIST: place IDX files under data/ (see mnist_train.md)
 ```
 
-**How to read the numbers:** demos prove the stack **learns** end-to-end. They are **not** leaderboard claims. MNIST uses engineered packing + aug + a large FLATTEN head — not “free” 2D CNN structure. Regression uses a synthetic uncoupled reservoir; near-perfect R² is an API smoke signal, not HypercubeESN production skill. Details and current recipes live in the example docs (they track the code more tightly than this page).
+**How to read the numbers:** demos prove the stack **learns** end-to-end. They are **not** SOTA claims. MNIST uses engineered packing + aug + a large FLATTEN head — not “free” 2D CNN structure. Regression uses a synthetic uncoupled reservoir; near-perfect R² is an API smoke signal, not HypercubeESN production skill. Details live in the example docs.
 
 ---
 

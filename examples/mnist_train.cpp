@@ -92,7 +92,7 @@ struct DemoConfig {
 
     // ----- Weight init / optimizer -----
     // Documented default seed: 99.46% best-acc / 99.45% at best-loss (shear on).
-    unsigned weight_seed = 498279213;
+    unsigned weight_seed = 77279213;
     hcnn::OptimizerType optimizer = hcnn::OptimizerType::ADAM;
 
     // ----- Schedule -----

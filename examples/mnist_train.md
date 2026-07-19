@@ -135,7 +135,7 @@ cmake --build cmake-build-release --target MNISTTrain
 
 60K train / 10K test, **DIM=11**, **3× Conv 16 RELU** (no antipodal pool), dense pack (32×32 ink ‖ 32×32 \|∇\|), train aug (**rot ±12°**, **scale [0.9, 1.1]**, shift ±2, **shear_x ±0.15**, elastic **off**, noise σ=0.03), Adam, batch=256, wd=1e-3, cosine LR **0.001 → 1e-4**, **100 epochs**. Kernel width **K = DIM + 1** (self + neighbors). Only the **weight init seed** varies; aug and shuffle streams are fixed. Epoch timing includes pack+aug rebuild + `TrainEpoch`. Throughput ~1.0–1.1k samples/s on 32 threads (~56–59 s/epoch). Parameters: **334,074**.
 
-Documented headline numbers are the **default recipe (shear on)** under the current stack (self-tap conv + FLATTEN-only readout). Prefer quoting a multi-seed **mean** once all three seeds are filled; until then, report seed + single-run peaks and the **2-seed interim mean**.
+Documented headline numbers are the **default recipe (shear on)** under the current stack (self-tap conv + FLATTEN-only readout). Prefer quoting the **3-seed mean** for claims; quote a single seed only with the printed `Weight init seed`.
 
 ### Multi-seed (weight init only) — shear_x ±0.15
 
@@ -143,16 +143,16 @@ Documented headline numbers are the **default recipe (shear on)** under the curr
 |-------------|----------|-----------------|-----------|-----------------|
 | **398479293** (default) | **99.46%** | 0.01646 @ ep **60** | **0.01554** @ ep **81** | **99.45%** |
 | **287821292** | **99.43%** | 0.01937 @ ep **98** | **0.01746** @ ep **71** | **99.42%** |
-| 498279213 | *TBD* | *TBD* | *TBD* | *TBD* |
+| **498279213** | **99.42%** | 0.01818 @ ep **81** | **0.01814** @ ep **97** | **99.39%** |
 
-| Statistic (best-acc) | Value (2/3 seeds) |
-|----------------------|-------------------|
-| Mean best-acc | **99.445%** |
-| Range (best-acc) | **0.03 pp** (99.43–99.46) |
-| Mean best-loss CE | **0.01650** |
-| Mean acc @ best-loss | **99.435%** |
+| Statistic | Value (3 seeds) |
+|-----------|-----------------|
+| **Mean best-acc** | **99.437%** |
+| Range (best-acc) | **0.04 pp** (99.42–99.46) |
+| Mean best-loss CE | **0.01705** |
+| Mean acc @ best-loss | **99.420%** |
 
-**Read (2 seeds):** init variance is **small** on peak accuracy (3 hundredths of a point). Best-loss CE is a bit looser (0.0155 vs 0.0175). Both runs clear **99.4%** best-acc and sit in the same band as solid spatial CNNs. Fill seed `498279213` before claiming a 3-seed mean in abstracts.
+**Read:** init variance on peak accuracy is **tiny** (four hundredths of a point). All three seeds clear **99.4%** best-acc. Best-loss CE spans 0.0155–0.0181 (still ~99.4% acc@best-loss). Safe headline: **~99.44% mean best-acc** (3 weight seeds, same aug/shuffle streams).
 
 ### Checkpoints — seed 398479293 (default)
 
@@ -171,6 +171,15 @@ First ≥99% at epoch **16** (99.14%). Dual restore confirmed both snapshots (ne
 | **Best acc** | **98** | 0.01937 | **99.43%** (9943/10000) |
 
 First ≥99% at epoch **19** (99.00%). Dual restore confirmed both snapshots.
+
+### Checkpoints — seed 498279213
+
+| Checkpoint | Epoch | Test loss | Test acc |
+|------------|-------|-----------|----------|
+| **Best loss** | **97** | **0.01814** | **99.39%** (9939/10000) |
+| **Best acc** | **81** | 0.01818 | **99.42%** (9942/10000) |
+
+First ≥99% at epoch **20** (99.04%). Dual restore confirmed both snapshots. Dual checkpoints nearly coincide on CE (~0.0182).
 
 ### Curve (seed 398479293)
 
@@ -205,6 +214,21 @@ Epoch  Test Acc    Test Loss   LR
 100    99.42%      0.0191      0.00010
 ```
 
+### Curve (seed 498279213)
+
+```
+Epoch  Test Acc    Test Loss   LR
+  1    96.51%      0.1208      0.00100
+ 12    98.94%      0.0333      0.00097
+ 20    99.04%      0.0292      0.00092   ← first ≥99%
+ 27    99.22%      0.0246      0.00086
+ 52    99.32%      0.0204      0.00053
+ 70    99.41%      0.0188      0.00029
+ 81    99.42%      0.0182      0.00018   ← best acc
+ 97    99.39%      0.0181      0.00010   ← best loss
+100    99.35%      0.0197      0.00010
+```
+
 ### Historical notes (do not mix with headline table)
 
 Older tables in this file (shear A/B, channel-width ladder, pre-self ~99.28%) used earlier recipes (e.g. 60 epochs, pre-self kernels, or different activations). They remain useful as qualitative guidance only; re-run under the current `DemoConfig` before quoting.
@@ -229,9 +253,9 @@ preserving map, so the head is intentionally **position-addressable**.
 ### Why self-tap kernels (K = DIM + 1)
 
 Neighbor-only conv lacked a center weight. With self + bit axes, the pack
-climbs into the mid–high 99s (2-seed best-acc **99.43–99.46%**) where earlier
-documented shear runs sat near **~99.3%**. Extra cost is small (~1/DIM params
-per conv).
+climbs into the mid–high 99s (3-seed best-acc **99.42–99.46%**, mean
+**~99.44%**) where earlier documented shear runs sat near **~99.3%**. Extra
+cost is small (~1/DIM params per conv).
 
 ### Why three convs + full-N FLATTEN
 
@@ -250,12 +274,11 @@ gives room to finish climbing after the first ≥99%.
 
 ### Curve shape
 
-Fast start (~97% after epoch 1), first ≥99% by ep **16–19**, then a long
-mid-run climb into the high 99s. Timing of dual checkpoints **varies by seed**
-(default seed: best-acc mid-run ep 60, best-loss ep 81; seed 287821292:
-best-loss ep 71, best-acc late ep 98). Acc@best-loss and best-acc stay within
-~0.01–0.04 pp of each other. Interim multi-seed best-acc range is only
-**0.03 pp** — init noise is small relative to the jump from pre-self ~99.3%.
+Fast start (~97% after epoch 1), first ≥99% by ep **16–20**, then a long
+mid-run climb into the high 99s. Dual-checkpoint timing **varies by seed**
+(best-acc can land mid-run or late; best-loss often near best-acc on CE).
+Across three seeds, best-acc range is only **0.04 pp** — init noise is small
+relative to the jump from pre-self ~99.3%.
 
 ### What ~99.4% means
 
@@ -263,19 +286,19 @@ best-loss ep 71, best-acc late ep 98). Acc@best-loss and best-acc stay within
 - 2-layer MLP ~98%
 - Spatial 2D CNNs typically 99.0–99.5%+
 
-HypercubeCNN at **~99.45% mean best-acc** (2 seeds so far; peaks **99.43–99.46%**)
+HypercubeCNN at **~99.44% mean best-acc** (3 seeds; range **99.42–99.46%**)
 sits in **solid spatial-CNN territory** without a grid prior (row-major pack +
-Hamming self/neighbor kernels + FLATTEN). Remaining errors ~54–57/10k at
-best-acc. Finish seed `498279213` for a 3-seed mean; optional elastic is a
-secondary lever — not antipodal pooling on this demo pack.
+Hamming self/neighbor kernels + FLATTEN). Remaining errors ~54–58/10k at
+best-acc. Optional elastic is a secondary lever — not antipodal pooling on
+this demo pack.
 
 ## Significance
 
-**~99.45% mean best-acc** (2/3 seeds; default seed **99.46%**, second seed
-**99.43%**) for a **3-conv** no-pool HypercubeCNN (DIM=11, DualPlane pack,
-shear_x train aug, K=DIM+1, 100 epochs) shows the stack is demo-solid and
-that **self-tap kernels + depth + full-N FLATTEN + invariance-inducing aug**
-matter when the input is an engineered image embedding rather than native
-hypercube data. Pack, aug, schedule, depth, and reported weight seeds are
-**image-demo engineering**, documented here separately from the core SDK
-(fingerprints, Boolean functions, reservoir / ESN state).
+**~99.44% mean best-acc** (3 weight seeds: **99.46% / 99.43% / 99.42%**) for a
+**3-conv** no-pool HypercubeCNN (DIM=11, DualPlane pack, shear_x train aug,
+K=DIM+1, 100 epochs) shows the stack is demo-solid and that **self-tap
+kernels + depth + full-N FLATTEN + invariance-inducing aug** matter when the
+input is an engineered image embedding rather than native hypercube data.
+Pack, aug, schedule, depth, and reported weight seeds are **image-demo
+engineering**, documented here separately from the core SDK (fingerprints,
+Boolean functions, reservoir / ESN state).
