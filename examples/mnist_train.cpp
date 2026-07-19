@@ -55,9 +55,9 @@ using hcnn_demo::ArchParamSummary;
 //
 // Documented default recipe (seed 398479293): DIM=11 DualPlane, three 16-wide
 // RELU convs, no pool/BN, rot/scale/shift + shear_x (elastic off), Adam,
-// cosine 1e-3->1e-4, 60 epochs, batch 256, wd 1e-3.
-// Measured: 99.28% best-acc / 99.25% at best-loss (shear on). Pre-shear was
-// 99.31% best-acc / 99.23% at best-loss — single-seed wash; multi-seed TBD.
+// cosine 1e-3->1e-4, 100 epochs, batch 256, wd 1e-3. K=DIM+1 (self+neighbors).
+// Measured: 99.46% best-acc @ ep 60 / best-loss CE 0.0155 @ ep 81 (99.45%).
+// Multi-seed TBD — see examples/mnist_train.md.
 // ---------------------------------------------------------------------------
 
 static constexpr int   kImgSide     = 28;      // MNIST native side (loader)
@@ -91,8 +91,8 @@ struct DemoConfig {
     };
 
     // ----- Weight init / optimizer -----
-    // Documented default seed: 99.28% best-acc / 99.25% best-loss (shear on).
-    unsigned weight_seed = 398479293;
+    // Documented default seed: 99.46% best-acc / 99.45% at best-loss (shear on).
+    unsigned weight_seed = 498279213;
     hcnn::OptimizerType optimizer = hcnn::OptimizerType::ADAM;
 
     // ----- Schedule -----

@@ -57,20 +57,20 @@ Topology and all other knobs live in **`DemoConfig`** near the top of `mnist_tra
 ```
 Input: SpatialEmbed DualPlane 2048 floats (DIM=11, 1 channel)
   |
-Conv1: 1  -> 16 channels, K=12 (DIM+1 self+neighbors), NONE, bias
-Conv2: 16 -> 16 channels, K=12, TANH, bias
+Conv1: 1  -> 16 channels, K=12 (DIM+1 self+neighbors), RELU, bias
+Conv2: 16 -> 16 channels, K=12, RELU, bias
 Conv3: 16 -> 16 channels, K=12, RELU, bias
   |
 Readout: FLATTEN -> linear 32768->10 -> logits
 ```
 
-Total parameters: **334,082** (208 conv1 + 3,092 conv2 + 3,092 conv3 + 327,690 readout).
+Total parameters: **334,074** (208 conv1 + 3,088 conv2 + 3,088 conv3 + 327,690 readout).
 
 To try another stack or schedule, edit `DemoConfig` fields at the top of the `.cpp` (layers, `dim`, `weight_seed`, `epochs`, `lr_max`, aug, …). Pools reduce DIM by 1 and shrink the FLATTEN head; BN is available per conv but is not the documented MNIST recipe.
 
 **No antipodal pool (default)** — DIM stays 11 and N stays 2048 for all three convs, so the FLATTEN head sees every packed vertex (`32768→10`). Antipodal MAX pairs ink-half with grad-half indices on this pack and halves addressable positions; skipping pool is the default for this MNIST recipe. FLATTEN treats every (channel, vertex) activation as an independent feature.
 
-**Depth:** On seed `398479293` (pre-shear), the **3-conv** stack beats the prior **2-conv** recipe (best-acc **99.31%** vs **99.27%**). With default shear, same seed peaks at **99.28%** best-acc (see Results).
+**Headline result (seed `398479293`):** best-acc **99.46%** / best-loss CE **0.0155** (acc **99.45%**) under the default shear recipe — see Results.
 
 ## Training configuration
 
@@ -81,7 +81,7 @@ To try another stack or schedule, edit `DemoConfig` fields at the top of the `.c
 | LR schedule | Cosine `lr_max → 0.1·lr_max` | Floor **1e-4**; progress `epoch/(epochs-1)` hits `lr_min` on the last epoch |
 | Batch size | 256 | Via `TrainEpoch` → `TrainBatch` |
 | Weight decay | 1e-3 | Kernels + readout weights (not biases) |
-| Epochs | 60 | |
+| Epochs | **100** | |
 | Shuffle | per-epoch | `shuffle_seed = epoch + 1` (fixed stream; not varied with weight seed) |
 | Weight init seed | **398479293** (default) | Printed as `Weight init seed:`; change `weight_seed` in `mnist_train.cpp` to probe init variance. Aug/shuffle seeds stay fixed. |
 | **Augmentation** | train only | `HCNNSpatialAugmenter`: rot U[−12°, +12°]; scale U[0.9, 1.1]; shift ±2; **shear_x** U[−0.15, 0.15]; **elastic off** by default (`aug_elastic_alpha=0`; try α=1, σ=5 after shear A/B); noise σ=0.03; OOB = −1; **rebuilt every epoch**. Elastic cost O(H·W·⌈3σ⌉) when on. |
@@ -133,109 +133,81 @@ cmake --build cmake-build-release --target MNISTTrain
 
 ## Results
 
-60K train / 10K test, **DIM=11**, **3× Conv 16** NONE→TANH→RELU (no antipodal pool), dense pack (32×32 image ‖ 32×32 \|∇\|), train aug (**rot ±12°**, **scale [0.9, 1.1]**, shift ±2, **shear_x ±0.15**, elastic **off**, noise σ=0.03), Adam, batch=256, wd=1e-3, cosine LR **0.001 → 1e-4**, **60 epochs**. Only the **weight init seed** varies; aug and shuffle streams are fixed. Epoch timing includes pack+aug rebuild + `TrainEpoch`. Throughput ~1.09–1.11k samples/s on 32 threads (~54–56 s/epoch). Parameters: **334,082** (K=DIM+1 self+neighbors). Accuracy figures below were measured **before** the self tap (`pre_self_contribution` tag); re-run before quoting post-self numbers.
+60K train / 10K test, **DIM=11**, **3× Conv 16 RELU** (no antipodal pool), dense pack (32×32 ink ‖ 32×32 \|∇\|), train aug (**rot ±12°**, **scale [0.9, 1.1]**, shift ±2, **shear_x ±0.15**, elastic **off**, noise σ=0.03), Adam, batch=256, wd=1e-3, cosine LR **0.001 → 1e-4**, **100 epochs**. Kernel width **K = DIM + 1** (self + neighbors). Only the **weight init seed** varies; aug and shuffle streams are fixed. Epoch timing includes pack+aug rebuild + `TrainEpoch`. Throughput ~1.0–1.1k samples/s on 32 threads (~56–59 s/epoch). Parameters: **334,074**.
 
-Documented numbers below are the **default recipe including shear_x** (elastic off). Same weight seeds as the pre-shear table for fair multi-seed fill-in.
+Documented headline numbers are the **default recipe (shear on)** under the current stack (self-tap conv + FLATTEN-only readout). Prefer quoting a multi-seed **mean** once all three seeds are filled; until then, report seed + single-run peaks and the **2-seed interim mean**.
 
-### Multi-seed (weight init only) — with shear_x ±0.15
+### Multi-seed (weight init only) — shear_x ±0.15
 
 | Weight seed | Best acc | Loss @ best-acc | Best loss | Acc @ best-loss |
 |-------------|----------|-----------------|-----------|-----------------|
-| **398479293** | **99.28%** | 0.0216 @ ep 56 | **0.0210** @ ep 60 | 99.25% |
-| 287821292 | *TBD* | *TBD* | *TBD* | *TBD* |
+| **398479293** (default) | **99.46%** | 0.01646 @ ep **60** | **0.01554** @ ep **81** | **99.45%** |
+| **287821292** | **99.43%** | 0.01937 @ ep **98** | **0.01746** @ ep **71** | **99.42%** |
 | 498279213 | *TBD* | *TBD* | *TBD* | *TBD* |
 
-| Statistic (best-acc) | Value |
-|----------------------|--------|
-| Mean (3 seeds) | *TBD* (1/3 filled) |
-| Range | *TBD* |
-| Mean best-loss CE | *TBD* |
+| Statistic (best-acc) | Value (2/3 seeds) |
+|----------------------|-------------------|
+| Mean best-acc | **99.445%** |
+| Range (best-acc) | **0.03 pp** (99.43–99.46) |
+| Mean best-loss CE | **0.01650** |
+| Mean acc @ best-loss | **99.435%** |
 
-Set `weight_seed` in `DemoConfig` to each of the two open seeds and fill the row + checkpoint block after the run. Prefer quoting a multi-seed **mean** once all three are filled; quote a single seed only with the printed `Weight init seed`.
+**Read (2 seeds):** init variance is **small** on peak accuracy (3 hundredths of a point). Best-loss CE is a bit looser (0.0155 vs 0.0175). Both runs clear **99.4%** best-acc and sit in the same band as solid spatial CNNs. Fill seed `498279213` before claiming a 3-seed mean in abstracts.
 
-### A/B — seed 398479293: shear off vs on
-
-Same arch/schedule/aug except `aug_shear_x_max` (0 vs 0.15). Elastic off both runs.
-
-| Recipe | Best acc | Best loss | Acc @ best-loss | First ≥99% |
-|--------|----------|-----------|-----------------|------------|
-| No shear (prior) | **99.31%** @ ep 53 | 0.02135 @ ep 60 | 99.23% | ep 27 |
-| **Shear_x ±0.15 (default)** | 99.28% @ ep 56 | **0.02099** @ ep 60 | **99.25%** | ep **22** |
-
-**Read:** single-seed **wash on peak acc** (−0.03 pp, noise-scale); **slightly better best-loss CE**; earlier climb into the 99s. Keep shear as default pending more seeds; do not claim a mean win yet.
-
-### Ablation — channel width (speed/quality ladder)
-
-Same recipe as default shear run (seed `398479293`, RELU, no pool, elastic off);
-only the conv channel list changes. When **last map = 16**, FLATTEN is
-**32768→10** (~328k head). **8→16→32** doubles the head (**65536→10**).
-
-| Stack | Params | Best acc | Best loss | Acc @ best-loss | Throughput |
-|-------|--------|----------|-----------|-----------------|------------|
-| **16→16→16** (default) | 334,082 | **99.28%** @ ep 56 | **0.02099** @ ep 60 | 99.25% | ~1.1k samples/s (~55 s/ep) |
-| **16→8→16** | 330,722 | 99.22% @ ep 35 | 0.02170 @ ep 60 | 99.19% | ~1.9–2.0k samples/s (~30 s/ep) |
-| **4→8→16** | 329,522 | 98.96% @ ep 58 | 0.03160 @ ep 58 | 98.96% | ~2.5–2.7k samples/s (~23 s/ep) |
-| **8→16→32** | 662,554 | 99.25% @ ep 60 | 0.02221 @ ep 60 | 99.25% | ~0.82k samples/s (~73 s/ep) |
-
-**Read:**
-
-- **16→8→16** is an **admirable speed/quality trade**: ~**2×** wall throughput
-  for about **−0.06 pp** best-acc and only a slight CE hit. Best mid-width
-  default for sweeps / interactive demos.
-- **4→8→16** is **not horrible**: still **~98.96%** best-acc at ~**2.4–2.5×**
-  default speed. Cost is mostly **CE** (best-loss 0.032 vs 0.021) and never
-  quite clearing a clean 99% on this seed. Dual checkpoints coincide (ep 58).
-  Fine for smoke / “does train work?”; not the accuracy recipe.
-- **8→16→32** (CNN-style widen + **2× head**) is a **bad deal** here: **−0.03 pp**
-  best-acc vs default, worse CE, **~2× params**, **~1.3× slower**. Without
-  spatial downsampling, last=32 mostly fattens FLATTEN memorization capacity;
-  it does not buy accuracy on this seed. Skip for the demo recipe.
-- Story: quality lives in **pack + last map + fat FLATTEN**; thinning early/mid
-  width is mostly free speed; **widening the last map** is costly and not
-  helpful. Keep **16→16→16** as the documented accuracy default; use
-  **16→8→16** when iterating.
-
-### Checkpoints — seed 398479293 (default, shear on)
+### Checkpoints — seed 398479293 (default)
 
 | Checkpoint | Epoch | Test loss | Test acc |
 |------------|-------|-----------|----------|
-| **Best loss** | 60 | **0.02099** | 99.25% (9925/10000) |
-| **Best acc** | 56 | 0.02157 | **99.28%** (9928/10000) |
+| **Best loss** | **81** | **0.01554** | **99.45%** (9945/10000) |
+| **Best acc** | **60** | 0.01646 | **99.46%** (9946/10000) |
 
-First ≥99% at epoch **22** (99.06%). Dual restore confirmed both snapshots.
+First ≥99% at epoch **16** (99.14%). Dual restore confirmed both snapshots (net left on best-acc).
 
 ### Checkpoints — seed 287821292
 
 | Checkpoint | Epoch | Test loss | Test acc |
 |------------|-------|-----------|----------|
-| **Best loss** | *TBD* | *TBD* | *TBD* |
-| **Best acc** | *TBD* | *TBD* | *TBD* |
+| **Best loss** | **71** | **0.01746** | **99.42%** (9942/10000) |
+| **Best acc** | **98** | 0.01937 | **99.43%** (9943/10000) |
 
-First ≥99%: *TBD*.
+First ≥99% at epoch **19** (99.00%). Dual restore confirmed both snapshots.
 
-### Checkpoints — seed 498279213
-
-| Checkpoint | Epoch | Test loss | Test acc |
-|------------|-------|-----------|----------|
-| **Best loss** | *TBD* | *TBD* | *TBD* |
-| **Best acc** | *TBD* | *TBD* | *TBD* |
-
-First ≥99%: *TBD*.
-
-### Curve (seed 398479293, shear on)
+### Curve (seed 398479293)
 
 ```
 Epoch  Test Acc    Test Loss   LR
-  1    96.76%      0.1166      0.00100
- 12    98.82%      0.0354      0.00092
- 22    99.06%      0.0294      0.00075   ← first ≥99%
- 26    99.14%      0.0267      0.00066
- 35    99.16%      0.0248      0.00044
- 47    99.23%      0.0227      0.00020
- 51    99.23%      0.0219      0.00015
- 56    99.28%      0.0216      0.00011   ← best acc
- 60    99.25%      0.0210      0.00010   ← best loss
+  1    96.92%      0.1155      0.00100
+  8    98.80%      0.0373      0.00099
+ 16    99.14%      0.0270      0.00095   ← first ≥99%
+ 22    99.16%      0.0242      0.00090
+ 29    99.22%      0.0222      0.00083
+ 35    99.32%      0.0197      0.00076
+ 43    99.35%      0.0187      0.00066
+ 56    99.41%      0.0181      0.00047
+ 60    99.46%      0.0165      0.00042   ← best acc
+ 71    99.42%      0.0157      0.00028
+ 81    99.45%      0.0155      0.00018   ← best loss
+100    99.31%      0.0177      0.00010
 ```
+
+### Curve (seed 287821292)
+
+```
+Epoch  Test Acc    Test Loss   LR
+  1    97.49%      0.0941      0.00100
+ 12    98.93%      0.0304      0.00097
+ 19    99.00%      0.0301      0.00093   ← first ≥99%
+ 26    99.27%      0.0243      0.00087
+ 55    99.28%      0.0208      0.00049
+ 66    99.37%      0.0192      0.00034
+ 71    99.42%      0.0175      0.00028   ← best loss
+ 98    99.43%      0.0194      0.00010   ← best acc
+100    99.42%      0.0191      0.00010
+```
+
+### Historical notes (do not mix with headline table)
+
+Older tables in this file (shear A/B, channel-width ladder, pre-self ~99.28%) used earlier recipes (e.g. 60 epochs, pre-self kernels, or different activations). They remain useful as qualitative guidance only; re-run under the current `DemoConfig` before quoting.
 
 ## Analysis
 
@@ -254,60 +226,56 @@ pool over vertices performed poorly in early MNIST experiments and is not part
 of `HCNNReadout`. DualPlane is a row-major multi-view pack, not a locality-
 preserving map, so the head is intentionally **position-addressable**.
 
-### Why three convs
+### Why self-tap kernels (K = DIM + 1)
 
-On seed `398479293` (pre-shear recipe), adding a third 16-wide RELU conv (same
-DIM, same FLATTEN head size) lifts best-acc from **99.27%** (2-conv) to
-**99.31%** and best-loss CE from ~0.024 to **~0.021**. Extra depth is cheap in
-parameters (~2.8k for the third conv vs 328k readout) but costs wall time
-(~1.1k vs ~1.9k samples/s).
+Neighbor-only conv lacked a center weight. With self + bit axes, the pack
+climbs into the mid–high 99s (2-seed best-acc **99.43–99.46%**) where earlier
+documented shear runs sat near **~99.3%**. Extra cost is small (~1/DIM params
+per conv).
 
-Channel width ablations on this seed (see Results): mid **16→8→16** still
-clears **99.2%** at ~**2×** samples/s; **4→8→16** hits **~99.0%** at ~**2.5×**;
-CNN-style **8→16→32** (2× head) does **not** beat 16-wide and is slower —
-skip. Prefer thinning early/mid width over fattening the last map when wall
-time matters.
+### Why three convs + full-N FLATTEN
+
+Depth is cheap in parameters (~3k per mid 16-wide conv vs ~328k readout) but
+costs wall time. Quality on this demo lives in **pack + last map + fat FLATTEN
++ aug**, not in antipodal downsampling or a giant last-channel map.
 
 ### Why augmentation
 
 The FLATTEN readout is strongly position-addressable. Rotation, scale, shift,
 and **shear** force the model off absolute vertex memorization for a given
 stroke or slant. Affine is one inverse bilinear warp on the 28×28 plane before
-packing. On seed `398479293`, **shear_x ±0.15** vs no shear is a **wash on
-peak acc** (−0.03 pp) with a **slightly better best-loss CE** and earlier
-first ≥99% (ep 22 vs 27). **Mild elastic** remains optional (off by default);
-it is a second smooth displacement pass and usually dominates pack+aug wall
-time. Aug is train-only so reported test numbers stay on clean IDX images.
-Stronger geometry needs the full **60-epoch** cosine to finish climbing into
-the high 99s.
+packing. **Mild elastic** remains optional (off by default). Aug is train-only
+so reported test numbers stay on clean IDX images. The **100-epoch** cosine
+gives room to finish climbing after the first ≥99%.
 
 ### Curve shape
 
-Fast start (~97% after epoch 1), then a long climb under cosine decay. With
-shear, first ≥99% lands earlier (ep **22**); best acc mid–late (ep **56**);
-best loss at the final epoch (**60**). Dual checkpoints stay within ~0.0006 CE
-on this seed. Multi-seed variance for the shear recipe is not yet measured.
+Fast start (~97% after epoch 1), first ≥99% by ep **16–19**, then a long
+mid-run climb into the high 99s. Timing of dual checkpoints **varies by seed**
+(default seed: best-acc mid-run ep 60, best-loss ep 81; seed 287821292:
+best-loss ep 71, best-acc late ep 98). Acc@best-loss and best-acc stay within
+~0.01–0.04 pp of each other. Interim multi-seed best-acc range is only
+**0.03 pp** — init noise is small relative to the jump from pre-self ~99.3%.
 
-### What ~99.3% means
+### What ~99.4% means
 
 - Linear classifier on raw pixels ~92%
 - 2-layer MLP ~98%
 - Spatial 2D CNNs typically 99.0–99.5%+
 
-HypercubeCNN at **99.28% best-acc** (seed 398479293; best-loss CE **0.021**,
-default **shear_x** recipe) sits in **light spatial-CNN territory** without a
-grid prior (row-major pack + Hamming kernels + FLATTEN). Remaining errors
-~72/10k at best-acc. Other levers: more weight seeds for a mean claim,
-elastic, TANH–TANH–RELU activation A/B, locality-aware packing — not antipodal
-pooling on this demo pack.
+HypercubeCNN at **~99.45% mean best-acc** (2 seeds so far; peaks **99.43–99.46%**)
+sits in **solid spatial-CNN territory** without a grid prior (row-major pack +
+Hamming self/neighbor kernels + FLATTEN). Remaining errors ~54–57/10k at
+best-acc. Finish seed `498279213` for a 3-seed mean; optional elastic is a
+secondary lever — not antipodal pooling on this demo pack.
 
 ## Significance
 
-**99.28% best-acc / 99.25% at best-loss** on the documented default weight seed
-for a **3-conv** no-pool HypercubeCNN (DIM=11, dense pack, shear_x train aug)
-shows the training stack is solid for demos and that **depth + full-N FLATTEN
-+ invariance-inducing aug** matter when the input is an engineered image
-embedding rather than native hypercube data. Pack, aug, schedule, depth, and
-reported weight seed are **image-demo engineering**, documented here
-separately from the core SDK (fingerprints, Boolean functions, reservoir
-state).
+**~99.45% mean best-acc** (2/3 seeds; default seed **99.46%**, second seed
+**99.43%**) for a **3-conv** no-pool HypercubeCNN (DIM=11, DualPlane pack,
+shear_x train aug, K=DIM+1, 100 epochs) shows the stack is demo-solid and
+that **self-tap kernels + depth + full-N FLATTEN + invariance-inducing aug**
+matter when the input is an engineered image embedding rather than native
+hypercube data. Pack, aug, schedule, depth, and reported weight seeds are
+**image-demo engineering**, documented here separately from the core SDK
+(fingerprints, Boolean functions, reservoir / ESN state).
