@@ -377,6 +377,31 @@ static void section_construction() {
               "GetNumConv/GetNumPool facade");
     }
 
+    // Move transfers ownership; heap ThreadPool is not relocated.
+    {
+        HCNN a(5, 4);
+        a.AddConv(8);
+        a.RandomizeWeights(/*scale=*/0.0f, /*seed=*/3);
+        const int N = a.GetStartN();
+        const int K = a.GetNumOutputs();
+        std::vector<float> x(static_cast<size_t>(N), 0.2f), out(static_cast<size_t>(K));
+        a.Predict(x.data(), N, out.data());
+        check(all_finite(out.data(), K), "pre-move Predict finite");
+
+        HCNN b = std::move(a);
+        check(b.WeightsInitialized(), "moved-to WeightsInitialized");
+        check(b.GetNumConv() == 1, "moved-to layer count");
+        std::fill(out.begin(), out.end(), 0.0f);
+        b.Predict(x.data(), N, out.data());
+        check(all_finite(out.data(), K), "post-move Predict finite");
+
+        HCNN c(5, 2);
+        c = std::move(b);
+        check(c.GetNumOutputs() == 4, "move-assign keeps source num_outputs");
+        c.Predict(x.data(), N, out.data());
+        check(all_finite(out.data(), 4), "post move-assign Predict finite");
+    }
+
     end_section();
 }
 

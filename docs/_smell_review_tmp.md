@@ -82,8 +82,8 @@ Core `.h/.cpp` at repo root next to examples/tests/docs. Accepted: install alrea
 
 **Type:** source aesthetics / scale hygiene.
 
-### 9. Optional modules vs one static lib — **open**
-Spatial + train helpers + arch are “optional by include” but always linked into `HypercubeCNNCore`.
+### 9. Optional modules vs one static lib — **won't fix**
+Spatial + train helpers + arch are “optional by include” but always linked into `HypercubeCNNCore`. Accepted: one link target is simpler for teaching/ESN; split components only if optional code grows large.
 
 ### 10. `LossType` is almost a ghost API — **done** (commit `acad57e`)
 Removed public enum and ctor param. Loss fixed by `TaskType` only (CE / MSE). `GetLossType` removed. `num_threads` is now the 5th constructor argument.
@@ -114,7 +114,7 @@ One-off experiments under build dirs; gitignore covers them. Accepted process sm
 
 | # | Item | Status | Note |
 |---|------|--------|------|
-| — | Non-movable `HCNN` | open / by design | Forces `unique_ptr`; `Build()` already does |
+| — | Non-movable `HCNN` | **done** | Movable via heap PIMPL; still non-copyable |
 | — | No multi-channel spatial | open / by design | Documented limit |
 | — | C++23 hard requirement | open | Narrows coursework environments |
 | — | Native/fast-math defaults ON | open | Demo-friendly; packaging risk |

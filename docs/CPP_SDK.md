@@ -215,7 +215,9 @@ void PrepareBuffers();             // optional: allocate scratch up front
 - Default optimizer is **Adam** (AdamW-style decoupled decay on kernels when `weight_decay > 0`). Use `SetOptimizer(SGD)` if you want classical momentum SGD.
 - **Session train knobs:** `SetTrainDefaults` holds lr / momentum / weight_decay / shuffle_seed / class_weights for overloads that omit `TrainParams` (e.g. `TrainEpoch(view, y, batch)`). Explicit `TrainParams` args still win.
 - `RandomizeWeights`: `scale > 0` → uniform `[-scale, scale]`; else He (ReLU/Leaky, `c_in > 1`) or Xavier. Rebuilds readout to match final `c * N`. Clears optimizer moments / Adam timestep.
-- **Non-copyable, non-movable** (live thread pool). Use `std::unique_ptr<HCNN>` if ownership must move.
+- **Non-copyable, movable.**  Move transfers the heap-owned network (and its
+  thread pool) via `unique_ptr`; no worker relocation.  Prefer `unique_ptr<HCNN>`
+  for optional ownership; value move is fine for returns and containers.
 
 ### Inference
 
@@ -340,7 +342,7 @@ net.RandomizeWeights();
 ArchParamSummary sum = summarize_arch(10, 10, 1, layers);
 print_arch(std::cout, 10, 10, 1, layers, sum);
 
-// Option B — one-shot Build (returns unique_ptr; HCNN is non-movable)
+// Option B — one-shot Build (unique_ptr; HCNN is also value-movable)
 HCNNConfig cfg;
 cfg.start_dim = 10;
 cfg.num_outputs = 10;
@@ -595,7 +597,7 @@ See [`spatial_preprocess.md`](spatial_preprocess.md) and `examples/mnist_train.c
 | Expect neighborhood pool | Only **antipodal** pool exists today |
 | `K = DIM` in param math | **`K = DIM + 1`** (self + neighbors) |
 | Resume train from checkpoint blob | Weights + BN stats when present; **not** optimizer moments — use `SetWeights(blob, true)` or `SetOptimizer` |
-| Copy/move `HCNN` | Deleted — use `unique_ptr` |
+| Copy `HCNN` | Deleted — move or `unique_ptr` |
 | Treat MNIST pack as spatial CNN prior | Row-major DualPlane is **not** Hamming-local |
 | Hypercube = binary values | Topology is binary; activations are float |
 

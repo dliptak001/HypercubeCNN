@@ -66,8 +66,9 @@ struct TrainParams {
 /// Prefer **`HCNNInputView` / `HCNNInputBatch`** (full capacity per sample)
 /// after spatial embed so short `input_length` cannot wipe non-zero pad.
 ///
-/// **Non-copyable, non-movable** (live thread pool).  Use
-/// `std::unique_ptr<HCNN>` if ownership must transfer.
+/// **Non-copyable, movable.**  The live thread pool lives on the heap
+/// (`unique_ptr<HCNNNetwork>`); move transfers ownership without relocating
+/// workers.  Moved-from objects are empty and must not be used.
 class HCNN {
 public:
     /// @param num_threads 0 = auto, 1 = single-threaded (no pool workers), N = N workers.
@@ -81,8 +82,8 @@ public:
 
     HCNN(const HCNN&) = delete;
     HCNN& operator=(const HCNN&) = delete;
-    HCNN(HCNN&&) = delete;
-    HCNN& operator=(HCNN&&) = delete;
+    HCNN(HCNN&&) noexcept;
+    HCNN& operator=(HCNN&&) noexcept;
 
     // -----------------------------------------------------------------
     //  Architecture (incremental builder)

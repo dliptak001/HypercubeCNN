@@ -20,6 +20,11 @@ HCNN::HCNN(int start_dim, int num_outputs, int input_channels,
 
 HCNN::~HCNN() = default;
 
+// Defined in .cpp so HCNNNetwork is complete (same as destructor).
+// Move only transfers unique_ptr + scratch; ThreadPool stays on the heap.
+HCNN::HCNN(HCNN&&) noexcept = default;
+HCNN& HCNN::operator=(HCNN&&) noexcept = default;
+
 // ---------------------------------------------------------------------------
 //  Architecture
 // ---------------------------------------------------------------------------
