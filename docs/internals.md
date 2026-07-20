@@ -98,7 +98,7 @@ Two structural variants:
 | **Block-pair full-N** | No per-layer pool **or** DIM &lt; 12 | Contiguous half-block loads for each bit mask; auto-vectorizer friendly |
 | **Tiled XOR** | Per-layer pool active **and** DIM ≥ 12 | Vertex tiles `T = 64`; `in[v ^ m]` style indexing over `[v_begin, v_end)` |
 
-**Why block-pair?** For mask `m = 1<<k`, pairs `(v, v^m)` sit in blocks of size `2^(k+1)`. Scanning low/high halves yields contiguous loads instead of gathers. That is the **primary hot path** for typical demos (DIM 6–11).
+**Why block-pair?** For mask `m = 1<<k`, pairs `(v, v^m)` sit in blocks of size `2^(k+1)`. Scanning low/high halves yields contiguous loads instead of gathers. That is the **primary hot path** for typical recipe sizes (DIM 6–11).
 
 **Why tile at large DIM?** Threaded ranges may not align to block boundaries, so the threaded path keeps XOR indexing inside tiles.
 
@@ -173,7 +173,7 @@ Parameter count of the head:
 num_outputs * (c_final * N_final) + num_outputs
 ```
 
-Often dominates total params when pools are few and N is large (MNIST-style demos).
+Often dominates total params when pools are few and N is large (MNIST-scale recipes).
 
 ### 4.1 `grad_in` loop A/B (`ReadoutGradInLoop`)
 
@@ -193,14 +193,16 @@ Default is `OutputOuter` (faster on MNIST-scale heads in Release A/B). Setting s
 
 ### 5.1 Shared cores
 
-Public train entry points are thin wrappers:
+Network train entry points are thin wrappers over shared cores:
 
-| Public | Core | Loss gradient |
-|--------|------|----------------|
+| Private Network entry | Core | Loss gradient |
+|-----------------------|------|----------------|
 | `train_step` | `train_step_impl` | classification lambda |
 | `train_batch` | `train_batch_impl` | classification lambda per sample |
 | `train_step_regression` | `train_step_impl` | regression lambda |
 | `train_batch_regression` | `train_batch_impl` | regression lambda per sample |
+
+The public `HCNN` facade unifies these by **target type** (`int` / `const int*` vs `const float*`); Network still keeps separate entry points that share the same cores.
 
 Shared cores own forward → loss grad → backward → weight update. Classification uses softmax CE; regression uses sum-style MSE. A new loss would be a new task path or an explicit extension of those two helpers — not a public `LossType` enum.
 
@@ -213,14 +215,7 @@ Shared cores own forward → loss grad → backward → weight update. Classific
 ### 5.2 Optimizers
 
 Configured on all layers via `HCNN::SetOptimizer` (resets global Adam timestep `t`).
-
-**SGD + momentum** (default `OptimizerType`):
-
-```text
-g = grad + weight_decay * w     // kernels / readout weights; not typically biases
-v = momentum * v + g
-w -= lr * v
-```
+Default at construction is **Adam** (`OptimizerType::ADAM` on Network and facade).
 
 **Adam** with decoupled weight decay on kernels:
 
@@ -229,6 +224,14 @@ m = β1 m + (1-β1) g
 v = β2 v + (1-β2) g²
 m̂ = m / (1-β1^t),  v̂ = v / (1-β2^t)
 w -= lr * (m̂ / (√v̂ + ε) + weight_decay * w)
+```
+
+**SGD + momentum** (opt-in via `SetOptimizer(SGD)`):
+
+```text
+g = grad + weight_decay * w     // kernels / readout weights; not typically biases
+v = momentum * v + g
+w -= lr * v
 ```
 
 `t` increments once per `train_step` / `train_batch` call (not per sample inside the batch).
@@ -345,24 +348,35 @@ Spatial preprocess may pad with `pad_value = -1`. After spatial embed, train/inf
 | `HCNN_FAST_TANH` | ON | Rational tanh in conv activate path |
 | `HCNN_NATIVE_ARCH` | ON | `-march=native` style host tuning (non-MSVC) |
 | `HCNN_FAST_MATH` | ON | Relaxed float flags without full associative-math chaos |
-| `HCNN_BUILD_EXAMPLES` | ON if top-level | Demos + smoke test |
+| `HCNN_BUILD_EXAMPLES` | ON if top-level | Examples + smoke test |
 
 When consumed via FetchContent as a subproject, examples are typically skipped.
 
 ---
 
-## 10. File inventory (core library)
+## 10. File inventory
+
+**Installed public surface** (apps / FetchContent / find_package):
 
 ```text
-HCNN.h / HCNN.cpp
-HCNNNetwork.h / HCNNNetwork.cpp
-HCNNConv.h / HCNNConv.cpp
-HCNNPool.h / HCNNPool.cpp
-HCNNReadout.h / HCNNReadout.cpp
+HypercubeCNN.h           umbrella (core + optional products)
+HCNN.h / HCNN.cpp        facade (PIMPL owner)
+HCNNTypes.h              public enums
+HCNNInput.h              full-capacity views / batches
+HCNNArch.h               LayerSpec, apply_arch, HCNNConfig (header-only)
+HCNNSpatialAug.h / .cpp  optional 2D aug
+HCNNSpatialEmbed.h / .cpp optional 2D → length-N pack
+HCNNTrainHelpers.h / .cpp optional metrics / LR / checkpoints / weight I/O
+```
+
+**Private implementation** (source tree + in-tree tests only; not installed):
+
+```text
+HCNNNetwork.h / .cpp
+HCNNConv.h / .cpp
+HCNNPool.h / .cpp
+HCNNReadout.h / .cpp
 ThreadPool.h
-HCNNSpatialAug.h / .cpp      (optional)
-HCNNSpatialEmbed.h / .cpp    (optional)
-HCNNTrainHelpers.h / .cpp    (optional)
 ```
 
 In-tree only (not install surface): `examples/`, `tests/`, `dataloader/`.

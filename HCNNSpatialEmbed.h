@@ -13,7 +13,7 @@ namespace hcnn {
  * @brief How to map a 2D single-channel image onto a length-N hypercube input
  *        with N = 2^dim and pattern length P <= N.
  *
- * Optional convenience for spatial -> hypercube demos. Does not run the
+ * Optional SDK helper for spatial → hypercube packing. Does not run the
  * network. Pair with HCNNSpatialAugmenter (2D only) and HCNN train/infer.
  *
  * Pipeline (typical):

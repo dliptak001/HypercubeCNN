@@ -1,8 +1,9 @@
 # Spatial preprocess: augmentation and embed (P ≤ N)
 
-Optional **core** helpers for mapping 2D single-channel images onto HypercubeCNN
-inputs. They are **not** part of the conv/pool graph and do **not** depend on
-each other beyond a recommended pipeline order.
+Optional **SDK modules** for mapping 2D single-channel images onto HypercubeCNN
+inputs. They ship in `HypercubeCNNCore` and are installed with the public
+headers, but they are **not** part of the conv/pool graph and do **not** depend
+on each other beyond a recommended pipeline order.
 
 | Module | Header | Role | Knows DIM? |
 |--------|--------|------|------------|
@@ -151,7 +152,7 @@ See `HCNNSpatialAug.h`:
 - Any **H×W**; no `dim` field.
 - Affine or elastic requires `in != out`. Elastic uses thread_local scratch
   (grows to max size seen on the thread).
-- Prefer **shear A/B first**, then enable elastic (MNIST demo defaults elastic off).
+- Prefer **shear A/B first**, then enable elastic (MNIST recipe defaults elastic off).
 
 ---
 
@@ -243,6 +244,6 @@ emb.embed_batch(tmp, batch, H, W, out);       // stride N
 |--------------|---------|
 | `HCNNSpatialAug.h` | Aug config + augmenter |
 | `HCNNSpatialEmbed.h` | Embed config, modes, plan, embedder |
-| `docs/CPP_SDK.md` | SDK overview (§8: short pointer + pad contract) |
+| `docs/CPP_SDK.md` | Public SDK; spatial is §9 (pad contract + pipeline) |
 | `docs/internals.md` | Hypercube conv (after embed) |
-| `examples/mnist_train.md` | Full image training demo |
+| `examples/mnist_train.md` | Full image training recipe |
