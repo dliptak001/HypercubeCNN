@@ -40,14 +40,12 @@ cd HypercubeCNN
 pip install .
 ```
 
-Requires Python 3.10+, C++23, CMake ≥ 3.21. Windows + CLion MinGW local rebuild:
+Requires Python 3.10+, a C++23 compiler, and CMake ≥ 3.21. On Windows with
+CLion’s bundled MinGW, put that toolchain’s `bin` (and Ninja) on `PATH`, set
+`CMAKE_GENERATOR=Ninja`, and point `CC`/`CXX` at the MinGW gcc/g++ — exact
+install paths change with the CLion version. Then:
 
-```powershell
-$env:PATH = "C:\Program Files\JetBrains\CLion 2026.1\bin\mingw\bin;C:\Program Files\JetBrains\CLion 2026.1\bin\ninja\win\x64;" + $env:PATH
-$env:CMAKE_GENERATOR = "Ninja"
-$env:CMAKE_MAKE_PROGRAM = "C:\Program Files\JetBrains\CLion 2026.1\bin\ninja\win\x64\ninja.exe"
-$env:CC = "C:\Program Files\JetBrains\CLion 2026.1\bin\mingw\bin\gcc.exe"
-$env:CXX = "C:\Program Files\JetBrains\CLion 2026.1\bin\mingw\bin\g++.exe"
+```bash
 pip install . --no-build-isolation --force-reinstall --no-deps
 ```
 
@@ -82,7 +80,7 @@ net.save("model")  # model.hcnw + model.arch.json
 - **Model I/O** — HCNW weights + arch sidecar (C++ interop); pickle as secondary
 - **Spatial pack** — `SpatialEmbedder` / `SpatialAugmenter` for H×W → length N
 - **Train helpers** — `evaluate_classification` / `evaluate_regression`, `cosine_lr`
-- **Contracts** — capacity `input_channels * 2**dim`; full-capacity inputs after packing
+- **Contracts** — capacity `input_channels * 2**dim`; after packing, pass length-N inputs
 
 ## Documentation
 

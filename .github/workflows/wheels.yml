@@ -8,9 +8,6 @@
 #   Env:      (any) — no GitHub Environment required on this job
 #
 # Packaging root: repo-root pyproject.toml (see docs/python_sdk_plan.md).
-# Until the Python package scaffold exists, this workflow will fail at the
-# cibuildwheel / sdist steps — expected; land Phase 0 first.
-#
 # Publish runs only on tags matching v* (e.g. v1.0.0). skip-existing avoids
 # failing when re-running a tag after a partial upload.
 
