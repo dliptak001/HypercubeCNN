@@ -7,9 +7,9 @@ First full public SDK release. Package version and FetchContent pin: **v1.0.0**
 
 ### Highlights
 
-- Single teaching front door: `hcnn::HCNN` (+ umbrella `HypercubeCNN.h`)
+- Single public front door: `hcnn::HCNN` (+ umbrella `HypercubeCNN.h`)
 - Unified train API, session defaults, architecture product, full-capacity inputs
-- Portable weight files, movable networks, demos as living facade examples
+- Portable weight files, movable networks, examples as living facade recipes
 
 ### Breaking / public API
 

@@ -7,9 +7,9 @@
  * @file HCNNArch.h
  * @brief Architecture product surface: layer specs, param accounting, build helper.
  *
- * Part of the public teaching SDK (installed).  Ordinary apps can describe a
- * stack as a list of LayerSpec, apply it to an HCNN, print a summary, or build
- * a full net from HCNNConfig in one call.
+ * Optional public SDK product (installed).  Hosts can describe a stack as a
+ * list of LayerSpec, apply it to an HCNN, print a summary, or build a full
+ * net from HCNNConfig in one call.  Not required for core-only integrations.
  *
  * Header-only (depends on HCNN.h).  Also pulled in by HypercubeCNN.h.
  */
@@ -273,7 +273,7 @@ inline void print_arch(std::ostream& os,
 // =============================================================================
 
 /**
- * All construction knobs for a standard teaching / app net.
+ * All construction knobs for a standard application net.
  *
  * Typical use:
  * @code

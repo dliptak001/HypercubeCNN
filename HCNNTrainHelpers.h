@@ -16,7 +16,8 @@ namespace hcnn {
 // =============================================================================
 // Optional training-loop helpers (not part of the conv/pool graph).
 //
-// Extracted from the shipped demos so teaching examples stay thin:
+// Shared utilities for hosts and recipes that want a thin loop without
+// re-implementing common pieces:
 //   - classification metrics (softmax CE, argmax, batch evaluate)
 //   - regression metrics (MSE, target variance, R^2)
 //   - contiguous flat datasets (classification and/or regression targets)
@@ -26,7 +27,7 @@ namespace hcnn {
 //   - versioned weight file save/load
 //
 // Include this header only when you need these utilities.  HCNN itself does
-// not depend on them.
+// not depend on them; hosts with their own train loop can ignore this header.
 // =============================================================================
 
 // -----------------------------------------------------------------------------

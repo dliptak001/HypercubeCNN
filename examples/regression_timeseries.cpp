@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 David Liptak
 //
-// Time-series regression teaching demo for HypercubeCNN.
+// Time-series regression recipe for HypercubeCNN.
 //
 // Predicts sin(freq*(t+horizon)) from a length-N synthetic reservoir state
 // (N independent leaky tanh integrators of a shared sine drive).

@@ -14,7 +14,7 @@
 #include <vector>
 
 // =============================================================================
-// MNIST teaching demo — living example of the public HCNN facade
+// MNIST recipe — living example of the public HCNN facade
 //
 // Loader yields 28x28 in [-1, 1].  Pipeline:
 //   (train only) HCNNSpatialAugmenter  - rot/scale/shift/shear/elastic + noise

@@ -1,6 +1,6 @@
 # Regression Timeseries -- Next-Step Prediction
 
-End-to-end **regression** teaching demo for HypercubeCNN
+End-to-end **regression** recipe for HypercubeCNN
 (`examples/regression_timeseries.cpp`). Trains a config-driven stack with
 `TaskType::Regression` and MSE loss to predict the next value of a sine wave
 from a length-N synthetic reservoir state.
@@ -14,7 +14,7 @@ Matches the binary banner (`Proves:` / `Does not:`):
 | Regression API (`TrainEpoch` with float targets, MSE) | Real HypercubeESN readout dynamics |
 | RELU/TANH + full-N FLATTEN at DIM=10 | Hard multi-step / chaotic forecasting |
 | Cosine LR, target centering, best-MSE restore | Production RC skill |
-| Thin teaching loop aligned with `mnist_train` | That near-perfect R² transfers off this sine task |
+| Thin train loop aligned with `mnist_train` | That near-perfect R² transfers off this sine task |
 
 The synthetic reservoir is **uncoupled** (independent leaky tanh units). That is
 intentional for an API smoke test; it is a weak stand-in for live RC state.

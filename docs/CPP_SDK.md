@@ -1,8 +1,13 @@
 # HypercubeCNN C++ SDK
 
-Canonical C++ SDK guide for **HypercubeCNN** (`HypercubeCNNCore` **v1.0.0**). Aligned with the core headers and in-tree teaching demos. Release notes: **[ChangeLog.md](../ChangeLog.md)**.
+HypercubeCNN is a **dependency-free C++23 hypercube CNN core** for research and systems integration (including HypercubeESN). The public surface is **small and contract-driven** so it stays usable in production hosts and legible for engineers learning the stack.
 
-**Audience:** undergrad / grad students who know C++ and the basics of neural nets (forward, loss, SGD/Adam). No framework background required.
+**Examples stay examples. Helpers stay optional. Neither is the product’s reason for existing** — the core (`HCNN`) is.
+
+Canonical API guide for **`HypercubeCNNCore` v1.0.0**. Aligned with the public headers and in-tree recipes. Release notes: **[ChangeLog.md](../ChangeLog.md)**.
+
+**Primary audience:** engineers integrating HCNN into a host binary (e.g. HypercubeESN, custom train/infer pipelines).  
+**Secondary:** engineers learning the stack — same API, progressive disclosure, worked recipes.
 
 **Package:** pure C++23 static library, `namespace hcnn`, no third-party deps beyond the standard library and OS threads.
 
@@ -54,7 +59,14 @@ out[co, v] = bias[co]
 
 ---
 
-## 3. What’s in the SDK
+## 3. SDK layers and install tree
+
+| Layer | Role |
+|-------|------|
+| **Core (`HCNN`)** | The product. Integration surface — document like a library another binary links. |
+| **Arch / spatial / train helpers** | Optional products for hosts that want them. |
+| **Examples** | Proof of contracts + recipes (MNIST, regression). Not the definition of the SDK. |
+| **Internals** | Research / maintainers; private headers are not installed and not for apps. |
 
 ### Install tree
 
@@ -75,18 +87,30 @@ out[co, v] = bias[co]
 
 Layer/orchestrator headers (`HCNNNetwork`, `HCNNConv`, `HCNNPool`, `HCNNReadout`,
 `ThreadPool`) ship in the **source tree** for tests and research instrumentation;
-they are **not** part of the installed teaching surface.
+they are **not** part of the installed public surface.
 
-| Layer of the product | Include | Required? |
-|----------------------|---------|-----------|
-| Full teaching stack | `HypercubeCNN.h` | Recommended for demos |
-| Core train / infer only | `HCNN.h` | Yes (minimal) |
+| Product layer | Include | Required? |
+|---------------|---------|-----------|
+| Full public stack | `HypercubeCNN.h` | Convenient for hosts that want helpers + spatial |
+| Core train / infer only | `HCNN.h` | Yes (minimal integration) |
 | Architecture list / Build | `HCNNArch.h` (via umbrella) | Optional |
 | Image preprocess | spatial headers (via umbrella) | Optional |
 | Thin training loop | `HCNNTrainHelpers.h` | Optional |
-| Demo-only aliases | `examples/demo_arch.h` | **Not installed** (`hcnn_demo::` → `hcnn::`) |
+| In-tree aliases | `examples/demo_arch.h` | **Not installed** (`hcnn_demo::` → `hcnn::`) |
 
 Link target: **`HypercubeCNNCore`** (or imported `HypercubeCNN::HypercubeCNNCore`).
+
+### Integration contracts
+
+| Contract | Rule |
+|----------|------|
+| **Capacity** | Embed / train / predict capacity = `input_channels * GetStartN()` |
+| **Pad (HCNN)** | Short inputs zero-fill the tail; over-long inputs throw |
+| **Task / loss** | Classification → softmax CE; Regression → MSE (fixed by `TaskType`) |
+| **Outputs** | `Forward` / `Predict` return raw logits or predictions — never softmax |
+| **Weights** | `GetWeights` / `SetWeights` blob includes kernels, biases, BN (γ/β + running stats); **not** optimizer moments |
+| **Threading** | Internal `ThreadPool`; `num_threads = 1` for host-side parallel nets |
+| **Ownership** | `HCNN` is non-copyable, movable (`unique_ptr` PIMPL) |
 
 ---
 
@@ -102,7 +126,10 @@ cmake --install build --prefix /path/to/sdk   # optional
 
 Useful CMake options (library): `HCNN_FAST_TANH` (default ON), `HCNN_NATIVE_ARCH`, `HCNN_FAST_MATH`, `HCNN_BUILD_EXAMPLES`.
 
-### FetchContent (typical coursework project)
+For redistributable binaries that must run on different CPUs, prefer
+`-DHCNN_NATIVE_ARCH=OFF`.
+
+### FetchContent (typical consumer project)
 
 ```cmake
 cmake_minimum_required(VERSION 3.21)
@@ -165,7 +192,7 @@ int main() {
 }
 ```
 
-**Habits this teaches:**
+**Integration habits:**
 
 1. Build with `AddConv` / `AddPool`, then **`RandomizeWeights`** (sizes the readout).
 2. Prefer **`Predict`** for single-sample inference; use `Embed`+`Forward` when you cache embeddings.
@@ -241,6 +268,10 @@ void ForwardBatch(const float* flat_inputs, int input_length,
 | `Forward` outputs | Raw logits (classif.) or predictions (regress.); no softmax |
 | BN during `Forward*` / `Predict*` | Forced eval for the call (safe mid-training) |
 
+Full-capacity typed views (`HCNNInputView` / `HCNNInputBatch` in `HCNNInput.h`)
+avoid short-`input_length` wiping a non-zero spatial pad. Prefer them after
+spatial embed when the sample is already length `capacity`.
+
 ### Training — classification
 
 Targets: `int` class indices. Loss: softmax + cross-entropy.
@@ -287,7 +318,7 @@ net.TrainEpoch(x, len, float_targets, n, batch, params);
 Compatibility aliases (prefer unified names): `TrainStepRegression` /
 `TrainBatchRegression` / `TrainEpochRegression` forward to the `float*` overloads.
 
-**Regression tips (from the teaching demo):** center targets on the **train** mean; Adam is already the default; mix activations as needed (demo often uses RELU then TANH); full-N FLATTEN without pool keeps vertex identity (useful for reservoir-like inputs).
+**Regression tips (from the regression recipe):** center targets on the **train** mean; Adam is already the default; mix activations as needed (recipe often uses RELU then TANH); full-N FLATTEN without pool keeps vertex identity (useful for reservoir-like inputs).
 
 ### Sizing and weights
 
@@ -320,7 +351,7 @@ readout bias[num_outputs]
 
 ## 7. Architecture product (`HCNNArch.h`)
 
-Describe the body as a list of **`LayerSpec`**, apply it, print params, or build in one shot.
+Optional public product: describe the body as a list of **`LayerSpec`**, apply it, print params, or build in one shot.
 
 ```cpp
 #include "HCNNArch.h"   // or HypercubeCNN.h
@@ -363,9 +394,9 @@ Pool floor matches the network: cannot pool when `current_dim < 2`. Need ≥1 co
 
 ---
 
-## 8. Educational training loop (pattern)
+## 8. Training loop pattern (recipes)
 
-The shipped demos keep a single **`DemoConfig`** struct at the top of the `.cpp` and a thin loop. Reproduce that structure in coursework:
+The shipped examples keep a single **`DemoConfig`** struct at the top of the `.cpp` and a thin loop. Hosts can mirror that structure or drive `HCNN` from their own orchestrator:
 
 ```cpp
 // 1) Config: dim, layers, lr, batch, seeds, epochs
@@ -373,7 +404,7 @@ The shipped demos keep a single **`DemoConfig`** struct at the top of the `.cpp`
 // 3) Pack data into contiguous float arrays (+ int labels or float targets)
 // 4) for epoch:
 //      lr = cosine_lr(lr_max, lr_min, epoch, num_epochs);
-//      TrainEpoch[Regression](..., lr, ..., shuffle_seed = epoch+1);
+//      TrainEpoch(..., lr, ..., shuffle_seed = epoch+1);
 //      evaluate_*(...);
 //      checkpoint.observe(...);
 // 5) checkpoint.restore_*(net);
@@ -456,13 +487,13 @@ Embed modes (summary): `RowMajorPad`, `ResizeToFit`, `DualPlaneResize` — see t
    A short `P` **overwrites** nonzero spatial pad with **0**.
 
 Depth (modes, capacity tables, aug knobs, API sketches): **[`spatial_preprocess.md`](spatial_preprocess.md)**.  
-End-to-end image demo: [`examples/mnist_train.md`](../examples/mnist_train.md).
+End-to-end image recipe: [`examples/mnist_train.md`](../examples/mnist_train.md).
 
 ---
 
 ## 10. Optional: train helpers
 
-Header: `HCNNTrainHelpers.h`. **Not** part of the conv/pool graph; does not change `HCNN` math. Include it when you want a thin teaching loop instead of re-implementing CE, cosine LR, or weight snapshots. Native cube apps that already own their loop can ignore this header.
+Header: `HCNNTrainHelpers.h`. **Not** part of the conv/pool graph; does not change `HCNN` math. Include it when you want a thin loop instead of re-implementing CE, cosine LR, or weight snapshots. Hosts that already own their loop can ignore this header.
 
 | Utility | Role |
 |---------|------|
@@ -554,7 +585,7 @@ save_weights(net, "model.hcnw");
 load_weights(net, "model.hcnw", /*reset_optimizer_moments=*/true);  // train resume
 ```
 
-### Image demo pipeline
+### Image pipeline (with helpers)
 
 ```text
 H×W → optional SpatialAug → SpatialEmbed (length N)
@@ -566,7 +597,7 @@ See [`spatial_preprocess.md`](spatial_preprocess.md) and `examples/mnist_train.c
 
 ---
 
-## 11. Memory, threading, performance (student-relevant)
+## 11. Memory, threading, performance
 
 **Layout:** `activations[c * N + v]` at every stage.
 
@@ -582,7 +613,7 @@ See [`spatial_preprocess.md`](spatial_preprocess.md) and `examples/mnist_train.c
 
 **Steady state:** after warm-up / `PrepareBuffers()`, training and inference avoid per-call heap traffic (lazy per-thread buffers, ping-pong forward scratch, shuffle gather).
 
-**Cost scaling:** activations and FLATTEN head grow with `N = 2^DIM` and channels. Demos often use DIM 6–12. Skipping pool keeps full N into a large linear head (high capacity, higher param count).
+**Cost scaling:** activations and FLATTEN head grow with `N = 2^DIM` and channels. Examples often use DIM 6–12. Skipping pool keeps full N into a large linear head (high capacity, higher param count).
 
 ---
 
@@ -624,7 +655,7 @@ These exist **only** in the source tree (for `HCNN.cpp` and in-tree tests):
 2. **Not a second SDK** — do not build applications against Network/layers.
 3. **Features land on `HCNN` first** — Network gains only what the facade needs.
 
-Coursework and apps use **`HCNN`** or **`HypercubeCNN.h`** only.
+Integrators and applications use **`HCNN`** or **`HypercubeCNN.h`** only.
 
 How the private core is built: **[internals.md](internals.md)**.
 
@@ -636,8 +667,8 @@ How the private core is built: **[internals.md](internals.md)**.
 |------------|---------|
 | [`internals.md`](internals.md) | Implementation notes (train cores, RAII, optimizers) |
 | [`spatial_preprocess.md`](spatial_preprocess.md) | Aug + embed contracts |
-| `examples/mnist_train.md` | Classification teaching write-up |
-| `examples/regression_timeseries.md` | Regression teaching write-up |
+| `examples/mnist_train.md` | Classification recipe write-up |
+| `examples/regression_timeseries.md` | Regression recipe write-up |
 
 ---
 

@@ -185,7 +185,7 @@ static void gaussian_blur_2d(float* field, int height, int width,
     const int radius = std::max(1, static_cast<int>(std::ceil(3.0f * sigma)));
     const int klen = 2 * radius + 1;
 
-    // Stack path for typical MNIST/teaching sizes (sigma <= ~21 → radius 64).
+    // Stack path for typical MNIST/recipe sizes (sigma <= ~21 → radius 64).
     static constexpr int kStackMaxKlen = 129; // radius <= 64
     float stack_kern[kStackMaxKlen];
     static thread_local std::vector<float> tl_kern;

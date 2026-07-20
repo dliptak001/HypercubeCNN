@@ -375,6 +375,6 @@ In-tree only (not install surface): `examples/`, `tests/`, `dataloader/`.
 | Doc | Use it for |
 |-----|------------|
 | [../README.md](../README.md) | Project hook and first path |
-| [CPP_SDK.md](CPP_SDK.md) | Public API, educational train loops, train helpers |
+| [CPP_SDK.md](CPP_SDK.md) | Public SDK contracts, API, optional helpers, recipes |
 | [spatial_preprocess.md](spatial_preprocess.md) | Image aug/embed contracts |
 | Headers in `HCNN*.h` | Authoritative signatures and contracts |

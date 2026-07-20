@@ -23,7 +23,7 @@ class HCNNNetwork;  // private PIMPL (not installed; not for apps)
 ///     p.shuffle_seed  = static_cast<unsigned>(epoch + 1);
 ///     net.TrainEpoch(x, len, y, n, batch, p);
 ///
-/// Defaults match the teaching demos (Adam-friendly: lr 1e-3, no momentum).
+/// Defaults match the in-tree examples (Adam-friendly: lr 1e-3, no momentum).
 struct TrainParams {
     float learning_rate = 1e-3f;
     float momentum      = 0.0f;   ///< SGD momentum; ignored by Adam
@@ -35,15 +35,18 @@ struct TrainParams {
 };
 
 /// @class HCNN
-/// @brief Top-level HypercubeCNN SDK front door.
+/// @brief Public HypercubeCNN front door — the integration surface.
 ///
-/// One class wraps the pipeline: input embedding → conv/pool stack → readout,
-/// plus single-sample and batch inference/training for classification and
-/// regression.
+/// Dependency-free C++23 hypercube CNN core for research and systems
+/// integration.  One class wraps the pipeline: input embedding → conv/pool
+/// stack → readout, plus single-sample and batch inference/training for
+/// classification and regression.  The public surface is small and
+/// contract-driven; optional helpers and examples are not required to use it.
 ///
-/// **Include this header** (or the umbrella `HypercubeCNN.h`) for ordinary
-/// use.  `HCNNNetwork` and layer headers are **private** (not installed);
-/// application code should never include them.
+/// **Include this header** for core-only integrations, or the umbrella
+/// `HypercubeCNN.h` for the full public stack.  `HCNNNetwork` and layer
+/// headers are **private** (not installed); application code should never
+/// include them.
 ///
 /// Build incrementally with AddConv()/AddPool(), then RandomizeWeights():
 ///

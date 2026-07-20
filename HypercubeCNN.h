@@ -5,17 +5,23 @@
 
 /**
  * @file HypercubeCNN.h
- * @brief Umbrella include for the full teaching-oriented SDK surface.
+ * @brief Umbrella include for the full public SDK surface.
+ *
+ * HypercubeCNN is a dependency-free C++23 hypercube CNN core for research and
+ * systems integration.  The product is the core (`HCNN`); this umbrella also
+ * pulls optional helpers.  Examples and helpers are not the reason the library
+ * exists — use them when useful, skip them when not.
  *
  * Pulls in:
  *   - `HCNN.h` / `HCNNInput.h` — core front door + full-capacity input types
  *   - `HCNNArch.h`          — LayerSpec, apply_arch, HCNNConfig::Build
- *   - `HCNNTrainHelpers.h`  — metrics, cosine LR, checkpoints, flat dataset
+ *   - `HCNNTrainHelpers.h`  — optional metrics, cosine LR, checkpoints, flat dataset
  *   - `HCNNSpatialAug.h`    — optional 2D augmentation
  *   - `HCNNSpatialEmbed.h`  — optional 2D → length-N packing
  *
- * Prefer this single include for demos and coursework.  Minimal apps that
- * only need the graph can `#include "HCNN.h"` alone.
+ * Prefer this single include when the host wants arch helpers, train helpers,
+ * and/or spatial preprocess.  Minimal integrations that only need the graph
+ * can `#include "HCNN.h"` alone.
  *
  * Private implementation headers (`HCNNNetwork`, layers, `ThreadPool`) are
  * **not** included and **not** installed — apps never need them.

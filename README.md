@@ -5,7 +5,11 @@
 [![C++23](https://img.shields.io/badge/C%2B%2B-23-blue.svg)]()
 [![CMake](https://img.shields.io/badge/CMake-3.21+-blue.svg)]()
 
-HypercubeCNN is a **convolutional neural network that lives on a Boolean hypercube** instead of a 2D pixel grid. It keeps the familiar CNN story — shared local kernels, stacked layers, end-to-end backpropagation — but replaces spatial neighborhoods with **bitwise (XOR) geometry**. The library is **pure C++23**, ships as a static SDK (`HypercubeCNNCore`), and is meant for research, coursework, and as a **learned readout** beside [HypercubeESN](https://github.com/dliptak001/HypercubeESN) and [HypercubeHopfield](https://github.com/dliptak001/HypercubeHopfield).
+HypercubeCNN is a **dependency-free C++23 hypercube CNN core** for research and systems integration (including [HypercubeESN](https://github.com/dliptak001/HypercubeESN)). The public surface is **small and contract-driven** so it stays usable in production hosts and legible for engineers learning the stack.
+
+It is a **convolutional neural network that lives on a Boolean hypercube** instead of a 2D pixel grid: familiar CNN structure (shared local kernels, stacked layers, end-to-end backpropagation) with **bitwise (XOR) geometry** in place of spatial neighborhoods. Ships as the static library **`HypercubeCNNCore`**. Also used beside [HypercubeHopfield](https://github.com/dliptak001/HypercubeHopfield).
+
+**Examples stay examples. Helpers stay optional. Neither is the product’s reason for existing** — the core (`HCNN`) is.
 
 ---
 
@@ -29,10 +33,25 @@ You stack convolutions (and optional **antipodal** pooling) into a feature body,
 **A good fit when:**
 
 - Inputs already live at length `2^D` (reservoir / ESN state, bit-indexed fingerprints, product-space features)
-- You want a small, dependency-free C++ CNN core with a clean teaching surface
+- You need a small, dependency-free C++ CNN core with a stable public API
 - You are exploring what “convolution” means outside Euclidean grids
 
-**Not a drop-in replacement for spatial vision stacks:** mapping images onto the cube is an explicit packing step (the MNIST demo does this for you). Hamming neighbors are **not** automatic 2D adjacency unless packing makes them so.
+**Not a drop-in replacement for spatial vision stacks:** mapping images onto the cube is an explicit packing step (the MNIST example does this for you). Hamming neighbors are **not** automatic 2D adjacency unless packing makes them so.
+
+---
+
+## SDK layers
+
+| Layer | Role |
+|-------|------|
+| **Core (`HCNN`)** | The product. Integration surface — documented and versioned like a library another binary links. |
+| **Arch / spatial / train helpers** | Optional products for hosts that want them. |
+| **Examples** | Proof of contracts + recipes (MNIST, regression). Not the definition of the SDK. |
+| **Internals** | Research / maintainers; private headers are not installed and not for apps. |
+
+Include `"HCNN.h"` for the core only, or `"HypercubeCNN.h"` for the full public stack (arch + helpers + spatial). Link target: **`HypercubeCNNCore`**.
+
+Full API guide: **[docs/CPP_SDK.md](docs/CPP_SDK.md)**.
 
 ---
 
@@ -90,8 +109,6 @@ for (int e = 0; e < epochs; ++e) {
 ckpt.restore_best_acc(net);
 ```
 
-Full student-oriented API: **[docs/CPP_SDK.md](docs/CPP_SDK.md)**.
-
 ---
 
 ## Quick start
@@ -119,28 +136,28 @@ FetchContent_MakeAvailable(HypercubeCNN)
 target_link_libraries(my_app PRIVATE HypercubeCNNCore)
 ```
 
-Include `"HypercubeCNN.h"` (full teaching stack) or `"HCNN.h"` (core only). Symbols live in `namespace hcnn`.
+Include `"HypercubeCNN.h"` (full public stack) or `"HCNN.h"` (core only). Symbols live in `namespace hcnn`.
 
 ---
 
-## Teaching demos
+## Examples (recipes)
 
-Config lives at the top of each example (`DemoConfig`); thin train loops use optional helpers (`HCNNTrainHelpers`, spatial preprocess for images).
+Config lives at the top of each example (`DemoConfig`); optional helpers thin the train loop (`HCNNTrainHelpers`, spatial preprocess for images).
 
-| Target | What it teaches | Write-up |
-|--------|-----------------|----------|
+| Target | What it demonstrates | Write-up |
+|--------|----------------------|----------|
 | **`CoreSmokeTest`** | Front-door API contract | `tests/CoreSmokeTest.cpp` |
 | **`MNISTTrain`** | Image → DualPlane pack → classify | [examples/mnist_train.md](examples/mnist_train.md) |
 | **`RegressionTimeseries`** | Length-N state → scalar next-step | [examples/regression_timeseries.md](examples/regression_timeseries.md) |
 
-**MNIST (demo pack):** ~**99.44%** mean best test accuracy (3 weight seeds; peak **99.42–99.46%**) with DualPlane embed + train aug — not a leaderboard claim; full recipe and tables in [`examples/mnist_train.md`](examples/mnist_train.md).
+**MNIST (closed recipe):** ~**99.44%** mean best test accuracy (3 weight seeds; peak **99.42–99.46%**) with DualPlane embed + train aug — not a leaderboard claim; full recipe and tables in [`examples/mnist_train.md`](examples/mnist_train.md).
 
 ```bash
 cmake --build build --target MNISTTrain RegressionTimeseries
 # MNIST: place IDX files under data/ (see mnist_train.md)
 ```
 
-**How to read the numbers:** demos prove the stack **learns** end-to-end. They are **not** SOTA claims. MNIST uses engineered packing + aug + a large FLATTEN head — not “free” 2D CNN structure. Regression uses a synthetic uncoupled reservoir; near-perfect R² is an API smoke signal, not HypercubeESN production skill. Details live in the example docs.
+**How to read the numbers:** examples prove the stack **learns** end-to-end. They are **not** SOTA claims. MNIST uses engineered packing + aug + a large FLATTEN head — not “free” 2D CNN structure. Regression uses a synthetic uncoupled reservoir; near-perfect R² is an API smoke signal, not HypercubeESN production skill. Details live in the example docs.
 
 ---
 
@@ -154,9 +171,9 @@ HCNNArch.h                 LayerSpec, apply_arch, HCNNConfig::Build
 HCNNTrainHelpers.*         Metrics, flat dataset, cosine LR, checkpoints, weight files
 HCNNSpatial*               Optional 2D aug + embed (images)
 HCNNNetwork / Conv / …     Private impl (not installed; not for apps)
-examples/                  Teaching demos (+ demo_arch.h shim)
+examples/                  Recipes (+ demo_arch.h shim)
 tests/CoreSmokeTest.cpp    Smoke tests for the public API
-docs/CPP_SDK.md            Canonical SDK guide
+docs/CPP_SDK.md            Canonical SDK guide (integration-first)
 docs/internals.md          Implementation depth (contributors)
 ```
 
@@ -168,12 +185,12 @@ CMake library target: **`HypercubeCNNCore`**. Optional targets: `MNISTTrain`, `R
 
 | Doc | Role |
 |-----|------|
-| **[docs/CPP_SDK.md](docs/CPP_SDK.md)** | Onboarding + API + educational train loops |
+| **[docs/CPP_SDK.md](docs/CPP_SDK.md)** | Public SDK: contracts, API, optional helpers, recipes |
 | **[ChangeLog.md](ChangeLog.md)** | Release notes (v1.0.0 public SDK arc) |
 | [docs/internals.md](docs/internals.md) | Training cores, threading, optimizers, build options |
 | [docs/spatial_preprocess.md](docs/spatial_preprocess.md) | Image aug/embed (pad contracts) |
-| [examples/mnist_train.md](examples/mnist_train.md) | Classification demo |
-| [examples/regression_timeseries.md](examples/regression_timeseries.md) | Regression demo |
+| [examples/mnist_train.md](examples/mnist_train.md) | Classification recipe |
+| [examples/regression_timeseries.md](examples/regression_timeseries.md) | Regression recipe |
 
 ---
 
