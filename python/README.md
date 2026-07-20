@@ -1,7 +1,21 @@
-# hypercube-cnn
+# HypercubeCNN
 
-Python bindings for **HypercubeCNN** — a dependency-free C++23 CNN on Boolean
-hypercube topology (`N = 2^DIM` vertices per channel).
+[![Build wheels](https://github.com/dliptak001/HypercubeCNN/actions/workflows/wheels.yml/badge.svg)](https://github.com/dliptak001/HypercubeCNN/actions/workflows/wheels.yml)
+
+Python bindings for **HypercubeCNN** — a dependency-free CNN whose feature map
+is a Boolean hypercube. Each channel lives on `N = 2^DIM` vertices; a Hamming
+conv at a vertex reaches only that site and its distance-1 neighbors, and every
+neighbor index is a single XOR on the binary address — no spatial grid, no
+adjacency list, no stencil table to store. The activations stay ordinary
+real-valued units (ReLU, tanh, …); only the *topology* is binary, so capacity is
+power-of-two by construction and packing non-cube data is host work.
+
+You build a stack of local layers, train for classification or regression, and
+save a weight file with a small architecture sidecar so another host can rebuild
+the same network. Optional helpers turn ordinary images into length-N inputs
+without pretending the cube is a pixel grid. Practical demos use a few dozen to
+a few thousand vertices per channel; larger cubes are available when you need
+them.
 
 ## Installation
 
@@ -9,8 +23,8 @@ hypercube topology (`N = 2^DIM` vertices per channel).
 pip install hypercube-cnn
 ```
 
-Pre-built wheels (when published) target Python 3.10–3.13 on Windows (x64),
-Linux (x86_64, aarch64), and macOS (x86_64, arm64). No compiler required.
+Pre-built wheels for Python 3.10–3.13 on Windows (x64), Linux (x86_64,
+aarch64), and macOS (x86_64, arm64). No compiler required.
 
 ### From source
 
@@ -20,7 +34,7 @@ cd HypercubeCNN
 pip install .
 ```
 
-Windows + CLion MinGW (local rebuild):
+Requires Python 3.10+, C++23, CMake ≥ 3.21. Windows + CLion MinGW local rebuild:
 
 ```powershell
 $env:PATH = "C:\Program Files\JetBrains\CLion 2026.1\bin\mingw\bin;C:\Program Files\JetBrains\CLion 2026.1\bin\ninja\win\x64;" + $env:PATH
@@ -57,18 +71,22 @@ net.save("model")  # model.hcnw + model.arch.json
 
 ## Features
 
-- Core `HCNN` train/infer (classification CE, regression MSE)
-- `LayerSpec` / `HCNNConfig` architecture product surface
-- HCNW weights + arch JSON sidecar (C++-interop); pickle as secondary
-- Spatial embed/aug (`SpatialEmbedder`, `SpatialAugmenter`)
-- Metrics: `evaluate_classification` / `evaluate_regression`, `cosine_lr`
-- NumPy float32 integration
+- **Core train/infer** — classification (CE) and regression (MSE); NumPy float32
+- **Architecture product** — `LayerSpec` / `HCNNConfig`, export/import arch JSON
+- **Model I/O** — HCNW weights + arch sidecar (C++ interop); pickle as secondary
+- **Spatial pack** — `SpatialEmbedder` / `SpatialAugmenter` for H×W → length N
+- **Train helpers** — `evaluate_classification` / `evaluate_regression`, `cosine_lr`
+- **Contracts** — capacity `input_channels * 2**dim`; full-capacity inputs after packing
 
 ## Documentation
 
-- Full API: [docs/Python_SDK.md](https://github.com/dliptak001/HypercubeCNN/blob/main/docs/Python_SDK.md)
-- C++ contracts: [docs/CPP_SDK.md](https://github.com/dliptak001/HypercubeCNN/blob/main/docs/CPP_SDK.md)
-- Repo examples: [examples/python/](https://github.com/dliptak001/HypercubeCNN/tree/main/examples/python)
+Full API reference: [docs/Python_SDK.md](https://github.com/dliptak001/HypercubeCNN/blob/main/docs/Python_SDK.md)
+
+C++ contracts: [docs/CPP_SDK.md](https://github.com/dliptak001/HypercubeCNN/blob/main/docs/CPP_SDK.md)
+
+In-repo recipes: [examples/python/](https://github.com/dliptak001/HypercubeCNN/tree/main/examples/python)
+
+Project repository: [github.com/dliptak001/HypercubeCNN](https://github.com/dliptak001/HypercubeCNN)
 
 ## License
 

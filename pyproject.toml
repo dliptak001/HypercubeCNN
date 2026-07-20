@@ -5,7 +5,7 @@ build-backend = "scikit_build_core.build"
 [project]
 name = "hypercube-cnn"
 version = "1.0.0"
-description = "Python bindings for HypercubeCNN: dependency-free hypercube CNN core"
+description = "Python bindings for HypercubeCNN: CNN on Boolean hypercube topology"
 requires-python = ">=3.10"
 dependencies = ["numpy>=1.21"]
 license = "Apache-2.0"
