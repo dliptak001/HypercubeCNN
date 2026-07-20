@@ -293,7 +293,6 @@ struct HCNNConfig {
     int num_outputs = 10;
     int input_channels = 1;
     TaskType task = TaskType::Classification;
-    LossType loss = LossType::Default;
     size_t num_threads = 0;
 
     std::vector<LayerSpec> layers;
@@ -324,7 +323,7 @@ struct HCNNConfig {
         (void)sum;
 
         auto net = std::make_unique<HCNN>(start_dim, num_outputs, input_channels,
-                                          task, loss, num_threads);
+                                          task, num_threads);
         apply_arch(*net, layers);
 
         if (randomize)

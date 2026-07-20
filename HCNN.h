@@ -69,10 +69,10 @@ class HCNN {
 public:
     /// @param num_threads 0 = auto, 1 = single-threaded (no pool workers), N = N workers.
     /// @param start_dim Hypercube dimension in [3, 30].
+    /// @param task_type Classification → CE; Regression → MSE (fixed pairing).
     explicit HCNN(int start_dim, int num_outputs = 10,
                   int input_channels = 1,
                   TaskType task_type = TaskType::Classification,
-                  LossType loss_type = LossType::Default,
                   size_t num_threads = 0);
     ~HCNN();
 
@@ -210,7 +210,6 @@ public:
     size_t GetNumConv() const;
     size_t GetNumPool() const;
     TaskType GetTaskType() const;
-    LossType GetLossType() const;
     OptimizerType GetOptimizerType() const;
     bool WeightsInitialized() const;
 
@@ -240,15 +239,6 @@ public:
     /// Vector overload of SetWeights(const float*, size_t, bool).
     void SetWeights(const std::vector<float>& blob,
                     bool reset_optimizer_moments = false);
-
-    // -----------------------------------------------------------------
-    //  Advanced (research / A-B) — not needed for coursework
-    // -----------------------------------------------------------------
-
-    /// How the FLATTEN head forms grad_in = W^T * grad_logits.  Default
-    /// OutputOuter.  No effect on forward or weight-update math.
-    void SetReadoutGradInLoop(ReadoutGradInLoop loop);
-    ReadoutGradInLoop GetReadoutGradInLoop() const;
 
 private:
     std::unique_ptr<HCNNNetwork> net_;

@@ -29,11 +29,10 @@ void HCNNNetwork::invalidate_cached_buffers() {
 }
 
 HCNNNetwork::HCNNNetwork(int dim, int num_outputs, int input_channels,
-                         TaskType task_type, LossType loss_type,
-                         size_t num_threads)
+                         TaskType task_type, size_t num_threads)
     : start_dim(dim), current_dim(dim), num_outputs(num_outputs),
       input_channels(input_channels),
-      task_type_(task_type), loss_type_(loss_type),
+      task_type_(task_type),
       readout(num_outputs, 1),
       // num_threads: 0 = auto pool, 1 = no background workers (caller-only),
       // N > 1 = N background workers. Single-threaded mode avoids nested
@@ -51,25 +50,7 @@ HCNNNetwork::HCNNNetwork(int dim, int num_outputs, int input_channels,
     if (num_outputs < 1) {
         throw std::runtime_error("HCNNNetwork requires num_outputs >= 1");
     }
-    // Resolve LossType::Default to the natural pairing for the task.
-    if (loss_type_ == LossType::Default) {
-        loss_type_ = (task_type_ == TaskType::Classification)
-                        ? LossType::CrossEntropy
-                        : LossType::MSE;
-    }
-    // Validate loss / task compatibility.
-    if (task_type_ == TaskType::Classification &&
-        loss_type_ != LossType::CrossEntropy) {
-        throw std::runtime_error(
-            "HCNNNetwork: Classification task requires LossType::CrossEntropy "
-            "(or LossType::Default)");
-    }
-    if (task_type_ == TaskType::Regression &&
-        loss_type_ != LossType::MSE) {
-        throw std::runtime_error(
-            "HCNNNetwork: Regression task requires LossType::MSE "
-            "(or LossType::Default)");
-    }
+    // Loss is fixed by task: Classification → softmax CE, Regression → MSE.
     channel_counts.push_back(input_channels);
 }
 
@@ -468,17 +449,10 @@ void HCNNNetwork::train_batch(const float* flat_inputs, int input_length,
 }
 
 // ---------------------------------------------------------------------------
-//  Loss-gradient helpers
+//  Loss-gradient helpers (task-fixed: CE or MSE)
 // ---------------------------------------------------------------------------
 //
-// Both helpers compute dL/d(logits) for a single sample.  They are
-// dispatched on loss_type_ so future loss functions (Huber, L1, focal, ...)
-// can be added by extending the switch with a new case — no changes to
-// train_step / train_batch or the regression counterparts.
-//
-// The readout layer itself is loss-agnostic — it consumes grad_logits as
-// an input and updates weights accordingly, so all loss semantics live
-// here and nowhere else.
+// The readout is loss-agnostic; all loss semantics live here.
 // ---------------------------------------------------------------------------
 
 void HCNNNetwork::compute_classification_grad(const float* logits,
@@ -490,42 +464,29 @@ void HCNNNetwork::compute_classification_grad(const float* logits,
         throw std::logic_error("compute_classification_grad: called on a "
                                "Regression task");
     }
-    switch (loss_type_) {
-    case LossType::CrossEntropy: {
-        // softmax: p[i] = exp(logits[i] - max) / sum(exp(logits[j] - max))
-        // cross-entropy loss: L = -log(p[target_class])
-        // gradient: dL/d(logits[i]) = p[i] - (i == target_class ? 1 : 0)
-        float max_logit = logits[0];
-        for (int i = 1; i < num_outputs; ++i) {
-            if (logits[i] > max_logit) max_logit = logits[i];
-        }
-        float sum_exp = 0.0f;
-        for (int i = 0; i < num_outputs; ++i) {
-            probs_scratch[i] = std::exp(logits[i] - max_logit);
-            sum_exp += probs_scratch[i];
-        }
-        // Pathological all-underflow: fall back to uniform (avoid 0/0).
-        if (!(sum_exp > 0.0f)) {
-            const float inv_k = 1.0f / static_cast<float>(num_outputs);
-            for (int i = 0; i < num_outputs; ++i) probs_scratch[i] = inv_k;
-        } else {
-            for (int i = 0; i < num_outputs; ++i) probs_scratch[i] /= sum_exp;
-        }
-        for (int i = 0; i < num_outputs; ++i) {
-            grad_logits_out[i] = class_weight *
-                (probs_scratch[i] - (i == target_class ? 1.0f : 0.0f));
-        }
-        return;
+    // Softmax + cross-entropy:
+    //   p[i] = exp(logits[i] - max) / sum(exp(...))
+    //   dL/d(logits[i]) = p[i] - 1[i == target]
+    float max_logit = logits[0];
+    for (int i = 1; i < num_outputs; ++i) {
+        if (logits[i] > max_logit) max_logit = logits[i];
     }
-    case LossType::MSE:
-    case LossType::Default:
-        // Default is resolved in the constructor, so reaching it here is
-        // a programmer error (loss_type_ was left in Default state).  MSE
-        // on a classification task is rejected in the constructor.
-        throw std::logic_error("compute_classification_grad: invalid "
-                               "loss_type_ for classification task");
+    float sum_exp = 0.0f;
+    for (int i = 0; i < num_outputs; ++i) {
+        probs_scratch[i] = std::exp(logits[i] - max_logit);
+        sum_exp += probs_scratch[i];
     }
-    throw std::logic_error("compute_classification_grad: unknown loss_type_");
+    // Pathological all-underflow: fall back to uniform (avoid 0/0).
+    if (!(sum_exp > 0.0f)) {
+        const float inv_k = 1.0f / static_cast<float>(num_outputs);
+        for (int i = 0; i < num_outputs; ++i) probs_scratch[i] = inv_k;
+    } else {
+        for (int i = 0; i < num_outputs; ++i) probs_scratch[i] /= sum_exp;
+    }
+    for (int i = 0; i < num_outputs; ++i) {
+        grad_logits_out[i] = class_weight *
+            (probs_scratch[i] - (i == target_class ? 1.0f : 0.0f));
+    }
 }
 
 void HCNNNetwork::compute_regression_grad(const float* logits,
@@ -535,24 +496,11 @@ void HCNNNetwork::compute_regression_grad(const float* logits,
         throw std::logic_error("compute_regression_grad: called on a "
                                "Classification task");
     }
-    switch (loss_type_) {
-    case LossType::MSE: {
-        // Implemented sum-style for a single sample (not mean):
-        //   dL/d(pred[i]) = pred[i] - target[i]
-        // Matches PyTorch reduction='sum' direction; LR absorbs the usual
-        // 2/num_outputs mean-MSE scale. Relative magnitudes across outputs
-        // are what matter for multi-output regression.
-        for (int i = 0; i < num_outputs; ++i) {
-            grad_logits_out[i] = logits[i] - target[i];
-        }
-        return;
+    // Sum-style MSE for one sample: dL/d(pred[i]) = pred[i] - target[i]
+    // (LR absorbs the usual 2/K mean-MSE scale).
+    for (int i = 0; i < num_outputs; ++i) {
+        grad_logits_out[i] = logits[i] - target[i];
     }
-    case LossType::CrossEntropy:
-    case LossType::Default:
-        throw std::logic_error("compute_regression_grad: invalid "
-                               "loss_type_ for regression task");
-    }
-    throw std::logic_error("compute_regression_grad: unknown loss_type_");
 }
 
 // ---------------------------------------------------------------------------

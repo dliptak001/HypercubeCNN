@@ -37,7 +37,6 @@ public:
     HCNNNetwork(int start_dim, int num_outputs = 10,
                 int input_channels = 1,
                 TaskType task_type = TaskType::Classification,
-                LossType loss_type = LossType::Default,
                 size_t num_threads = 0);
     ~HCNNNetwork();
 
@@ -122,7 +121,6 @@ public:
     int get_input_channels() const { return input_channels; }
     int get_num_outputs() const { return num_outputs; }
     TaskType get_task_type() const { return task_type_; }
-    LossType get_loss_type() const { return loss_type_; }
     OptimizerType get_optimizer_type() const { return optimizer_type_; }
 
     /// Zero all layer optimizer moments and reset the Adam timestep to 0.
@@ -157,7 +155,6 @@ private:
     int num_outputs;
     int input_channels;
     TaskType task_type_;
-    LossType loss_type_;
     int adam_timestep_{0};     // Global optimizer timestep (incremented per train_step/train_batch)
     OptimizerType optimizer_type_ = OptimizerType::ADAM;
     float adam_beta1_ = 0.9f, adam_beta2_ = 0.999f, adam_eps_ = 1e-8f;
@@ -243,23 +240,15 @@ private:
                           float learning_rate, float momentum,
                           float weight_decay);
 
-    // Compute dL/d(logits) for a single sample under a classification loss.
-    // `probs_scratch` must point to at least `num_outputs` floats and
-    // receives the softmax of `logits` as a side effect (callers that
-    // care about the softmax, e.g. for loss reporting, can read it).
-    // Dispatches internally on `loss_type_` so future classification
-    // losses (e.g. focal loss) can slot in with no caller change.
-    // Throws std::logic_error if called on a Regression task.
+    // Softmax CE: dL/d(logits).  `probs_scratch` receives softmax as a side
+    // effect.  Throws if task is not Classification.
     void compute_classification_grad(const float* logits, int target_class,
                                      float class_weight,
                                      float* probs_scratch,
                                      float* grad_logits_out) const;
 
-    // Compute dL/d(logits) for a single sample under a regression loss.
-    // `target` is a pointer to `num_outputs` real-valued targets.
-    // Dispatches internally on `loss_type_` so future regression losses
-    // (Huber, L1, ...) can slot in with no caller change.  Throws
-    // std::logic_error if called on a Classification task.
+    // Sum-style MSE: dL/d(pred[i]) = pred[i] - target[i].  Throws if task
+    // is not Regression.
     void compute_regression_grad(const float* logits, const float* target,
                                  float* grad_logits_out) const;
 

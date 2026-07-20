@@ -133,7 +133,7 @@ through both convs into the head.
 
 | Setting | Value | Notes |
 |---------|-------|-------|
-| Task | `TaskType::Regression` | Loss defaults to `LossType::MSE` |
+| Task | `TaskType::Regression` | MSE (fixed by task) |
 | Optimizer | Adam (`SetOptimizer`) | Default betas |
 | `lr_max` / floor | 0.002 / **2e-4** | `lr_min_ratio = 0.1` |
 | LR schedule | `hcnn::cosine_lr(lr_max, lr_min, e, epochs)` | Progress `e/(epochs-1)`; last epoch hits `lr_min` |

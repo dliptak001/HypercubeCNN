@@ -178,15 +178,14 @@ int main() {
 
 | Enum | Values | Role |
 |------|--------|------|
-| `TaskType` | `Classification`, `Regression` | Which train API + default loss |
+| `TaskType` | `Classification`, `Regression` | Train API + fixed loss (CE / MSE) |
 | `Activation` | `NONE`, `RELU`, `LEAKY_RELU`, `TANH` | After conv (+ optional BN) |
 | `PoolType` | `MAX`, `AVG` | Antipodal reduction |
 | `OptimizerType` | `SGD`, `ADAM` | Default **Adam**; override with `SetOptimizer` |
 
-`LossType` (`Default`, `CrossEntropy`, `MSE`) is rarely needed: pass `LossType::Default` (the constructor default) and the task picks CE or MSE. Explicit non-matching pairs throw at construct. Advanced A/B: `ReadoutGradInLoop` (see end of this section).
+Loss is **fixed by task** (no separate loss enum): Classification → softmax CE; Regression → MSE.
 
 Constraints: **`3 ≤ start_dim ≤ 30`**, `num_outputs ≥ 1`, `input_channels ≥ 1`.  
-`Classification` only pairs with CE; `Regression` only with MSE.
 
 ### Construct and build
 
@@ -195,7 +194,6 @@ explicit HCNN(int start_dim,
               int num_outputs = 10,
               int input_channels = 1,
               TaskType task_type = TaskType::Classification,
-              LossType loss_type = LossType::Default,
               size_t num_threads = 0);
 // num_threads: 0 = auto, 1 = no worker pool, N = N workers
 
@@ -289,7 +287,7 @@ Calling the wrong family’s train methods throws `std::logic_error`.
 | `GetStartDim()` / `GetStartN()` / `GetCurrentDim()` | Start DIM, `N`, DIM after pools |
 | `GetInputChannels()` / `GetNumOutputs()` | Buffer sizes |
 | `GetNumConv()` / `GetNumPool()` | Layer counts |
-| `GetTaskType()` / `GetLossType()` / `GetOptimizerType()` | Resolved enums |
+| `GetTaskType()` / `GetOptimizerType()` | Task and optimizer |
 | `WeightsInitialized()` | True after `RandomizeWeights` |
 | `GetWeightCount()` / `GetWeights` / `SetWeights` | Full param blob (vector or `float*` + n; incl. BN when used) |
 
@@ -606,11 +604,8 @@ instrumentation:
 
 Coursework and apps should stay on **`HCNN`** (or `HypercubeCNN.h`).
 
-**Research knob on the facade** (demoted — ignore for teaching):
-
-```cpp
-void SetReadoutGradInLoop(ReadoutGradInLoop loop);  // default OutputOuter
-```
+**Research only (not on `HCNN`):** `HCNNReadout::set_grad_in_loop` selects the
+`grad_in = W^T * g` loop nest (FeatureOuter vs OutputOuter; same math).
 
 How training cores, threading, block-pair kernels, and weight blobs actually work: **[internals.md](internals.md)**.
 

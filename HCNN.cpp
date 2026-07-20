@@ -14,11 +14,9 @@
 namespace hcnn {
 
 HCNN::HCNN(int start_dim, int num_outputs, int input_channels,
-           TaskType task_type, LossType loss_type,
-           size_t num_threads)
+           TaskType task_type, size_t num_threads)
     : net_(std::make_unique<HCNNNetwork>(start_dim, num_outputs, input_channels,
-                                         task_type, loss_type,
-                                         num_threads)) {}
+                                         task_type, num_threads)) {}
 
 HCNN::~HCNN() = default;
 
@@ -47,14 +45,6 @@ void HCNN::SetTraining(bool training) {
 
 void HCNN::SetOptimizer(OptimizerType type, float beta1, float beta2, float eps) {
     net_->set_optimizer(type, beta1, beta2, eps);
-}
-
-void HCNN::SetReadoutGradInLoop(ReadoutGradInLoop loop) {
-    net_->get_readout().set_grad_in_loop(loop);
-}
-
-ReadoutGradInLoop HCNN::GetReadoutGradInLoop() const {
-    return net_->get_readout().get_grad_in_loop();
 }
 
 void HCNN::PrepareBuffers() {
@@ -307,7 +297,6 @@ int HCNN::GetNumOutputs() const     { return net_->get_num_outputs(); }
 size_t HCNN::GetNumConv() const     { return net_->get_num_conv(); }
 size_t HCNN::GetNumPool() const     { return net_->get_num_pool(); }
 TaskType HCNN::GetTaskType() const  { return net_->get_task_type(); }
-LossType HCNN::GetLossType() const  { return net_->get_loss_type(); }
 OptimizerType HCNN::GetOptimizerType() const { return net_->get_optimizer_type(); }
 bool HCNN::WeightsInitialized() const { return net_->weights_initialized(); }
 

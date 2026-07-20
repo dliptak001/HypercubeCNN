@@ -43,7 +43,6 @@ using hcnn::ThreadPool;
 using hcnn::TrainParams;
 using hcnn::PoolType;
 using hcnn::TaskType;
-using hcnn::LossType;
 using hcnn::Activation;
 using hcnn::OptimizerType;
 using hcnn::HCNNSpatialAugConfig;
@@ -906,7 +905,7 @@ static void section_contracts() {
     // Network lifecycle (power-user HCNNNetwork)
     {
         {
-            HCNNNetwork net(5, 4, 1, TaskType::Classification, LossType::Default,
+            HCNNNetwork net(5, 4, 1, TaskType::Classification,
                             /*num_threads=*/1);
             net.add_conv(8);
             net.set_optimizer(OptimizerType::ADAM, 0.9f, 0.999f, 1e-8f);
@@ -923,7 +922,7 @@ static void section_contracts() {
         }
 
         {
-            HCNNNetwork net(5, 4, 1, TaskType::Classification, LossType::Default,
+            HCNNNetwork net(5, 4, 1, TaskType::Classification,
                             /*num_threads=*/1);
             net.add_conv(8);
             net.prepare_all_buffers();
@@ -944,7 +943,7 @@ static void section_contracts() {
         }
 
         {
-            HCNNNetwork net(5, 4, 1, TaskType::Classification, LossType::Default,
+            HCNNNetwork net(5, 4, 1, TaskType::Classification,
                             /*num_threads=*/1);
             net.add_conv(8);
             net.randomize_all_weights(0.0f, 3);
@@ -959,7 +958,7 @@ static void section_contracts() {
         }
 
         {
-            HCNNNetwork net(5, 4, 1, TaskType::Classification, LossType::Default,
+            HCNNNetwork net(5, 4, 1, TaskType::Classification,
                             /*num_threads=*/1);
             net.set_optimizer(OptimizerType::ADAM);
             net.add_conv(8);
@@ -969,7 +968,7 @@ static void section_contracts() {
         }
 
         {
-            HCNNNetwork net(3, 2, 1, TaskType::Classification, LossType::Default,
+            HCNNNetwork net(3, 2, 1, TaskType::Classification,
                             /*num_threads=*/1);
             net.add_conv(4);
             net.add_pool(PoolType::MAX);
@@ -981,18 +980,18 @@ static void section_contracts() {
         }
     }
 
-    // Readout grad_in match (NO microbench)
+    // Readout grad_in A/B (advanced HCNNReadout only — not on HCNN facade)
     {
-        HCNN net(5, 4);
-        net.AddConv(8);
-        check(net.GetReadoutGradInLoop() == ReadoutGradInLoop::OutputOuter,
+        HCNNNetwork net(5, 4, 1, TaskType::Classification, /*num_threads=*/1);
+        net.add_conv(8);
+        check(net.get_readout().get_grad_in_loop() == ReadoutGradInLoop::OutputOuter,
               "default grad_in loop is OutputOuter");
-        net.SetReadoutGradInLoop(ReadoutGradInLoop::FeatureOuter);
-        net.RandomizeWeights(0.0f, 99);
-        check(net.GetReadoutGradInLoop() == ReadoutGradInLoop::FeatureOuter,
-              "SetReadoutGradInLoop survives RandomizeWeights");
-        net.SetReadoutGradInLoop(ReadoutGradInLoop::OutputOuter);
-        check(net.GetReadoutGradInLoop() == ReadoutGradInLoop::OutputOuter,
+        net.get_readout().set_grad_in_loop(ReadoutGradInLoop::FeatureOuter);
+        net.randomize_all_weights(0.0f, 99);
+        check(net.get_readout().get_grad_in_loop() == ReadoutGradInLoop::FeatureOuter,
+              "set_grad_in_loop survives randomize_all_weights");
+        net.get_readout().set_grad_in_loop(ReadoutGradInLoop::OutputOuter);
+        check(net.get_readout().get_grad_in_loop() == ReadoutGradInLoop::OutputOuter,
               "can switch back to OutputOuter");
     }
 
@@ -1066,7 +1065,6 @@ static void section_regression() {
 
         check(net.GetNumOutputs() == 1, "GetNumOutputs() == 1");
         check(net.GetTaskType() == TaskType::Regression, "GetTaskType() == Regression");
-        check(net.GetLossType() == LossType::MSE, "GetLossType() == MSE (default)");
 
         const int N = net.GetStartN();
         const int n_train = 20;
@@ -1197,24 +1195,18 @@ static void section_regression() {
         }
     }
 
-    // Invalid construction
+    // Task construction (loss is fixed by task; no LossType on the API)
     {
-        check(throws([&] {
-            HCNN net(5, 4, 1, TaskType::Classification, LossType::MSE);
-        }), "Classification + MSE throws at construction");
-        check(throws([&] {
-            HCNN net(5, 4, 1, TaskType::Regression, LossType::CrossEntropy);
-        }), "Regression + CrossEntropy throws at construction");
-        {
-            HCNN net(5, 4, 1, TaskType::Regression, LossType::Default);
-            check(net.GetLossType() == LossType::MSE,
-                  "Regression + Default resolves to MSE");
-        }
-        {
-            HCNN net(5, 4, 1, TaskType::Classification, LossType::Default);
-            check(net.GetLossType() == LossType::CrossEntropy,
-                  "Classification + Default resolves to CrossEntropy");
-        }
+        HCNN cls(5, 4, 1, TaskType::Classification);
+        check(cls.GetTaskType() == TaskType::Classification,
+              "Classification ctor sets task");
+        HCNN reg(5, 1, 1, TaskType::Regression);
+        check(reg.GetTaskType() == TaskType::Regression,
+              "Regression ctor sets task");
+        // Positional: num_threads is 5th arg (was 6th when LossType existed)
+        HCNN thr(5, 4, 1, TaskType::Classification, /*num_threads=*/1);
+        check(thr.GetTaskType() == TaskType::Classification,
+              "5-arg ctor with num_threads");
     }
 
     end_section();

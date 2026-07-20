@@ -12,6 +12,17 @@
 namespace hcnn {
 
 /**
+ * Loop nest for `grad_in = W^T * grad_logits` (advanced A/B only).
+ * Same math; different memory traffic.  Default `OutputOuter`.
+ * Not exposed on `HCNN` — set via `HCNNReadout::set_grad_in_loop` when
+ * instrumenting the head directly.
+ */
+enum class ReadoutGradInLoop {
+    FeatureOuter,
+    OutputOuter
+};
+
+/**
  * @class HCNNReadout
  * @brief FLATTEN linear head (advanced / internal).
  *

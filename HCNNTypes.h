@@ -26,25 +26,12 @@ enum class OptimizerType { SGD, ADAM };
 /// Antipodal pool reduction.
 enum class PoolType { MAX, AVG };
 
-/// Task the network is trained for.  Selects train API family and default loss.
+/// Task the network is trained for.  Selects train API family and loss.
 ///
 /// - `Classification`: int class targets; softmax + cross-entropy
 /// - `Regression`: float targets of length `num_outputs`; MSE
+///
+/// Loss is fixed by task (no separate loss enum on the public API).
 enum class TaskType { Classification, Regression };
-
-/// Loss function.  Prefer `Default` (resolved from `TaskType`).
-/// Explicit `CrossEntropy` / `MSE` must match the task or construction throws.
-/// Future losses (Huber, …) can extend this enum without an API break.
-enum class LossType { Default, CrossEntropy, MSE };
-
-/**
- * Loop nest for readout `grad_in = W^T * grad_logits` (advanced A/B knob).
- * Same math; different memory traffic.  Default `OutputOuter`.
- * Ordinary apps never need to set this.
- */
-enum class ReadoutGradInLoop {
-    FeatureOuter,
-    OutputOuter
-};
 
 } // namespace hcnn

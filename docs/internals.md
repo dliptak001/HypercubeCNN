@@ -41,8 +41,9 @@ This page describes **how the core is built**, not how to call it. Public API co
 | `HCNNReadout` | `HCNNReadout.h/cpp` | dense weights + bias + moments |
 | `ThreadPool` | `ThreadPool.h` | worker threads; caller participates as thread 0 |
 
-Public enums live in **`HCNNTypes.h`**: `Activation`, `OptimizerType`, `PoolType`, `TaskType`, `LossType`, `ReadoutGradInLoop`.  
-Default **optimizer is Adam** on `HCNN` / layers.
+Public enums live in **`HCNNTypes.h`**: `Activation`, `OptimizerType`, `PoolType`, `TaskType`.  
+`ReadoutGradInLoop` lives on **`HCNNReadout`** (advanced only; not on `HCNN`).  
+Default **optimizer is Adam**. Loss is fixed by `TaskType` (CE or MSE).
 
 ---
 
@@ -169,7 +170,7 @@ Often dominates total params when pools are few and N is large (MNIST-style demo
 ### 4.1 `grad_in` loop A/B (`ReadoutGradInLoop`)
 
 Backprop into features is `grad_in = W^T * grad_logits`. Two loop nests (same
-math; pick via `HCNN::SetReadoutGradInLoop` or `HCNNReadout::set_grad_in_loop`):
+math; pick via `HCNNReadout::set_grad_in_loop` only — not on the `HCNN` facade):
 
 | Enum | Nest | W access |
 |------|------|----------|
@@ -193,7 +194,7 @@ Public train entry points are thin wrappers:
 | `train_step_regression` | `train_step_impl` | regression lambda |
 | `train_batch_regression` | `train_batch_impl` | regression lambda per sample |
 
-Shared cores own forward → loss grad → backward → weight update. Adding a loss is a new `LossType` case in `compute_classification_grad` / `compute_regression_grad`, not a new train path.
+Shared cores own forward → loss grad → backward → weight update. Classification uses softmax CE; regression uses sum-style MSE. A new loss would be a new task path or an explicit extension of those two helpers — not a public `LossType` enum.
 
 **Classification CE grad** (after stable softmax):  
 `dL/d logits[i] = class_weight * (p[i] - 1[i==target])`.
