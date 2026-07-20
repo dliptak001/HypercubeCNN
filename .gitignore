@@ -34,3 +34,10 @@ Testing/
 # MNIST IDX files (download separately, see examples/mnist_train.md)
 data/*.ubyte
 data/*-ubyte
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+
