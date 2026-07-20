@@ -251,11 +251,14 @@ static void train_and_evaluate(const char* name, hcnn::HCNN& net,
         const unsigned aug_seed =
             cfg.aug_seed_base + static_cast<unsigned>(epoch) * cfg.aug_seed_stride;
         fill_spatial_dataset(train_raw, train_ds, emb, train_aug, aug_seed);
-        net.TrainEpoch(train_ds.inputs.data(), train_ds.input_length,
-                       train_ds.targets.data(), train_ds.count, cfg.batch_size,
-                       current_lr, cfg.momentum, cfg.weight_decay,
-                       /*class_weights=*/nullptr,
-                       /*shuffle_seed=*/static_cast<unsigned>(epoch + 1));
+        // Full-capacity view (length N): typed path cannot zero-pad over pad_value.
+        hcnn::TrainParams tp;
+        tp.learning_rate = current_lr;
+        tp.momentum = cfg.momentum;
+        tp.weight_decay = cfg.weight_decay;
+        tp.shuffle_seed = static_cast<unsigned>(epoch + 1);
+        net.TrainEpoch(train_ds.input_view(), train_ds.targets.data(),
+                       cfg.batch_size, tp);
         auto t1 = std::chrono::steady_clock::now();
         const double secs = std::chrono::duration<double>(t1 - t0).count();
         const double samples_per_s =

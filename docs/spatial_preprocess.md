@@ -41,22 +41,30 @@ small.
 
 ### Caller contracts (important)
 
-1. **Train / infer with `input_length = emb.capacity()` (= N).**  
-   Spatial embed always fills a full length-N buffer (including pad).
+1. **Prefer full-capacity typed inputs** (`HCNNInputView` / `HCNNInputBatch` in
+   `HCNNInput.h`). After spatial embed, use:
+   - `pack_spatial` / `pack_spatial_batch`, or
+   - `HCNNFlatDataset::input_view()` when `input_length == N`,  
+   then `net.TrainEpoch(view, labels, batch, params)`.
 
-2. **Do not pass `pattern_length < N` into `HCNN::Embed` / Train* if you used a
+2. **Train / infer with `input_length = emb.capacity()` (= N)** if you still use
+   raw pointers. Spatial embed always fills a full length-N buffer (including pad).
+
+3. **Do not pass `pattern_length < N` into `HCNN::Embed` / raw Train* if you used a
    non-zero `pad_value`.**  
    Network `Embed` always zero-pads the tail to capacity. That **overwrites**
-   spatial-embed padding (e.g. -1) with **0**. Either:
-   - pass `input_length = N` after spatial embed (recommended), or  
-   - use `pad_value = 0` if you intentionally pass a short buffer into HCNN Embed.
+   spatial-embed padding (e.g. -1) with **0**. Typed overloads reject capacity
+   mismatch; raw APIs still allow short length for intentional zero-pad.
 
-3. **Aug then embed** (not embed then aug on the packed vector). Aug is 2D only.
+4. **Intentional short + zero pad** (native cube data): use
+   `HCNNInputBatch::from_short_zero_pad` so the pad policy is explicit.
 
-4. **DualPlane / digit-like data:** set `pad_value` to background (e.g. **-1**),
+5. **Aug then embed** (not embed then aug on the packed vector). Aug is 2D only.
+
+6. **DualPlane / digit-like data:** set `pad_value` to background (e.g. **-1**),
    not the default 0 — bilinear OOB and unused vertices use `pad_value`.
 
-5. **`input_channels = 1`** for this helper. Multi-channel packing is custom.
+7. **`input_channels = 1`** for this helper. Multi-channel packing is custom.
 
 ---
 
@@ -175,17 +183,20 @@ ecfg.pad_value = -1.f;
 hcnn::HCNNSpatialEmbedder emb(ecfg);
 
 const int H = 28, W = 28;
-const int N = emb.capacity();           // 2048
 auto plan = emb.plan(H, W);             // plane_side=32, pattern_length=2048
 
-std::vector<float> work(H * W), packed(N);
+std::vector<float> work(H * W);
 std::mt19937 rng(seed);
 aug.apply(src28, work.data(), H, W, rng);
-emb.embed(work.data(), H, W, packed.data());
 
-// 3) Network — always input_length = N (= emb.capacity()), not a short P
+// 3) Full-capacity pack (pad_value preserved on unused verts)
+auto packed = hcnn::pack_spatial(emb, work.data(), H, W);
+// packed.capacity() == emb.capacity() (== N)
+
+// 4) Network — typed path (recommended)
 hcnn::HCNN net(ecfg.dim, /*num_outputs=*/10, /*input_channels=*/1);
-// net.TrainEpoch(packed.data(), N, ...);
+// net.TrainStep(packed.view(), label, params);
+// or: net.TrainEpoch(ds.input_view(), labels, batch, params);
 ```
 
 ### Planning without embedding

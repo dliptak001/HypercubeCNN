@@ -4,6 +4,7 @@
 #pragma once
 
 #include "HCNNTypes.h"
+#include "HCNNInput.h"
 
 #include <memory>
 #include <vector>
@@ -62,6 +63,8 @@ struct TrainParams {
 ///
 /// **Contiguous data model.**  Batch/epoch methods take row-major
 /// `const float*` bases + uniform `input_length`.
+/// Prefer **`HCNNInputView` / `HCNNInputBatch`** (full capacity per sample)
+/// after spatial embed so short `input_length` cannot wipe non-zero pad.
 ///
 /// **Non-copyable, non-movable** (live thread pool).  Use
 /// `std::unique_ptr<HCNN>` if ownership must transfer.
@@ -127,14 +130,23 @@ public:
     /// with other calls on this instance).
     void Predict(const float* raw_input, int input_length, float* outputs) const;
 
+    /// Full-capacity single sample (`in.count() == 1`).  See HCNNInput.h.
+    void Predict(HCNNInputView in, float* outputs) const;
+
     /// Classification only: Embed + Forward + argmax.  Throws logic_error
     /// on Regression nets.
     [[nodiscard]] int PredictClass(const float* raw_input, int input_length) const;
+
+    /// Full-capacity single sample (`in.count() == 1`).
+    [[nodiscard]] int PredictClass(HCNNInputView in) const;
 
     /// Batch inference (parallel).  `flat_inputs`: batch_size * input_length;
     /// `logits_out`: batch_size * GetNumOutputs().
     void ForwardBatch(const float* flat_inputs, int input_length,
                       int batch_size, float* logits_out);
+
+    /// Full-capacity batch; `logits_out` holds count * GetNumOutputs().
+    void ForwardBatch(HCNNInputView in, float* logits_out);
 
     // -----------------------------------------------------------------
     //  Training — classification (positional; keep for compatibility)
@@ -168,6 +180,13 @@ public:
                     const int* targets, int sample_count, int batch_size,
                     const TrainParams& params);
 
+    // Full-capacity typed overloads (preferred after spatial embed)
+    void TrainStep(HCNNInputView in, int target_class, const TrainParams& params);
+    void TrainBatch(HCNNInputView in, const int* targets, int batch_size,
+                    const TrainParams& params);
+    void TrainEpoch(HCNNInputView in, const int* targets, int batch_size,
+                    const TrainParams& params);
+
     // -----------------------------------------------------------------
     //  Training — regression
     // -----------------------------------------------------------------
@@ -198,6 +217,13 @@ public:
                               const float* flat_targets,
                               int sample_count, int batch_size,
                               const TrainParams& params);
+
+    void TrainStepRegression(HCNNInputView in, const float* target,
+                             const TrainParams& params);
+    void TrainBatchRegression(HCNNInputView in, const float* flat_targets,
+                              int batch_size, const TrainParams& params);
+    void TrainEpochRegression(HCNNInputView in, const float* flat_targets,
+                              int batch_size, const TrainParams& params);
 
     // -----------------------------------------------------------------
     //  Sizing accessors
@@ -254,6 +280,8 @@ private:
 
     void require_weights_initialized_(const char* api) const;
     void ensure_predict_buffers_() const;
+    /// capacity must equal GetInputChannels() * GetStartN().
+    void require_input_view_(HCNNInputView in, const char* api) const;
 
     template <typename GatherTargets, typename TrainChunk>
     void train_epoch_impl_(const float* flat_inputs, int input_length,

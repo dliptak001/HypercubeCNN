@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include "HCNNInput.h"
+
 #include <cstddef>
 
 namespace hcnn {
@@ -164,5 +166,26 @@ private:
 
     int resolve_plane_side(int N) const;
 };
+
+/**
+ * Embed a batch of HxW images into a full-capacity HCNNInputBatch
+ * (`capacity() == N = 2^dim`).  Prefer this over manual embed + short length
+ * so Train/Predict typed overloads cannot zero-pad over spatial pad_value.
+ */
+inline HCNNInputBatch pack_spatial_batch(const HCNNSpatialEmbedder& emb,
+                                         const float* images, int batch,
+                                         int height, int width) {
+    HCNNInputBatch out;
+    out.reset(batch, emb.capacity());
+    if (batch > 0)
+        emb.embed_batch(images, batch, height, width, out.data());
+    return out;
+}
+
+/// Single image → full-capacity batch with count == 1.
+inline HCNNInputBatch pack_spatial(const HCNNSpatialEmbedder& emb,
+                                   const float* image, int height, int width) {
+    return pack_spatial_batch(emb, image, /*batch=*/1, height, width);
+}
 
 } // namespace hcnn

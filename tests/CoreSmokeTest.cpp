@@ -60,6 +60,8 @@ using hcnn::evaluate_regression;
 using hcnn::cosine_lr;
 using hcnn::save_weights;
 using hcnn::load_weights;
+using hcnn::HCNNInputView;
+using hcnn::HCNNInputBatch;
 
 // ---------------------------------------------------------------------------
 //  Reporting
@@ -1800,6 +1802,73 @@ static void section_train_helpers() {
               "load_weights rejects arch mismatch");
 
         std::remove(path);
+    }
+
+    // Full-capacity HCNNInput (smell 6 — pad contract)
+    {
+        HCNN net(6, 2);
+        net.AddConv(4);
+        net.RandomizeWeights(/*scale=*/0.0f, /*seed=*/3);
+        const int N = net.GetStartN();  // capacity for c_in=1
+
+        // Short raw → explicit zero-pad factory
+        std::vector<float> short_in(8, 0.5f);
+        auto batch = HCNNInputBatch::from_short_zero_pad(
+            short_in.data(), /*count=*/1, /*input_length=*/8, N);
+        check(batch.capacity() == N && batch.count() == 1,
+              "from_short_zero_pad sizes to capacity");
+        check(batch.sample(0)[0] == 0.5f && batch.sample(0)[8] == 0.0f,
+              "from_short_zero_pad zeros tail");
+
+        std::vector<float> out(2);
+        net.Predict(batch.view(), out.data());
+        check(all_finite(out.data(), 2), "Predict(HCNNInputView) finite");
+
+        // Capacity mismatch rejected
+        auto wrong = HCNNInputView::from_full(batch.data(), 1, N / 2);
+        check(throws([&] { net.Predict(wrong, out.data()); }),
+              "Predict rejects capacity != network");
+
+        // Spatial pad_value survives full-capacity path; short Embed wipes it
+        HCNNSpatialEmbedConfig cfg;
+        cfg.dim = 6;
+        cfg.mode = HCNNSpatialEmbedMode::RowMajorPad;
+        cfg.pad_value = -1.0f;
+        HCNNSpatialEmbedder emb(cfg);
+        std::vector<float> img(4 * 4, 0.25f);
+        auto packed = hcnn::pack_spatial(emb, img.data(), 4, 4);
+        check(packed.capacity() == emb.capacity(), "pack_spatial capacity == N");
+        check(packed.sample(0)[16] == -1.0f, "pack_spatial keeps pad_value");
+
+        // Typed train uses full N — pad intact through embed (copy of full buffer)
+        TrainParams tp;
+        tp.learning_rate = 0.01f;
+        int lab = 0;
+        bool step_ok = true;
+        try {
+            net.TrainStep(packed.view(), lab, tp);
+        } catch (const std::exception&) {
+            step_ok = false;
+        }
+        check(step_ok, "TrainStep(HCNNInputView) runs");
+
+        // FlatDataset input_view
+        HCNNFlatDataset ds;
+        ds.reset(2, N);
+        std::fill(ds.inputs.begin(), ds.inputs.end(), 0.1f);
+        ds.targets[0] = 0;
+        ds.targets[1] = 1;
+        bool epoch_ok = true;
+        try {
+            net.TrainEpoch(ds.input_view(), ds.targets.data(), /*batch=*/2, tp);
+        } catch (const std::exception&) {
+            epoch_ok = false;
+        }
+        check(epoch_ok, "TrainEpoch(input_view) runs");
+
+        check(throws([&] {
+            (void)HCNNInputBatch::adopt(std::vector<float>(3), 1, N);
+        }), "adopt rejects wrong size");
     }
 
     end_section();

@@ -64,6 +64,7 @@ out[co, v] = bias[co]
     HypercubeCNN.h         # umbrella — core + arch + helpers + spatial
     HCNN.h                 # front door (core only)
     HCNNTypes.h            # public enums
+    HCNNInput.h            # full-capacity HCNNInputView / HCNNInputBatch
     HCNNArch.h             # LayerSpec, apply_arch, HCNNConfig::Build
     HCNNSpatialAug.h       # optional 2D aug (not part of the graph)
     HCNNSpatialEmbed.h     # optional 2D → length-N pack
@@ -582,7 +583,7 @@ See [`spatial_preprocess.md`](spatial_preprocess.md) and `examples/mnist_train.c
 | Forgot `RandomizeWeights` | Readout not sized; weights zero / unusable |
 | Softmax in `Forward` | Don’t; use logits + `argmax` / CE helper |
 | Wrong train family for `TaskType` | `logic_error` — match Classification vs Regression APIs |
-| Short `input_length` after spatial pad −1 | Use `input_length = N` |
+| Short `input_length` after spatial pad −1 | Use `HCNNInputView` / `input_length = N` |
 | Expect neighborhood pool | Only **antipodal** pool exists today |
 | `K = DIM` in param math | **`K = DIM + 1`** (self + neighbors) |
 | Resume train from checkpoint blob | Weights + BN stats when present; **not** optimizer moments — use `SetWeights(blob, true)` or `SetOptimizer` |

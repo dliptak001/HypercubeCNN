@@ -104,6 +104,41 @@ void HCNN::ForwardBatch(const float* flat_inputs, int input_length,
     net_->forward_batch(flat_inputs, input_length, batch_size, logits_out);
 }
 
+void HCNN::require_input_view_(HCNNInputView in, const char* api) const {
+    const int cap = net_->get_input_channels() * net_->get_start_N();
+    try {
+        in.require_capacity(cap);
+    } catch (const std::invalid_argument& e) {
+        throw std::invalid_argument(std::string(api) + ": " + e.what());
+    }
+}
+
+void HCNN::Predict(HCNNInputView in, float* outputs) const {
+    require_input_view_(in, "HCNN::Predict");
+    if (in.count() != 1) {
+        throw std::invalid_argument(
+            "HCNN::Predict(HCNNInputView): count must be 1 (use ForwardBatch)");
+    }
+    Predict(in.sample(0), in.capacity(), outputs);
+}
+
+int HCNN::PredictClass(HCNNInputView in) const {
+    require_input_view_(in, "HCNN::PredictClass");
+    if (in.count() != 1) {
+        throw std::invalid_argument(
+            "HCNN::PredictClass(HCNNInputView): count must be 1");
+    }
+    return PredictClass(in.sample(0), in.capacity());
+}
+
+void HCNN::ForwardBatch(HCNNInputView in, float* logits_out) {
+    require_input_view_(in, "HCNN::ForwardBatch");
+    if (logits_out == nullptr && in.count() > 0) {
+        throw std::invalid_argument("HCNN::ForwardBatch: logits_out is null");
+    }
+    ForwardBatch(in.data(), in.capacity(), in.count(), logits_out);
+}
+
 // ---------------------------------------------------------------------------
 //  Training — classification
 // ---------------------------------------------------------------------------
@@ -215,6 +250,38 @@ void HCNN::TrainEpoch(const float* flat_inputs, int input_length,
                params.class_weights, params.shuffle_seed);
 }
 
+void HCNN::TrainStep(HCNNInputView in, int target_class,
+                     const TrainParams& params) {
+    require_input_view_(in, "HCNN::TrainStep");
+    if (in.count() != 1) {
+        throw std::invalid_argument(
+            "HCNN::TrainStep(HCNNInputView): count must be 1 (use TrainBatch/Epoch)");
+    }
+    TrainStep(in.sample(0), in.capacity(), target_class, params);
+}
+
+void HCNN::TrainBatch(HCNNInputView in, const int* targets, int batch_size,
+                      const TrainParams& params) {
+    require_input_view_(in, "HCNN::TrainBatch");
+    if (batch_size != in.count()) {
+        throw std::invalid_argument(
+            "HCNN::TrainBatch(HCNNInputView): batch_size must equal in.count()");
+    }
+    if (targets == nullptr && in.count() > 0) {
+        throw std::invalid_argument("HCNN::TrainBatch: targets is null");
+    }
+    TrainBatch(in.data(), in.capacity(), targets, batch_size, params);
+}
+
+void HCNN::TrainEpoch(HCNNInputView in, const int* targets, int batch_size,
+                      const TrainParams& params) {
+    require_input_view_(in, "HCNN::TrainEpoch");
+    if (targets == nullptr && in.count() > 0) {
+        throw std::invalid_argument("HCNN::TrainEpoch: targets is null");
+    }
+    TrainEpoch(in.data(), in.capacity(), targets, in.count(), batch_size, params);
+}
+
 // ---------------------------------------------------------------------------
 //  Training — regression
 // ---------------------------------------------------------------------------
@@ -284,6 +351,35 @@ void HCNN::TrainEpochRegression(const float* flat_inputs, int input_length,
     TrainEpochRegression(flat_inputs, input_length, flat_targets, sample_count,
                          batch_size, params.learning_rate, params.momentum,
                          params.weight_decay, params.shuffle_seed);
+}
+
+void HCNN::TrainStepRegression(HCNNInputView in, const float* target,
+                               const TrainParams& params) {
+    require_input_view_(in, "HCNN::TrainStepRegression");
+    if (in.count() != 1) {
+        throw std::invalid_argument(
+            "HCNN::TrainStepRegression(HCNNInputView): count must be 1");
+    }
+    TrainStepRegression(in.sample(0), in.capacity(), target, params);
+}
+
+void HCNN::TrainBatchRegression(HCNNInputView in, const float* flat_targets,
+                                int batch_size, const TrainParams& params) {
+    require_input_view_(in, "HCNN::TrainBatchRegression");
+    if (batch_size != in.count()) {
+        throw std::invalid_argument(
+            "HCNN::TrainBatchRegression(HCNNInputView): batch_size must equal "
+            "in.count()");
+    }
+    TrainBatchRegression(in.data(), in.capacity(), flat_targets, batch_size,
+                         params);
+}
+
+void HCNN::TrainEpochRegression(HCNNInputView in, const float* flat_targets,
+                                int batch_size, const TrainParams& params) {
+    require_input_view_(in, "HCNN::TrainEpochRegression");
+    TrainEpochRegression(in.data(), in.capacity(), flat_targets, in.count(),
+                         batch_size, params);
 }
 
 // ---------------------------------------------------------------------------

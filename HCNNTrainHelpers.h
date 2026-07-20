@@ -116,6 +116,15 @@ struct HCNNFlatDataset {
         return float_targets.data()
             + static_cast<size_t>(i) * static_cast<size_t>(num_outputs);
     }
+
+    /**
+     * Full-capacity view of `inputs` for typed HCNN overloads.
+     * Requires `input_length` to already be the network capacity (e.g. N after
+     * spatial embed).  Does not copy.
+     */
+    [[nodiscard]] HCNNInputView input_view() const {
+        return HCNNInputView::from_full(inputs.data(), count, input_length);
+    }
 };
 
 /// Convenience overload for HCNNFlatDataset (uses `targets`).

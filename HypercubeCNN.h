@@ -8,7 +8,7 @@
  * @brief Umbrella include for the full teaching-oriented SDK surface.
  *
  * Pulls in:
- *   - `HCNN.h`              — core train / infer front door
+ *   - `HCNN.h` / `HCNNInput.h` — core front door + full-capacity input types
  *   - `HCNNArch.h`          — LayerSpec, apply_arch, HCNNConfig::Build
  *   - `HCNNTrainHelpers.h`  — metrics, cosine LR, checkpoints, flat dataset
  *   - `HCNNSpatialAug.h`    — optional 2D augmentation
