@@ -1,6 +1,6 @@
 # HypercubeCNN — Implementation notes
 
-**Audience:** contributors, power users, and anyone debugging training or performance.  
+**Audience:** contributors and anyone debugging training or performance.  
 **Not** the first document for new users — start with [README.md](../README.md) and [CPP_SDK.md](CPP_SDK.md).
 
 This page describes **how the core is built**, not how to call it. Public API contracts live in the SDK guide; when this file and a header disagree, **the header and `.cpp` win**.
@@ -8,23 +8,31 @@ This page describes **how the core is built**, not how to call it. Public API co
 | | |
 |--|--|
 | Library | `HypercubeCNNCore` (C++23, CMake ≥ 3.21) |
-| Front door | `hcnn::HCNN` |
-| Orchestrator | `hcnn::HCNNNetwork` (owned by `HCNN`) |
+| Front door (only app API) | `hcnn::HCNN` |
+| Orchestrator (private) | `hcnn::HCNNNetwork` (owned by `HCNN`, not installed) |
 | Version (CMake) | 0.2.0 |
+
+### Boundary policy (public vs private)
+
+1. **Hard private** — `HCNNNetwork`, `HCNNConv`, `HCNNPool`, `HCNNReadout`, and `ThreadPool` headers are **never installed**. Only `HCNN.cpp` and in-tree tests include them (`BUILD_INTERFACE` include path).
+2. **Not a second SDK** — do not write applications against Network/layers. Smoke may exercise them as implementation contracts.
+3. **Features land on `HCNN` first** — Network/layers gain only what the facade needs; no parallel public knobs on the private types.
+
+`HCNN` is a `friend` of `HCNNNetwork` (sole public owner). Optional later: shrink Network by moving logic into `HCNN.cpp` without changing the public surface.
 
 ---
 
 ## 1. Module graph
 
 ```text
-  Public install:  HypercubeCNN.h / HCNN.h / HCNNTypes.h / HCNNArch.h
-                   + TrainHelpers + Spatial*
+  Public install:  HypercubeCNN.h / HCNN.h / HCNNTypes.h / HCNNInput.h
+                   / HCNNArch.h + TrainHelpers + Spatial*
                          │
                          ▼
                     HCNN  (public, PIMPL)
                       │
                       ▼
-                 HCNNNetwork          ← source-tree / advanced only
+                 HCNNNetwork          ← private (source-tree + tests only)
            ┌──────────┼──────────┐
            ▼          ▼          ▼
        HCNNConv   HCNNPool   HCNNReadout
@@ -42,7 +50,7 @@ This page describes **how the core is built**, not how to call it. Public API co
 | `ThreadPool` | `ThreadPool.h` | worker threads; caller participates as thread 0 |
 
 Public enums live in **`HCNNTypes.h`**: `Activation`, `OptimizerType`, `PoolType`, `TaskType`.  
-`ReadoutGradInLoop` lives on **`HCNNReadout`** (advanced only; not on `HCNN`).  
+`ReadoutGradInLoop` lives on **`HCNNReadout`** (private; not on `HCNN`).  
 Default **optimizer is Adam**. Loss is fixed by `TaskType` (CE or MSE).
 
 ---

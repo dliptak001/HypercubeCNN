@@ -14,10 +14,10 @@ class ThreadPool;
 
 /**
  * @class HCNNPool
- * @brief Antipodal pooling layer (advanced / internal).
+ * @brief Antipodal pooling layer — private implementation.
  *
- * Ordinary SDK consumers should use `HCNN::AddPool`.  This header is for
- * tests and custom loops.
+ * Not installed.  Use `HCNN::AddPool` from application code.  In-tree tests
+ * may include this header.
  *
  * Pairs each vertex `v` with its complement `v ^ (2^DIM - 1)` and reduces
  * DIM by 1 (MAX or AVG).  Stateless — no learnable parameters.

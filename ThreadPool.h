@@ -50,8 +50,9 @@ namespace hcnn {
  * dangling functor references).
  *
  * Header-only, no dependencies beyond `<thread>` / `<mutex>` / `<atomic>`.
- * Internal utility (not part of the public teaching install).  In-tree tests
- * and the network orchestrator use it; ordinary apps never include this.
+ *
+ * Private implementation — not installed.  Used by HCNNNetwork and in-tree
+ * tests only.  Application code must not include this header.
  */
 class ThreadPool
 {

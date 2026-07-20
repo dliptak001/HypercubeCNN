@@ -62,8 +62,9 @@ else()
 endif()
 
 # ——— Static library: core pipeline ———
-# Public install surface (teaching SDK).  Layer/orchestrator headers remain
-# in the source tree for in-tree tests and advanced use but are not installed.
+# Installed SDK surface only (apps / FetchContent / find_package).
+# NEVER install: HCNNNetwork, HCNNConv, HCNNPool, HCNNReadout, ThreadPool
+# (private implementation; BUILD_INTERFACE include path for in-tree tests).
 set(HCNN_PUBLIC_HEADERS
     HCNN.h
     HCNNTypes.h

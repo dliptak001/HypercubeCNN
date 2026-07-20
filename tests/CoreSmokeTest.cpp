@@ -3,11 +3,12 @@
 //
 // CoreSmokeTest — fast HCNN SDK smoke suite.
 //
-// Exercises the public facade (HCNN / HypercubeCNN.h) plus advanced surfaces
-// that ordinary demos never touch (included explicitly — not via HCNN.h):
-//   - HCNNConv self-tap math and BN bn_save contract
-//   - HCNNNetwork lifecycle (optimizer/prepare/pool floor)
-//   - HCNNReadout FeatureOuter vs OutputOuter grad_in match (no microbench)
+// Primary: public facade (HCNN / HypercubeCNN.h) — the only app-facing API.
+// Secondary: private implementation contracts (in-tree only; headers not
+// installed).  These are not a second SDK for applications:
+//   - HCNNConv self-tap math and BN bn_save
+//   - HCNNNetwork lifecycle (optimizer / prepare / pool floor)
+//   - HCNNReadout FeatureOuter vs OutputOuter grad_in match
 //   - ThreadPool / HCNNPool dim guards
 //
 // Goal: well under 1s on Release. Prefer short train drops (30–40 steps,
@@ -15,8 +16,8 @@
 // variants.
 
 #include "HypercubeCNN.h"   // public umbrella
-#include "HCNNConv.h"       // advanced (self-tap / BN contracts)
-#include "HCNNNetwork.h"    // advanced (lifecycle)
+#include "HCNNConv.h"       // private impl (in-tree tests only)
+#include "HCNNNetwork.h"    // private impl (in-tree tests only)
 #include "HCNNPool.h"
 #include "HCNNReadout.h"
 #include "ThreadPool.h"
@@ -904,7 +905,7 @@ static void section_contracts() {
         }), "Embed: over-capacity input length throws");
     }
 
-    // Network lifecycle (power-user HCNNNetwork)
+    // Network lifecycle (private HCNNNetwork — in-tree only)
     {
         {
             HCNNNetwork net(5, 4, 1, TaskType::Classification,

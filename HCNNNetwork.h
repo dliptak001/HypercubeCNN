@@ -3,6 +3,17 @@
 
 #pragma once
 
+// =============================================================================
+// PRIVATE IMPLEMENTATION — not part of the installed SDK.
+//
+// Boundary policy:
+//   1. This header (and Conv/Pool/Readout/ThreadPool) is never installed.
+//      Only HCNN.cpp and in-tree tests include it.
+//   2. Not a second public API.  Apps use hcnn::HCNN only.
+//   3. User-facing features land on HCNN first; this class gains only what
+//      the facade needs (no parallel public knobs).
+// =============================================================================
+
 #include "HCNNTypes.h"
 #include "HCNNConv.h"
 #include "HCNNPool.h"
@@ -15,21 +26,22 @@
 namespace hcnn {
 
 class ThreadPool;
+class HCNN;  // sole public owner (PIMPL)
 
 /**
  * @class HCNNNetwork
- * @brief Internal pipeline orchestrator (advanced / not part of the public
- *        teaching surface).
+ * @brief Private pipeline orchestrator owned by `HCNN` (PIMPL).
  *
- * Owned by `HCNN` via PIMPL.  Ordinary apps should use `HCNN` only.
- * Include this header only for tests, custom training loops, or layer
- * instrumentation.
+ * Not installed.  Not for application code.  In-tree tests may include this
+ * header to exercise lifecycle / layer contracts.
  *
  * Owns conv/pool stacks, FLATTEN readout, ThreadPool, and train/infer scratch.
  * Non-copyable, non-movable (live worker threads).  Instance is exclusive-use:
  * host must not call concurrently on the same network.
  */
 class HCNNNetwork {
+    friend class HCNN;
+
 public:
     /// @param num_threads 0 = auto pool, 1 = single-threaded (no workers),
     ///        N > 1 = N background workers. See HCNN constructor.

@@ -153,7 +153,7 @@ HCNNInput.h                Full-capacity HCNNInputView / Batch (spatial-safe)
 HCNNArch.h                 LayerSpec, apply_arch, HCNNConfig::Build
 HCNNTrainHelpers.*         Metrics, flat dataset, cosine LR, checkpoints, weight files
 HCNNSpatial*               Optional 2D aug + embed (images)
-HCNNNetwork / Conv / …     Advanced / internal (not in install public set)
+HCNNNetwork / Conv / …     Private impl (not installed; not for apps)
 examples/                  Teaching demos (+ demo_arch.h shim)
 tests/CoreSmokeTest.cpp    Smoke tests for the public API
 docs/CPP_SDK.md            Canonical SDK guide

@@ -12,10 +12,9 @@
 namespace hcnn {
 
 /**
- * Loop nest for `grad_in = W^T * grad_logits` (advanced A/B only).
+ * Loop nest for `grad_in = W^T * grad_logits` (private A/B only).
  * Same math; different memory traffic.  Default `OutputOuter`.
- * Not exposed on `HCNN` — set via `HCNNReadout::set_grad_in_loop` when
- * instrumenting the head directly.
+ * Not on `HCNN` — tests may call `set_grad_in_loop` on this class.
  */
 enum class ReadoutGradInLoop {
     FeatureOuter,
@@ -24,10 +23,10 @@ enum class ReadoutGradInLoop {
 
 /**
  * @class HCNNReadout
- * @brief FLATTEN linear head (advanced / internal).
+ * @brief FLATTEN linear head — private implementation.
  *
- * Ordinary SDK consumers should use `HCNN`.  Features = c_final * N_final;
- * outputs are raw linear (no softmax).  Owns weights, bias, optimizer moments.
+ * Not installed.  Owned by `HCNNNetwork` / `HCNN`.  Features = c_final * N_final;
+ * raw linear outputs (no softmax).
  *
  * Two backward paths: `backward()` (in-place step) and
  * `compute_gradients()` + `apply_gradients()` (batch accumulate).

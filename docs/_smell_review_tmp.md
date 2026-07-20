@@ -35,10 +35,14 @@ Public API is PascalCase (`AddConv`, `TrainEpoch`). Internals remain snake_case 
 
 **Type:** combinatorial API growth.
 
-### 3. `HCNNNetwork` is still a second full orchestrator API — **open**
-PIMPL on `HCNN` is good, but Network remains a large class with its own full train path. Facade is thin forwarding — new features risk dual implementation drift.
+### 3. `HCNNNetwork` is still a second full orchestrator API — **done** (boundary, not blend)
+Kept two-type PIMPL. Tightened boundary:
+1. **Hard private** — Network/layers/ThreadPool never installed (`HCNN_PUBLIC_HEADERS` only).
+2. **Not a second SDK** — docs + smoke framed as private impl / in-tree tests only.
+3. **Policy** — features land on `HCNN` first; Network only what facade needs.
+`friend class HCNN` on Network. Optional later: shrink Network into `HCNN.cpp`.
 
-**Type:** thin facade over fat twin.
+**Type:** thin facade over fat twin (boundary fixed; merge not desired).
 
 ### 4. Version / release story lags the work — **open**
 CMake/docs still **v0.2.0** after a large public-API arc (Predict, TrainParams, Arch, FlatDataset, save/load, Adam default, install surface, LossType removal). Branch was ~30+ commits ahead of origin when reviewed.
@@ -129,7 +133,7 @@ Smell is not the split — it’s that **value still flows through both**.
 | Priority | Action | Status |
 |----------|--------|--------|
 | 1 | Cut a release — bump 0.3.0, tag, push, align docs | **open** |
-| 2 | Harden public boundary — Network/layers non-API forever | **open** |
+| 2 | Harden public boundary — Network/layers non-API forever | **done** |
 | 3 | One train-entry design — `TrainParams` in demos; deprecate long positional later | **open** |
 | 4 | Typed length-N input or spatial→Train helper (pad footgun) | **done** (option C) |
 | 5 | Complement smoke with opt-in numerical/grad or golden test | **open** |

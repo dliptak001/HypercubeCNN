@@ -17,8 +17,8 @@
  * Prefer this single include for demos and coursework.  Minimal apps that
  * only need the graph can `#include "HCNN.h"` alone.
  *
- * Layer headers (`HCNNNetwork`, `HCNNConv`, `HCNNPool`, `HCNNReadout`,
- * `ThreadPool`) are **not** included here — they are advanced / internal.
+ * Private implementation headers (`HCNNNetwork`, layers, `ThreadPool`) are
+ * **not** included and **not** installed — apps never need them.
  */
 
 #include "HCNN.h"

@@ -11,7 +11,7 @@
 
 namespace hcnn {
 
-class HCNNNetwork;  // internal orchestrator — not part of the public surface
+class HCNNNetwork;  // private PIMPL (not installed; not for apps)
 
 /// @brief Bundle of common train-call knobs (learning rate, regularization, shuffle).
 ///
@@ -42,8 +42,8 @@ struct TrainParams {
 /// regression.
 ///
 /// **Include this header** (or the umbrella `HypercubeCNN.h`) for ordinary
-/// use.  Layer types (`HCNNNetwork`, `HCNNConv`, …) live in separate headers
-/// for advanced instrumentation only — they are not required here.
+/// use.  `HCNNNetwork` and layer headers are **private** (not installed);
+/// application code should never include them.
 ///
 /// Build incrementally with AddConv()/AddPool(), then RandomizeWeights():
 ///

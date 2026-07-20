@@ -593,22 +593,30 @@ See [`spatial_preprocess.md`](spatial_preprocess.md) and `examples/mnist_train.c
 
 ---
 
-## 13. Advanced / internal surfaces (optional)
+## 13. Private implementation (not installed — not an app API)
 
-The installed SDK is **`HCNN` + types + helpers + spatial**.  In the source
-tree (not the install public set), advanced headers exist for tests and
-instrumentation:
+The **installed** SDK is only:
 
-- `HCNNNetwork` — orchestrator behind the PIMPL
-- `HCNNConv` / `HCNNPool` / `HCNNReadout` — layer implementations
-- `ThreadPool` — non-reentrant fork-join
+`HCNN.h`, `HCNNTypes.h`, `HCNNInput.h`, `HCNNArch.h`, `HypercubeCNN.h`,
+spatial headers, `HCNNTrainHelpers.h`.
 
-Coursework and apps should stay on **`HCNN`** (or `HypercubeCNN.h`).
+These exist **only** in the source tree (for `HCNN.cpp` and in-tree tests):
 
-**Research only (not on `HCNN`):** `HCNNReadout::set_grad_in_loop` selects the
-`grad_in = W^T * g` loop nest (FeatureOuter vs OutputOuter; same math).
+| Header | Role |
+|--------|------|
+| `HCNNNetwork` | PIMPL orchestrator behind `HCNN` |
+| `HCNNConv` / `HCNNPool` / `HCNNReadout` | Layer implementations |
+| `ThreadPool` | Non-reentrant fork-join |
 
-How training cores, threading, block-pair kernels, and weight blobs actually work: **[internals.md](internals.md)**.
+**Boundary policy:**
+
+1. **Hard private** — never install the headers above; apps never include them.
+2. **Not a second SDK** — do not build applications against Network/layers.
+3. **Features land on `HCNN` first** — Network gains only what the facade needs.
+
+Coursework and apps use **`HCNN`** or **`HypercubeCNN.h`** only.
+
+How the private core is built: **[internals.md](internals.md)**.
 
 ---
 

@@ -7,8 +7,7 @@
  * @file HCNNTypes.h
  * @brief Public enums for the HypercubeCNN SDK front door.
  *
- * Included by `HCNN.h`.  Ordinary apps should not need layer headers
- * (`HCNNNetwork`, `HCNNConv`, …) — those are advanced / internal surfaces.
+ * Included by `HCNN.h`.  Layer/orchestrator headers are private (not installed).
  */
 
 namespace hcnn {

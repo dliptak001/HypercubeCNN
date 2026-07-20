@@ -42,10 +42,10 @@ class ThreadPool;
 
 /**
  * @class HCNNConv
- * @brief One hypercube convolutional layer (advanced / internal).
+ * @brief One hypercube convolutional layer — private implementation.
  *
- * Ordinary SDK consumers should use `HCNN`, which builds and owns conv layers.
- * This header is for tests, instrumentation, and custom training loops.
+ * Not installed.  Owned by `HCNNNetwork` / `HCNN`.  Application code must not
+ * include this header; in-tree tests may.  New user-facing knobs go on `HCNN`.
  *
  * Maps c_in → c_out channels on a DIM-cube with K = DIM + 1 taps (self +
  * one-bit XOR neighbors).  Layout: channel-major `data[c * N + v]`.
