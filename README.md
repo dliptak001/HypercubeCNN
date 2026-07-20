@@ -21,9 +21,6 @@ stencil table to store. Activations stay ordinary **floats**; only the
 *topology* is binary. Ships as the static library **`HypercubeCNNCore`**. Also
 used beside [HypercubeHopfield](https://github.com/dliptak001/HypercubeHopfield).
 
-**Examples stay examples. Helpers stay optional. Neither is the product’s reason
-for existing** — the core (`HCNN`) is.
-
 ---
 
 ## What is HypercubeCNN?
