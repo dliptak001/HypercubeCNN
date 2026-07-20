@@ -265,7 +265,7 @@ Both use **`EvalModeGuard`**: force BN eval for the call, restore prior train fl
 
 ### 5.6 Epoch + shuffle (`HCNN`)
 
-`TrainEpoch` / `TrainEpochRegression` chunk into `TrainBatch*`:
+`TrainEpoch` (int labels or float targets) chunks into `TrainBatch*`:
 
 | `shuffle_seed` | Behavior |
 |----------------|----------|

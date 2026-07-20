@@ -269,18 +269,21 @@ void TrainEpoch(const float* flat_inputs, int input_length,
 - `shuffle_seed == 0`: sequential, zero-copy slices. Nonzero: deterministic shuffle (use a new seed each epoch, e.g. `epoch + 1`).
 - **You pass `lr` every call** (or via `TrainParams`) — HCNN does not own a schedule (use `hcnn::cosine_lr` if desired).
 
-### Training — regression
-
-Construct with `TaskType::Regression`. Targets: `float` vectors of length `GetNumOutputs()`.
+### Training — one vocabulary (classif vs regress by target type)
 
 ```cpp
-void TrainStepRegression(..., const TrainParams& p);
-void TrainBatchRegression(...);   // flat_targets: batch * num_outputs
-void TrainEpochRegression(...);   // flat_targets: samples * num_outputs
-// + positional overloads
+// Classification: int / const int*
+net.TrainEpoch(x, len, int_labels, n, batch, params);
+
+// Regression: const float* (num_outputs per sample)
+net.TrainEpoch(x, len, float_targets, n, batch, params);
+
+// Same for TrainStep / TrainBatch; HCNNInputView overloads; SetTrainDefaults.
+// Wrong TaskType → std::logic_error.
 ```
 
-Calling the wrong family’s train methods throws `std::logic_error`.
+Compatibility aliases (prefer unified names): `TrainStepRegression` /
+`TrainBatchRegression` / `TrainEpochRegression` forward to the `float*` overloads.
 
 **Regression tips (from the teaching demo):** center targets on the **train** mean; Adam is already the default; mix activations as needed (demo often uses RELU then TANH); full-N FLATTEN without pool keeps vertex identity (useful for reservoir-like inputs).
 
@@ -413,7 +416,7 @@ HCNNBestMetricCheckpoint best;
 for (int e = 0; e < epochs; ++e) {
     tp.learning_rate = cosine_lr(lr_max, lr_min, e, epochs);
     tp.shuffle_seed  = static_cast<unsigned>(e + 1);
-    net.TrainEpochRegression(train_x, N, train_t, n_train, batch, tp);
+    net.TrainEpoch(train_x, N, train_t, n_train, batch, tp);  // float* targets
     auto r = evaluate_regression(net, test_x, N, test_t, n_test);
     best.observe(net, static_cast<float>(r.mse), e + 1);
 }
@@ -529,8 +532,8 @@ auto r = evaluate_classification(net, ds);
 HCNNFlatDataset reg;
 reg.reset_regression(n, input_length, /*num_outputs=*/1);
 // fill reg.sample_input(i) and reg.sample_float_target(i)[0..]
-net.TrainEpochRegression(reg.inputs.data(), reg.input_length,
-                         reg.float_targets.data(), reg.count, batch, tp);
+net.TrainEpoch(reg.inputs.data(), reg.input_length,
+               reg.float_targets.data(), reg.count, batch, tp);
 auto re = evaluate_regression(net, reg);
 ```
 

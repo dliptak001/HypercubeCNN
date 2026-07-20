@@ -8,14 +8,14 @@
 //
 // Pipeline:
 //   synthetic reservoir states  ->  flat float buffers
-//   TrainEpochRegression + cosine_lr + evaluate_regression (MSE / R^2)
+//   TrainEpoch(float targets) + cosine_lr + evaluate_regression (MSE / R^2)
 //   HCNNBestMetricCheckpoint (best test MSE)
 //
 // Developer knobs: DemoConfig below (same flavor as mnist_train.cpp).
 // Architecture scaffolding: examples/demo_arch.h
 //
 // What this demo proves
-//   - Regression API (TaskType::Regression, MSE, TrainEpochRegression)
+//   - Regression API (TaskType::Regression, MSE, TrainEpoch with float*)
 //   - Mixed activations + full-N FLATTEN at DIM=10 (N=1024)
 //   - Train-loop hygiene: cosine LR, target centering, best-MSE restore
 //
@@ -86,7 +86,7 @@ struct DemoConfig {
     float lr_min_ratio = 0.1f;    // lr_min = lr_max * ratio
     int batch_size = 32;
     float weight_decay = 0.0f;
-    float momentum = 0.0f;        // Adam; kept for TrainEpochRegression API
+    float momentum = 0.0f;        // Adam; kept for TrainParams / train API
 
     // ----- Logging -----
     int log_first_epochs = 5;
@@ -312,11 +312,11 @@ int main() {
         const float lr = hcnn::cosine_lr(lr_max, lr_min, e, cfg.epochs);
 
         auto t0 = std::chrono::steady_clock::now();
-        net.TrainEpochRegression(train_flat.inputs.data(), train_flat.input_length,
-                                 train_flat.float_targets.data(),
-                                 train_flat.count, cfg.batch_size,
-                                 lr, cfg.momentum, cfg.weight_decay,
-                                 /*shuffle_seed=*/static_cast<unsigned>(e + 1));
+        net.TrainEpoch(train_flat.inputs.data(), train_flat.input_length,
+                       train_flat.float_targets.data(),
+                       train_flat.count, cfg.batch_size,
+                       lr, cfg.momentum, cfg.weight_decay,
+                       /*shuffle_seed=*/static_cast<unsigned>(e + 1));
         auto t1 = std::chrono::steady_clock::now();
         const double secs = std::chrono::duration<double>(t1 - t0).count();
         const double samples_per_s =

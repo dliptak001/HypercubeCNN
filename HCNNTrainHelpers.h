@@ -251,7 +251,7 @@ public:
             net_->SetTrainDefaults(params_);
     }
 
-    // Classification
+    // Classification (int labels)
     void train_epoch(HCNNInputView in, const int* targets, int batch_size,
                      int epoch_0based) {
         prepare_epoch(epoch_0based);
@@ -262,26 +262,33 @@ public:
                      int epoch_0based) {
         if (!ds.has_class_targets()) {
             throw std::invalid_argument(
-                "HCNNTrainer::train_epoch: dataset has no class targets");
+                "HCNNTrainer::train_epoch: dataset has no class targets "
+                "(use train_epoch with float targets / reset_regression)");
         }
         train_epoch(ds.input_view(), ds.targets.data(), batch_size, epoch_0based);
     }
 
-    // Regression
-    void train_epoch_regression(HCNNInputView in, const float* flat_targets,
-                                int batch_size, int epoch_0based) {
+    // Regression (float targets) — same train_epoch name
+    void train_epoch(HCNNInputView in, const float* flat_targets, int batch_size,
+                     int epoch_0based) {
         prepare_epoch(epoch_0based);
-        net_->TrainEpochRegression(in, flat_targets, batch_size, params_);
+        net_->TrainEpoch(in, flat_targets, batch_size, params_);
     }
 
+    /// Alias for regression FlatDataset (has float_targets).
     void train_epoch_regression(const HCNNFlatDataset& ds, int batch_size,
                                 int epoch_0based) {
         if (!ds.has_float_targets()) {
             throw std::invalid_argument(
                 "HCNNTrainer::train_epoch_regression: dataset has no float_targets");
         }
-        train_epoch_regression(ds.input_view(), ds.float_targets.data(),
-                               batch_size, epoch_0based);
+        train_epoch(ds.input_view(), ds.float_targets.data(), batch_size,
+                    epoch_0based);
+    }
+
+    void train_epoch_regression(HCNNInputView in, const float* flat_targets,
+                                int batch_size, int epoch_0based) {
+        train_epoch(in, flat_targets, batch_size, epoch_0based);
     }
 
 private:

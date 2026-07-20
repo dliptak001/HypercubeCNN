@@ -11,7 +11,7 @@ Matches the binary banner (`Proves:` / `Does not:`):
 
 | Proves | Does **not** prove |
 |--------|---------------------|
-| Regression API (`TrainEpochRegression`, MSE) | Real HypercubeRC / ESN dynamics |
+| Regression API (`TrainEpoch` with float targets, MSE) | Real HypercubeESN readout dynamics |
 | RELU/TANH + full-N FLATTEN at DIM=10 | Hard multi-step / chaotic forecasting |
 | Cosine LR, target centering, best-MSE restore | Production RC skill |
 | Thin teaching loop aligned with `mnist_train` | That near-perfect R² transfers off this sine task |
@@ -34,7 +34,7 @@ public **`HCNNArch.h`** (demo still includes thin `examples/demo_arch.h` aliases
 - **`HCNNArch.h`** (via `demo_arch.h` aliases): `LayerSpec` / `ArchLayer`, `summarize_arch`, `print_arch`, `apply_arch`
 - `hcnn::HCNN` with `TaskType::Regression` (default loss MSE)
 - Param count checked against `HCNN::GetWeightCount()` at startup
-- Contiguous `TrainEpochRegression` + `hcnn::evaluate_regression` (MSE / R²)
+- Contiguous `TrainEpoch` (float targets) + `hcnn::evaluate_regression` (MSE / R²)
 - `hcnn::cosine_lr` and **`HCNNBestMetricCheckpoint`** (minimize test MSE)
 - Target centering (train-set mean subtracted from train **and** test targets)
 - Default DIM=10 (N=1024; **19,137** parameters)
@@ -154,7 +154,7 @@ through both convs into the head.
 
 On **every** epoch (logged or not):
 
-1. `TrainEpochRegression` on the centered train set
+1. `TrainEpoch` (float targets) on the centered train set
 2. `evaluate_regression` on the **test** set
 3. `best_mse.observe(net, test_mse, epoch)` for the best-MSE snapshot
 

@@ -30,10 +30,13 @@ Public API is PascalCase (`AddConv`, `TrainEpoch`). Internals remain snake_case 
 
 **Type:** soft public/private boundary (by design).
 
-### 2. Classification vs regression still doubles the train surface — **open**
-`TrainStep` / `TrainBatch` / `TrainEpoch` × regression twins (plus positional and `TrainParams` overloads). Correct and explicit, but API surface is large. Wrong family is mitigated by throws.
+### 2. Classification vs regression still doubles the train surface — **done**
+Unified vocabulary: `TrainStep` / `TrainBatch` / `TrainEpoch` overload by target
+type (`int`/`const int*` vs `const float*`). Same for TrainParams, defaults, and
+`HCNNInputView`. `Train*Regression` kept as thin aliases for transition (e.g.
+HypercubeESN re-vendor). Wrong task still throws.
 
-**Type:** combinatorial API growth.
+**Type:** combinatorial API growth (names unified; overload styles remain).
 
 ### 3. `HCNNNetwork` is still a second full orchestrator API — **done** (boundary, not blend)
 Kept two-type PIMPL. Tightened boundary:

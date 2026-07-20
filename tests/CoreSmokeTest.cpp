@@ -1053,7 +1053,7 @@ static void section_regression() {
         TrainParams p;
         p.learning_rate = 0.05f;
         float t = 0.25f;
-        net.TrainStepRegression(x.data(), N, &t, p);
+        net.TrainStep(x.data(), N, &t, p);  // float* target → regression
         check(std::isfinite(y[0]), "TrainParams regression step ok");
     }
 
@@ -1084,27 +1084,31 @@ static void section_regression() {
 
         for (int step = 0; step < 40; ++step) {
             int i = step % n_train;
-            net.TrainStepRegression(inputs[i].data(), N, &targets[i],
-                                    /*lr=*/0.05f, /*momentum=*/0.9f);
+            net.TrainStep(inputs[i].data(), N, &targets[i],
+                          /*lr=*/0.05f, /*momentum=*/0.9f);
         }
         double mse_after_step = mse_over_samples(net, inputs, targets, embedded, preds);
         check(mse_after_step < mse_before,
-              "TrainStepRegression: MSE decreased ("
+              "TrainStep(float*): MSE decreased ("
               + std::to_string(mse_before) + " -> "
               + std::to_string(mse_after_step) + ")");
 
-        net.TrainBatchRegression(flat_inputs.data(), N, targets.data(), n_train,
-                                 /*lr=*/0.05f, /*momentum=*/0.9f);
+        net.TrainBatch(flat_inputs.data(), N, targets.data(), n_train,
+                       /*lr=*/0.05f, /*momentum=*/0.9f);
         double mse_batch = mse_over_samples(net, inputs, targets, embedded, preds);
-        check(std::isfinite(mse_batch), "TrainBatchRegression: MSE finite");
+        check(std::isfinite(mse_batch), "TrainBatch(float*): MSE finite");
 
-        net.TrainEpochRegression(flat_inputs.data(), N, targets.data(),
-                                 n_train, /*batch_size=*/10,
-                                 /*lr=*/0.05f, /*momentum=*/0.9f,
-                                 /*weight_decay=*/1e-4f, /*shuffle_seed=*/1u);
+        net.TrainEpoch(flat_inputs.data(), N, targets.data(),
+                       n_train, /*batch_size=*/10,
+                       /*lr=*/0.05f, /*momentum=*/0.9f,
+                       /*weight_decay=*/1e-4f, /*shuffle_seed=*/1u);
         double mse_epoch = mse_over_samples(net, inputs, targets, embedded, preds);
-        check(std::isfinite(mse_epoch), "TrainEpochRegression: MSE finite");
+        check(std::isfinite(mse_epoch), "TrainEpoch(float*): MSE finite");
         check(all_finite(preds.data(), num_outputs), "regression preds finite");
+        net.TrainEpochRegression(flat_inputs.data(), N, targets.data(),
+                                 n_train, 10, 0.01f);
+        check(std::isfinite(mse_over_samples(net, inputs, targets, embedded, preds)),
+              "TrainEpochRegression alias still works");
     }
 
     // Multi-output shorter
@@ -1158,10 +1162,10 @@ static void section_regression() {
 
         double mse_before = mean_mse();
         for (int e = 0; e < 3; ++e)
-            net.TrainEpochRegression(flat_inputs.data(), N, flat_targets.data(),
-                                     n_train, /*batch_size=*/8, /*lr=*/0.05f,
-                                     /*momentum=*/0.9f, /*wd=*/0.0f,
-                                     /*shuffle_seed=*/static_cast<unsigned>(e + 1));
+            net.TrainEpoch(flat_inputs.data(), N, flat_targets.data(),
+                           n_train, /*batch_size=*/8, /*lr=*/0.05f,
+                           /*momentum=*/0.9f, /*wd=*/0.0f,
+                           /*shuffle_seed=*/static_cast<unsigned>(e + 1));
         double mse_after = mean_mse();
         check(std::isfinite(mse_after), "multi-output MSE finite");
         check(mse_after < mse_before,
@@ -1191,11 +1195,14 @@ static void section_regression() {
             std::vector<float> input(N, 0.1f);
             std::vector<float> target(2, 0.0f);
             check(throws([&] {
-                net.TrainStepRegression(input.data(), N, target.data(), 0.01f);
-            }), "TrainStepRegression on Classification net throws logic_error");
+                net.TrainStep(input.data(), N, target.data(), 0.01f);
+            }), "TrainStep(float*) on Classification net throws logic_error");
             check(throws([&] {
-                net.TrainBatchRegression(input.data(), N, target.data(), 1, 0.01f);
-            }), "TrainBatchRegression on Classification net throws logic_error");
+                net.TrainBatch(input.data(), N, target.data(), 1, 0.01f);
+            }), "TrainBatch(float*) on Classification net throws logic_error");
+            check(throws([&] {
+                net.TrainStepRegression(input.data(), N, target.data(), 0.01f);
+            }), "TrainStepRegression alias still throws on Classification");
         }
     }
 
@@ -1707,8 +1714,8 @@ static void section_train_helpers() {
         HCNNBestMetricCheckpoint best;
         check(best.observe(net, static_cast<float>(r0.mse), 1),
               "best-metric first observe is best");
-        net.TrainEpochRegression(inputs.data(), N, targets.data(), n,
-                                 /*batch=*/8, /*lr=*/0.05f);
+        net.TrainEpoch(inputs.data(), N, targets.data(), n,
+                       /*batch=*/8, /*lr=*/0.05f);
         auto r1 = evaluate_regression(net, inputs.data(), N, targets.data(), n);
         best.observe(net, static_cast<float>(r1.mse), 2);
         best.restore(net);
@@ -1743,10 +1750,10 @@ static void section_train_helpers() {
 
         TrainParams p;
         p.learning_rate = 0.05f;
-        net.TrainEpochRegression(ds.inputs.data(), ds.input_length,
-                                 ds.float_targets.data(), ds.count, 4, p);
+        net.TrainEpoch(ds.inputs.data(), ds.input_length,
+                       ds.float_targets.data(), ds.count, 4, p);
         check(std::isfinite(evaluate_regression(net, ds).mse),
-              "TrainEpochRegression from FlatDataset buffers");
+              "TrainEpoch(float*) from FlatDataset buffers");
     }
 
     // Pointer Get/SetWeights + versioned save/load

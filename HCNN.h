@@ -154,19 +154,34 @@ public:
     void ForwardBatch(HCNNInputView in, float* logits_out);
 
     // -----------------------------------------------------------------
-    //  Training — classification (positional; keep for compatibility)
+    //  Training — one vocabulary; overload by target type
     // -----------------------------------------------------------------
+    // Classification: int / const int* class indices; TaskType::Classification
+    // Regression:     const float* targets (num_outputs per sample);
+    //                 TaskType::Regression
+    // Wrong task → std::logic_error.
+    //
+    // Prefer TrainParams or SetTrainDefaults + no-param overloads.
+    // Prefer HCNNInputView after spatial pack (full capacity).
 
+    // --- Positional ---
     void TrainStep(const float* raw_input, int input_length, int target_class,
                    float learning_rate, float momentum = 0.0f,
                    float weight_decay = 0.0f,
                    const float* class_weights = nullptr);
+    void TrainStep(const float* raw_input, int input_length,
+                   const float* target, float learning_rate,
+                   float momentum = 0.0f, float weight_decay = 0.0f);
 
     void TrainBatch(const float* flat_inputs, int input_length,
                     const int* targets, int batch_size,
                     float learning_rate, float momentum = 0.0f,
                     float weight_decay = 0.0f,
                     const float* class_weights = nullptr);
+    void TrainBatch(const float* flat_inputs, int input_length,
+                    const float* flat_targets, int batch_size,
+                    float learning_rate, float momentum = 0.0f,
+                    float weight_decay = 0.0f);
 
     void TrainEpoch(const float* flat_inputs, int input_length,
                     const int* targets, int sample_count, int batch_size,
@@ -174,49 +189,76 @@ public:
                     float weight_decay = 0.0f,
                     const float* class_weights = nullptr,
                     unsigned shuffle_seed = 0);
+    void TrainEpoch(const float* flat_inputs, int input_length,
+                    const float* flat_targets, int sample_count, int batch_size,
+                    float learning_rate, float momentum = 0.0f,
+                    float weight_decay = 0.0f,
+                    unsigned shuffle_seed = 0);
 
-    // TrainParams overloads (preferred for new code)
+    // --- TrainParams ---
     void TrainStep(const float* raw_input, int input_length, int target_class,
                    const TrainParams& params);
+    void TrainStep(const float* raw_input, int input_length,
+                   const float* target, const TrainParams& params);
     void TrainBatch(const float* flat_inputs, int input_length,
                     const int* targets, int batch_size,
+                    const TrainParams& params);
+    void TrainBatch(const float* flat_inputs, int input_length,
+                    const float* flat_targets, int batch_size,
                     const TrainParams& params);
     void TrainEpoch(const float* flat_inputs, int input_length,
                     const int* targets, int sample_count, int batch_size,
                     const TrainParams& params);
+    void TrainEpoch(const float* flat_inputs, int input_length,
+                    const float* flat_targets, int sample_count, int batch_size,
+                    const TrainParams& params);
 
-    // Use GetTrainDefaults() (session knobs)
+    // --- Session defaults (GetTrainDefaults) ---
     void TrainStep(const float* raw_input, int input_length, int target_class);
+    void TrainStep(const float* raw_input, int input_length,
+                   const float* target);
     void TrainBatch(const float* flat_inputs, int input_length,
                     const int* targets, int batch_size);
+    void TrainBatch(const float* flat_inputs, int input_length,
+                    const float* flat_targets, int batch_size);
     void TrainEpoch(const float* flat_inputs, int input_length,
                     const int* targets, int sample_count, int batch_size);
+    void TrainEpoch(const float* flat_inputs, int input_length,
+                    const float* flat_targets, int sample_count, int batch_size);
 
-    // Full-capacity typed overloads (preferred after spatial embed)
+    // --- Full-capacity HCNNInputView ---
     void TrainStep(HCNNInputView in, int target_class, const TrainParams& params);
+    void TrainStep(HCNNInputView in, const float* target,
+                   const TrainParams& params);
     void TrainBatch(HCNNInputView in, const int* targets, int batch_size,
+                    const TrainParams& params);
+    void TrainBatch(HCNNInputView in, const float* flat_targets, int batch_size,
                     const TrainParams& params);
     void TrainEpoch(HCNNInputView in, const int* targets, int batch_size,
                     const TrainParams& params);
+    void TrainEpoch(HCNNInputView in, const float* flat_targets, int batch_size,
+                    const TrainParams& params);
 
     void TrainStep(HCNNInputView in, int target_class);
+    void TrainStep(HCNNInputView in, const float* target);
     void TrainBatch(HCNNInputView in, const int* targets, int batch_size);
+    void TrainBatch(HCNNInputView in, const float* flat_targets, int batch_size);
     void TrainEpoch(HCNNInputView in, const int* targets, int batch_size);
+    void TrainEpoch(HCNNInputView in, const float* flat_targets, int batch_size);
 
     // -----------------------------------------------------------------
-    //  Training — regression
+    //  Compatibility aliases → same as Train*(…, const float* targets, …)
+    //  Prefer the unified names for new code.
     // -----------------------------------------------------------------
 
     void TrainStepRegression(const float* raw_input, int input_length,
                              const float* target, float learning_rate,
                              float momentum = 0.0f,
                              float weight_decay = 0.0f);
-
     void TrainBatchRegression(const float* flat_inputs, int input_length,
                               const float* flat_targets, int batch_size,
                               float learning_rate, float momentum = 0.0f,
                               float weight_decay = 0.0f);
-
     void TrainEpochRegression(const float* flat_inputs, int input_length,
                               const float* flat_targets,
                               int sample_count, int batch_size,
