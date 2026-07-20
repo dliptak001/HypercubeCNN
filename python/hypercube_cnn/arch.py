@@ -229,9 +229,17 @@ def summarize_arch(
 
 
 def apply_arch(net: "HCNN", layers: Sequence[LayerSpec]) -> ArchParamSummary:
-    """Append ``layers`` onto ``net`` (typically empty body). Validates first."""
+    """Append ``layers`` onto ``net``. Validates the **full** stack first.
+
+    Unlike a naive summarize of only the new layers (which assumes an empty
+    body at ``net.dim``), this accounts for layers already on ``net`` so the
+    returned :class:`ArchParamSummary` matches ``weight_count`` after
+    ``randomize_weights``. Prefer applying onto an empty body for clarity.
+    """
+    layers = layers_from_iterable(layers)
+    combined = list(net.layers) + list(layers)
     summary = summarize_arch(
-        net.dim, net.num_outputs, net.input_channels, layers
+        net.dim, net.num_outputs, net.input_channels, combined
     )
     for L in layers:
         if L.kind == "conv":

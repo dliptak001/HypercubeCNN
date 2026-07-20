@@ -90,11 +90,42 @@ class TestInferTrain:
         assert pred.shape == (2,)
 
 
+class TestSessionDefaults:
+    def test_set_train_defaults_honored_when_params_none(self):
+        """Zero LR via set_train_defaults must freeze weights on train_step."""
+        net = hc.HCNNConfig(
+            dim=5,
+            num_outputs=2,
+            num_threads=1,
+            layers=[hc.LayerSpec.conv(4)],
+            weight_seed=1,
+        ).build()
+        x = np.zeros(net.N, dtype=np.float32)
+        x[0] = 1.0
+        w0 = net.get_weights().copy()
+        net.set_train_defaults(hc.TrainParams(learning_rate=0.0))
+        net.train_step(x, target=0, params=None)
+        np.testing.assert_array_equal(w0, net.get_weights())
+
+
 class TestArchAndWeights:
     def test_summarize_matches_weight_count(self, tiny_cls):
         net, _ = tiny_cls
         s = hc.summarize_arch(net.dim, net.num_outputs, net.input_channels, net.layers)
         assert s.total == net.weight_count
+
+    def test_apply_layers_incremental_summary(self):
+        """apply_layers on a non-empty body must summarize the full stack."""
+        net = hc.HCNN(dim=5, num_outputs=2, num_threads=1)
+        net.add_conv(4)
+        net.add_pool()
+        summary = net.apply_layers([hc.LayerSpec.conv(8)])
+        net.randomize_weights(seed=1)
+        assert summary.total == net.weight_count
+        full = hc.summarize_arch(
+            net.dim, net.num_outputs, net.input_channels, net.layers
+        )
+        assert summary.total == full.total
 
     def test_export_from_arch_set_weights(self, tiny_cls):
         net, _ = tiny_cls

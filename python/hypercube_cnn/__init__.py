@@ -147,6 +147,9 @@ class HCNN:
         )
         # Recorded for export_arch / arch sidecar (not stored in C++ weights).
         self._layers: List[LayerSpec] = []
+        # Python-side session defaults (bindings always pass explicit TrainParams
+        # fields; keep a copy so train_* honor set_train_defaults when params=None).
+        self._train_defaults = TrainParams()
 
     # ── Architecture ──
 
@@ -281,11 +284,23 @@ class HCNN:
         self._impl.set_optimizer(opt, float(beta1), float(beta2), float(eps))
 
     def set_train_defaults(self, params: TrainParams) -> None:
-        """Session defaults for train calls that omit ``params``."""
+        """Session defaults for train calls that omit ``params``.
+
+        Stores a copy on this instance (including optional ``class_weights``)
+        and mirrors the numeric fields into the C++ session defaults.
+        """
         if not isinstance(params, TrainParams):
             raise TypeError("params must be TrainParams")
-        # class_weights on defaults are not stored via this thin binding path;
-        # pass them per-call when needed.
+        cw = None
+        if params.class_weights is not None:
+            cw = _to_float32(np.ravel(params.class_weights)).copy()
+        self._train_defaults = TrainParams(
+            learning_rate=float(params.learning_rate),
+            momentum=float(params.momentum),
+            weight_decay=float(params.weight_decay),
+            shuffle_seed=int(params.shuffle_seed),
+            class_weights=cw,
+        )
         self._impl.set_train_defaults(
             float(params.learning_rate),
             float(params.momentum),
@@ -341,16 +356,15 @@ class HCNN:
     # ── Training ──
 
     def _params_fields(self, params: Optional[TrainParams]):
-        if params is None:
-            return 1e-3, 0.0, 0.0, 0, None
+        p = self._train_defaults if params is None else params
         cw = None
-        if params.class_weights is not None:
-            cw = _to_float32(np.ravel(params.class_weights))
+        if p.class_weights is not None:
+            cw = _to_float32(np.ravel(p.class_weights))
         return (
-            float(params.learning_rate),
-            float(params.momentum),
-            float(params.weight_decay),
-            int(params.shuffle_seed),
+            float(p.learning_rate),
+            float(p.momentum),
+            float(p.weight_decay),
+            int(p.shuffle_seed),
             cw,
         )
 
