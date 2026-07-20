@@ -160,7 +160,7 @@ docs/CPP_SDK.md            Canonical SDK guide
 docs/internals.md          Implementation depth (contributors)
 ```
 
-CMake library target: **`HypercubeCNNCore`**. Optional targets: `MNISTTrain`, `RegressionTimeseries`, `CoreSmokeTest`, `HypercubeCNN` (quick runner).
+CMake library target: **`HypercubeCNNCore`**. Optional targets: `MNISTTrain`, `RegressionTimeseries`, `CoreSmokeTest`.
 
 ---
 

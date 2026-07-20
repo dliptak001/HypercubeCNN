@@ -77,8 +77,10 @@ Explicit `TrainParams` / positional APIs remain. Optimizer type still via `SetOp
 
 ## Medium smells
 
-### 8. Flat root layout — **open**
-Core `.h/.cpp` at repo root next to examples/tests/docs. Fine for small lib; scales poorly. No `include/` / `src/` split.
+### 8. Flat root layout — **won't fix**
+Core `.h/.cpp` at repo root next to examples/tests/docs. Accepted: install already separates public headers; source-tree split is cosmetic churn (ESN re-vendor cost) with no API/behavior win at current size. Revisit only with a packaging overhaul or multi-target split.
+
+**Type:** source aesthetics / scale hygiene.
 
 ### 9. Optional modules vs one static lib — **open**
 Spatial + train helpers + arch are “optional by include” but always linked into `HypercubeCNNCore`.
@@ -92,8 +94,8 @@ Removed from `HCNN`. `ReadoutGradInLoop` lives on `HCNNReadout` only (advanced /
 ### 12. Demo vs product config duplication — **open**
 Demos keep fat `DemoConfig` + local loops; SDK has `HCNNConfig` / `TrainParams` / helpers but demos don’t fully live on that stack.
 
-### 13. `main.cpp` “quick check” vs CoreSmokeTest — **open**
-Redundant path; version banner and default-optimizer narrative can drift.
+### 13. `main.cpp` “quick check” vs CoreSmokeTest — **done**
+Removed `main.cpp` and the `HypercubeCNN` exe target. **CoreSmokeTest** is the sole in-tree smoke path (CTest `smoke`).
 
 ### 14. Weight file format is host-float endian — **open** (intentional-ish)
 Ints LE; floats host IEEE. Fine for coursework on x86_64; not a portable model zoo.
@@ -142,7 +144,7 @@ Smell is not the split — it’s that **value still flows through both**.
 | 3 | One train-entry design — `TrainParams` in demos; deprecate long positional later | **open** |
 | 4 | Typed length-N input or spatial→Train helper (pad footgun) | **done** (option C) |
 | 5 | Complement smoke with opt-in numerical/grad or golden test | **won't fix** |
-| 6 | Optional `src/` + `include/HypercubeCNN/` layout | **open** |
+| 6 | Optional `src/` + `include/HypercubeCNN/` layout | **won't fix** |
 | — | Drop LossType ghost API | **done** |
 | — | Drop facade grad_in loop knob | **done** |
 | — | Unify PascalCase vs snake_case dialects | **won't fix** |
