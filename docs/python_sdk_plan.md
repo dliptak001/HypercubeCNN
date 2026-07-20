@@ -4,7 +4,7 @@ Living plan for the Python bindings. Capture decisions, reference notes, and pha
 
 | Field | Value |
 |-------|--------|
-| **Status** | **Phase 1 complete** — core train/infer façade green; Phase 2 (arch) next |
+| **Status** | **Phase 2 complete** — arch export/from_arch green; Phase 3 (HCNW) next |
 | **Last updated** | 2026-07-20 |
 | **C++ peer** | [CPP_SDK.md](CPP_SDK.md) (v1.0.0 surface) |
 | **References** | `C:\CLion\HypercubeESN\python`, `C:\CLion\HypercubeHopfield\python` (patterns, not clones) |
@@ -384,11 +384,12 @@ Phases are ordered by dependency; keep PRs reviewable (prefer one phase per PR w
 
 **Exit:** `export_arch` → `from_arch` → `set_weights` (same blob) → **bit-identical logits** on a fixed input. (File HCNW is Phase 3; in-memory weights are enough here.)
 
-- [ ] `LayerSpec.conv` / `.pool` (dataclasses)
-- [ ] `apply_arch` / `summarize_arch` (params / final dim)
-- [ ] `HCNNConfig.build()` / layer-list construction
-- [ ] `export_arch()` / `from_arch(dict)` with version field
-- [ ] Reject unknown arch format versions with a clear upgrade message
+- [x] `LayerSpec.conv` / `.pool` (dataclasses) in `hypercube_cnn/arch.py`
+- [x] `apply_arch` / `summarize_arch` (params match `weight_count`)
+- [x] `HCNNConfig.build()` / `HCNN.from_layers`
+- [x] `export_arch()` / `from_arch(dict)` with `format` + `version`
+- [x] Reject unknown arch format versions with upgrade message
+- [x] Smoke: summarize==weight_count; JSON round-trip identity logits; future version rejected
 
 ### Phase 3 — Model I/O (HCNW)
 
@@ -538,6 +539,7 @@ Keep `ci.yml` for C++/smoke. Add `wheels.yml` for Python; do not overload C++ CI
 | 2026-07-20 | Added `.github/workflows/wheels.yml` (ESN-style cibuildwheel v4 + OIDC publish, `skip-existing`). Matches pending PyPI trusted publisher. `package-dir: .` for repo-root packaging. Workflow will fail until Phase 0 lands. |
 | 2026-07-20 | **Phase 0 done:** root `pyproject.toml`, `python/CMakeLists.txt` + stub `bindings.cpp`, `hypercube_cnn` package. Local `pip install .` → import `1.0.0`; ships `libwinpthread-1.dll`. Full MinGW `-static` rejected; ESN link recipe used. |
 | 2026-07-20 | **Phase 1 done:** `_HCNN` + enums + train/infer/weights; Python `HCNN` / `TrainParams`. Smoke: classification train, regression MSE, in-memory weight round-trip. MinGW: dynamic winpthread + ship DLL (`-Bstatic pthread` broke CLion 15.2). Use `==` not `is` for pybind enums. |
+| 2026-07-20 | **Phase 2 done:** pure-Python `arch.py` (LayerSpec, summarize_arch, HCNNConfig, arch JSON v1). `export_arch`/`from_arch`/`from_layers`; layer list tracked on `HCNN`. Smoke: param total==weight_count; set_weights identity after from_arch. |
 
 ---
 

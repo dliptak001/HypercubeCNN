@@ -14,7 +14,7 @@ See ``docs/python_sdk_plan.md`` and ``docs/CPP_SDK.md``.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Union
+from typing import List, Optional, Sequence, Union
 
 import numpy as np
 
@@ -26,15 +26,32 @@ from ._core import (
     _HCNN,
     __version__ as _core_version,
 )
+from .arch import (
+    ARCH_FORMAT,
+    ARCH_VERSION,
+    ArchParamSummary,
+    HCNNConfig,
+    LayerSpec,
+    apply_arch,
+    layers_from_iterable,
+    summarize_arch,
+)
 
 __version__ = _core_version
 __all__ = [
     "HCNN",
     "TrainParams",
+    "LayerSpec",
+    "HCNNConfig",
+    "ArchParamSummary",
+    "summarize_arch",
+    "apply_arch",
     "Activation",
     "PoolType",
     "TaskType",
     "OptimizerType",
+    "ARCH_FORMAT",
+    "ARCH_VERSION",
     "__version__",
 ]
 
@@ -126,6 +143,8 @@ class HCNN:
             task_type=task,
             num_threads=num_threads,
         )
+        # Recorded for export_arch / arch sidecar (not stored in C++ weights).
+        self._layers: List[LayerSpec] = []
 
     # ── Architecture ──
 
@@ -139,13 +158,100 @@ class HCNN:
         """Append a Hamming conv layer. Invalidates weights if already randomized."""
         if not isinstance(c_out, int) or c_out < 1:
             raise ValueError(f"c_out must be a positive int, got {c_out!r}")
+        if not isinstance(activation, Activation):
+            raise TypeError(
+                f"activation must be Activation, got {type(activation).__name__}"
+            )
         self._impl.add_conv(c_out, activation, use_bias, use_bn)
+        self._layers.append(
+            LayerSpec.conv(c_out, activation=activation, use_bias=use_bias, bn=use_bn)
+        )
 
     def add_pool(self, pool_type: PoolType = PoolType.MAX) -> None:
         """Append an antipodal pool (DIM -= 1). Invalidates weights if randomized."""
         if not isinstance(pool_type, PoolType):
             raise TypeError(f"pool_type must be PoolType, got {type(pool_type).__name__}")
         self._impl.add_pool(pool_type)
+        self._layers.append(LayerSpec.pool(pool_type))
+
+    def apply_layers(self, layers: Sequence[LayerSpec]) -> ArchParamSummary:
+        """Append a list of :class:`LayerSpec` (validates with :func:`summarize_arch`)."""
+        return apply_arch(self, layers_from_iterable(layers))
+
+    @property
+    def layers(self) -> List[LayerSpec]:
+        """Copy of recorded body layers (for arch export)."""
+        return list(self._layers)
+
+    def export_arch(self) -> dict:
+        """JSON-serializable arch sidecar (not weights).
+
+        Rebuild with :meth:`from_arch`, then :meth:`set_weights` / load HCNW.
+        Requires at least one recorded layer (via :meth:`add_conv` / :meth:`apply_layers`).
+        """
+        if not self._layers:
+            raise ValueError(
+                "export_arch: no layers recorded; add_conv/add_pool or build from HCNNConfig"
+            )
+        cfg = HCNNConfig(
+            dim=self.dim,
+            num_outputs=self.num_outputs,
+            input_channels=self.input_channels,
+            task=self.task,
+            layers=list(self._layers),
+        )
+        return cfg.to_arch_dict()
+
+    @classmethod
+    def from_arch(
+        cls,
+        arch: dict,
+        *,
+        num_threads: Optional[int] = None,
+        randomize: bool = True,
+        weight_scale: float = 0.0,
+        weight_seed: int = 42,
+        optimizer: OptimizerType = OptimizerType.ADAM,
+    ) -> "HCNN":
+        """Rebuild a net from :meth:`export_arch` / arch JSON.
+
+        Default randomizes weights (required before :meth:`set_weights`).
+        Optimizer defaults to Adam (fresh Build semantics), not stored in the sidecar.
+        """
+        cfg = HCNNConfig.from_arch_dict(arch)
+        if num_threads is not None:
+            cfg.num_threads = int(num_threads)
+        cfg.randomize = bool(randomize)
+        cfg.weight_scale = float(weight_scale)
+        cfg.weight_seed = int(weight_seed)
+        cfg.optimizer = optimizer
+        return cfg.build()
+
+    @classmethod
+    def from_layers(
+        cls,
+        layers: Sequence[Union[LayerSpec, dict]],
+        *,
+        dim: int = 10,
+        num_outputs: int = 10,
+        input_channels: int = 1,
+        task: TaskType = TaskType.Classification,
+        num_threads: int = 0,
+        randomize: bool = True,
+        weight_seed: int = 42,
+    ) -> "HCNN":
+        """One-shot construct from a layer list (see also :class:`HCNNConfig`)."""
+        cfg = HCNNConfig(
+            dim=dim,
+            num_outputs=num_outputs,
+            input_channels=input_channels,
+            task=task,
+            num_threads=num_threads,
+            layers=layers_from_iterable(layers),
+            randomize=randomize,
+            weight_seed=weight_seed,
+        )
+        return cfg.build()
 
     def randomize_weights(self, scale: float = 0.0, seed: int = 42) -> None:
         """Initialize weights for the current stack. Required before train/infer.

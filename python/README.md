@@ -35,9 +35,8 @@ pip install . --no-build-isolation --force-reinstall --no-deps
 
 ## Status
 
-**Phase 1:** core `HCNN` train/infer surface is available (construct, stack,
-`randomize_weights`, predict, train_*, weights). Arch JSON / HCNW file I/O and
-docs polish land in later phases — see
+**Phase 2:** core train/infer plus architecture product surface (`LayerSpec`,
+`HCNNConfig`, `export_arch` / `from_arch`). HCNW file I/O is Phase 3 — see
 [docs/python_sdk_plan.md](https://github.com/dliptak001/HypercubeCNN/blob/main/docs/python_sdk_plan.md)
 and
 [docs/CPP_SDK.md](https://github.com/dliptak001/HypercubeCNN/blob/main/docs/CPP_SDK.md).
@@ -46,16 +45,24 @@ and
 import numpy as np
 import hypercube_cnn as hc
 
-net = hc.HCNN(dim=6, num_outputs=3, task=hc.TaskType.Classification)
-net.add_conv(8)
-net.add_pool(hc.PoolType.MAX)
-net.add_conv(8)
-net.randomize_weights(seed=1)
+net = hc.HCNNConfig(
+    dim=6,
+    num_outputs=3,
+    layers=[
+        hc.LayerSpec.conv(8, bn=True),
+        hc.LayerSpec.pool("max"),
+        hc.LayerSpec.conv(8),
+    ],
+    weight_seed=1,
+).build()
 
 x = np.random.randn(net.N).astype(np.float32)  # full capacity N = 2**dim
 logits = net.predict(x)
-cls = net.predict_class(x)
-net.train_step(x, target=0, params=hc.TrainParams(learning_rate=1e-3))
+
+arch = net.export_arch()           # JSON-serializable sidecar
+w = net.get_weights()
+net2 = hc.HCNN.from_arch(arch)
+net2.set_weights(w)                # bit-identical forward
 ```
 
 ## License
