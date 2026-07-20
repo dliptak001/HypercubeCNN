@@ -1,12 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 David Liptak
 
-#include "HCNN.h"
-#include "HCNNSpatialAug.h"
-#include "HCNNSpatialEmbed.h"
-#include "HCNNTrainHelpers.h"
+#include "HypercubeCNN.h"
 #include "HCNNDataset.h"
-#include "demo_arch.h"
+#include "demo_arch.h"  // hcnn_demo:: aliases → HCNNArch
 
 #include <chrono>
 #include <filesystem>

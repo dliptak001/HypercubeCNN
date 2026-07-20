@@ -26,9 +26,8 @@
 //   - That near-perfect R^2 will transfer to production RC workloads
 //     (synthetic next-step sine is an easy target once capacity is enough)
 
-#include "HCNN.h"
-#include "HCNNTrainHelpers.h"
-#include "demo_arch.h"
+#include "HypercubeCNN.h"
+#include "demo_arch.h"  // hcnn_demo:: aliases → HCNNArch
 
 #include <algorithm>
 #include <chrono>

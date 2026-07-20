@@ -67,6 +67,7 @@ endif()
 set(HCNN_PUBLIC_HEADERS
     HCNN.h
     HCNNTypes.h
+    HCNNArch.h
     HypercubeCNN.h
     HCNNSpatialAug.h
     HCNNSpatialEmbed.h

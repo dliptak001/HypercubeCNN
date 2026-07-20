@@ -32,9 +32,11 @@
 #include <vector>
 
 using hcnn::HCNN;
+using hcnn::HCNNConfig;
 using hcnn::HCNNNetwork;
 using hcnn::HCNNPool;
 using hcnn::HCNNReadout;
+using hcnn::LayerSpec;
 using hcnn::ReadoutGradInLoop;
 using hcnn::ThreadPool;
 using hcnn::TrainParams;
@@ -1723,6 +1725,105 @@ static void section_train_helpers() {
 }
 
 // ---------------------------------------------------------------------------
+//  11. Architecture product (LayerSpec / HCNNConfig)
+// ---------------------------------------------------------------------------
+
+static void section_arch() {
+    begin_section("Architecture (LayerSpec / HCNNConfig)");
+
+    // summarize_arch matches GetWeightCount (no BN)
+    {
+        std::vector<LayerSpec> layers = {
+            LayerSpec::Conv(8),
+            LayerSpec::Pool(PoolType::MAX),
+            LayerSpec::Conv(16, Activation::TANH),
+        };
+        auto sum = hcnn::summarize_arch(6, /*num_outputs=*/4, /*c_in=*/1, layers);
+        check(sum.num_conv == 2 && sum.num_pool == 1, "summarize: conv/pool counts");
+        check(sum.final_dim == 5, "summarize: pool drops DIM 6->5");
+        check(sum.final_N == 32, "summarize: N after pool");
+        check(sum.flatten_features == 16 * 32, "summarize: flatten features");
+
+        HCNN net(6, 4);
+        hcnn::apply_arch(net, layers);
+        net.RandomizeWeights();
+        check(static_cast<long long>(net.GetWeightCount()) == sum.total,
+              "summarize total == GetWeightCount (no BN)");
+        check(net.GetNumConv() == 2 && net.GetNumPool() == 1,
+              "apply_arch layer counts on HCNN");
+    }
+
+    // BN blob floats included (4 * c_out)
+    {
+        std::vector<LayerSpec> layers = {
+            LayerSpec::Conv(4, Activation::RELU, /*bias=*/true, /*bn=*/true),
+        };
+        auto sum = hcnn::summarize_arch(5, 2, 1, layers);
+        // kernel 1*4*(5+1) + bias 4 + BN 4*4 + readout 4*32*2 + 2
+        const long long expect =
+            1LL * 4 * 6 + 4 + 4 * 4 + 4LL * 32 * 2 + 2;
+        check(sum.total == expect, "summarize with BN includes 4*c_out stats");
+
+        HCNN net(5, 2);
+        hcnn::apply_arch(net, layers);
+        net.RandomizeWeights();
+        check(static_cast<long long>(net.GetWeightCount()) == sum.total,
+              "BN summarize total == GetWeightCount");
+    }
+
+    // HCNNConfig::Build
+    {
+        HCNNConfig cfg;
+        cfg.start_dim = 5;
+        cfg.num_outputs = 3;
+        cfg.layers = {LayerSpec::Conv(8), LayerSpec::Conv(4)};
+        cfg.weight_seed = 99;
+        auto net = cfg.Build();
+        check(net != nullptr, "Build returns non-null");
+        check(net->WeightsInitialized(), "Build randomizes by default");
+        check(net->GetOptimizerType() == OptimizerType::ADAM,
+              "Build sets Adam by default");
+        check(net->GetNumConv() == 2, "Build applied two convs");
+        check(static_cast<long long>(net->GetWeightCount()) == cfg.summarize().total,
+              "Build weight count matches summarize");
+
+        std::vector<float> x(static_cast<size_t>(net->GetStartN()), 0.1f);
+        std::vector<float> out(static_cast<size_t>(net->GetNumOutputs()));
+        net->Predict(x.data(), net->GetStartN(), out.data());
+        check(all_finite(out.data(), net->GetNumOutputs()),
+              "Build net Predict finite");
+    }
+
+    // Validation: too many pools / empty / dim floor
+    {
+        check(throws([&] {
+            (void)hcnn::summarize_arch(3, 2, 1, {
+                LayerSpec::Conv(4),
+                LayerSpec::Pool(),
+                LayerSpec::Pool(),
+                LayerSpec::Pool(),  // would need dim>=2; after two pools dim=1
+            });
+        }), "summarize rejects pool at current_dim < 2");
+
+        check(throws([&] {
+            (void)hcnn::summarize_arch(5, 2, 1, {LayerSpec::Pool()});
+        }), "summarize rejects pool-only stack (no conv)");
+
+        check(throws([&] {
+            (void)hcnn::summarize_arch(2, 2, 1, {LayerSpec::Conv(4)});
+        }), "summarize rejects start_dim < 3");
+
+        HCNN net(5, 2);
+        net.AddConv(4);
+        check(throws([&] {
+            hcnn::apply_arch(net, 6, 2, 1, {LayerSpec::Conv(4)});
+        }), "apply_arch throws on dim mismatch with net");
+    }
+
+    end_section();
+}
+
+// ---------------------------------------------------------------------------
 //  main
 // ---------------------------------------------------------------------------
 
@@ -1742,6 +1843,7 @@ int main() {
     section_spatial_aug();
     section_spatial_embed();
     section_train_helpers();
+    section_arch();
 
     const auto t1 = std::chrono::steady_clock::now();
     const double secs = std::chrono::duration<double>(t1 - t0).count();

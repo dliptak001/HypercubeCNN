@@ -9,6 +9,7 @@
  *
  * Pulls in:
  *   - `HCNN.h`              — core train / infer front door
+ *   - `HCNNArch.h`          — LayerSpec, apply_arch, HCNNConfig::Build
  *   - `HCNNTrainHelpers.h`  — metrics, cosine LR, checkpoints, flat dataset
  *   - `HCNNSpatialAug.h`    — optional 2D augmentation
  *   - `HCNNSpatialEmbed.h`  — optional 2D → length-N packing
@@ -21,6 +22,7 @@
  */
 
 #include "HCNN.h"
+#include "HCNNArch.h"
 #include "HCNNTrainHelpers.h"
 #include "HCNNSpatialAug.h"
 #include "HCNNSpatialEmbed.h"

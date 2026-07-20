@@ -10,7 +10,7 @@ End-to-end training and evaluation of HypercubeCNN on MNIST (60K train, 10K test
 - **Spatial preprocess:** `HCNNSpatialAugmenter` (train) → `HCNNSpatialEmbedder` DualPlaneResize (DIM=11, N=2048)
 - **Train-time aug:** rot / scale / shift / **shear_x** (default); elastic **off**; light Gaussian noise
 - **`DemoConfig`** at the top of `mnist_train.cpp` — one place for seed, schedule, aug, dim, layers
-- Shared arch helpers: `examples/demo_arch.h` (`apply_arch` / `print_arch` / `summarize_arch` vs `GetWeightCount`)
+- Architecture helpers: public `HCNNArch.h` (`LayerSpec` / `apply_arch` / `summarize_arch` vs `GetWeightCount`); demo uses thin `examples/demo_arch.h` aliases
 - Adam, cosine LR, weight decay, dual checkpoints (`HCNNDualCheckpoint`)
 - Train helpers: `cosine_lr`, `evaluate_classification`, `HCNNFlatDataset`
 

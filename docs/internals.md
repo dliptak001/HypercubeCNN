@@ -17,7 +17,7 @@ This page describes **how the core is built**, not how to call it. Public API co
 ## 1. Module graph
 
 ```text
-  Public install:  HypercubeCNN.h / HCNN.h / HCNNTypes.h
+  Public install:  HypercubeCNN.h / HCNN.h / HCNNTypes.h / HCNNArch.h
                    + TrainHelpers + Spatial*
                          │
                          ▼
@@ -356,7 +356,8 @@ HCNNSpatialEmbed.h / .cpp    (optional)
 HCNNTrainHelpers.h / .cpp    (optional)
 ```
 
-In-tree only (not install surface): `examples/`, `tests/`, `dataloader/`, `examples/demo_arch.h`.
+In-tree only (not install surface): `examples/`, `tests/`, `dataloader/`.
+`examples/demo_arch.h` is a thin `hcnn_demo::` alias shim over public `HCNNArch.h`.
 
 ---
 

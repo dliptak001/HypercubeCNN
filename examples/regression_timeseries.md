@@ -24,14 +24,14 @@ is enough -- not a HypercubeRC accuracy claim.
 No external data files -- the example synthesizes its own series every run.
 
 Pair with [`mnist_train.md`](mnist_train.md): both use top-of-file **`DemoConfig`**,
-shared **`examples/demo_arch.h`**, and auto-printed architecture / param counts.
+public **`HCNNArch.h`** (demo still includes thin `examples/demo_arch.h` aliases), and auto-printed architecture / param counts.
 
 ## What this example shows
 
 - **`DemoConfig` at the top of `regression_timeseries.cpp`**: dim, layers,
   data sizes, seeds, schedule, logging -- one place to edit; architecture print
   + param counts follow
-- Shared **`demo_arch.h`**: `ArchLayer`, `summarize_arch`, `print_arch`, `apply_arch`
+- **`HCNNArch.h`** (via `demo_arch.h` aliases): `LayerSpec` / `ArchLayer`, `summarize_arch`, `print_arch`, `apply_arch`
 - `hcnn::HCNN` with `TaskType::Regression` (default loss MSE)
 - Param count checked against `HCNN::GetWeightCount()` at startup
 - Contiguous `TrainEpochRegression` + `hcnn::evaluate_regression` (MSE / R²)
@@ -110,7 +110,7 @@ Parameters:   19409 (192 conv1 + 2832 conv2 + 16385 readout)  # K=DIM+1 (self+ne
 | Readout (16×1024 → 1 + bias) | 16,385 |
 | **Total** | **19,409** |
 
-Startup throws if `summarize_arch` total ≠ `GetWeightCount()` (kernel + bias;
+Startup throws if `summarize_arch` total ≠ `GetWeightCount()` (kernel + bias + BN blob floats when enabled;
 BN γ/β and running stats are included in the weight blob when BN is enabled; optimizer moments are not).
 
 FLATTEN treats every (channel, vertex) activation as an independent feature.
@@ -198,7 +198,7 @@ best_mse.restore(net);
 ```
 
 Local packing: `FlatRegDataset` in the example. Architecture types live in
-`examples/demo_arch.h` (not installed SDK). Core helpers:
+`HCNNArch.h` (installed) via `examples/demo_arch.h` aliases. Core helpers:
 `evaluate_regression`, `cosine_lr`, `HCNNBestMetricCheckpoint`.
 
 ### Classification vs regression
@@ -212,7 +212,7 @@ Local packing: `FlatRegDataset` in the example. Architecture types live in
 | Forward output | Logits | Raw predictions |
 | Metrics helper | `evaluate_classification` | `evaluate_regression` |
 | Checkpoint | `HCNNDualCheckpoint` | `HCNNBestMetricCheckpoint` |
-| Shared demo arch | `demo_arch.h` | `demo_arch.h` |
+| Shared arch product | `HCNNArch.h` (+ demo shim) | same |
 
 Conv/pool stack, forward, weight init, optimizer, and batch parallelism are
 shared; only loss gradient and target type differ.

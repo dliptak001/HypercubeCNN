@@ -61,9 +61,10 @@ out[co, v] = bias[co]
 ```text
 <prefix>/
   include/HypercubeCNN/
-    HypercubeCNN.h         # umbrella — core + helpers + spatial
+    HypercubeCNN.h         # umbrella — core + arch + helpers + spatial
     HCNN.h                 # front door (core only)
     HCNNTypes.h            # public enums
+    HCNNArch.h             # LayerSpec, apply_arch, HCNNConfig::Build
     HCNNSpatialAug.h       # optional 2D aug (not part of the graph)
     HCNNSpatialEmbed.h     # optional 2D → length-N pack
     HCNNTrainHelpers.h     # optional metrics / LR / checkpoints
@@ -79,9 +80,10 @@ they are **not** part of the installed teaching surface.
 |----------------------|---------|-----------|
 | Full teaching stack | `HypercubeCNN.h` | Recommended for demos |
 | Core train / infer only | `HCNN.h` | Yes (minimal) |
+| Architecture list / Build | `HCNNArch.h` (via umbrella) | Optional |
 | Image preprocess | spatial headers (via umbrella) | Optional |
 | Thin training loop | `HCNNTrainHelpers.h` | Optional |
-| Demo-only scaffolding | `examples/demo_arch.h` | **Not installed** |
+| Demo-only aliases | `examples/demo_arch.h` | **Not installed** (`hcnn_demo::` → `hcnn::`) |
 
 Link target: **`HypercubeCNNCore`** (or imported `HypercubeCNN::HypercubeCNNCore`).
 
@@ -309,7 +311,52 @@ readout bias[num_outputs]
 
 ---
 
-## 7. Educational training loop (pattern)
+## 7. Architecture product (`HCNNArch.h`)
+
+Describe the body as a list of **`LayerSpec`**, apply it, print params, or build in one shot.
+
+```cpp
+#include "HCNNArch.h"   // or HypercubeCNN.h
+using namespace hcnn;
+
+// Layer list
+std::vector<LayerSpec> layers = {
+    LayerSpec::Conv(16),
+    LayerSpec::Pool(PoolType::MAX),
+    LayerSpec::Conv(32, Activation::TANH),
+};
+
+// Option A — incremental HCNN + apply
+HCNN net(10, /*classes=*/10);
+apply_arch(net, layers);
+net.RandomizeWeights();
+
+// Param count matches GetWeightCount (incl. BN blob floats when use_bn)
+ArchParamSummary sum = summarize_arch(10, 10, 1, layers);
+print_arch(std::cout, 10, 10, 1, layers, sum);
+
+// Option B — one-shot Build (returns unique_ptr; HCNN is non-movable)
+HCNNConfig cfg;
+cfg.start_dim = 10;
+cfg.num_outputs = 10;
+cfg.layers = layers;
+cfg.weight_seed = 42;
+auto built = cfg.Build();   // Apply + RandomizeWeights + SetOptimizer(Adam)
+```
+
+| API | Role |
+|-----|------|
+| `LayerSpec::Conv` / `Pool` | Factory helpers for body steps |
+| `summarize_arch` | Walk stack; total == `GetWeightCount` after init |
+| `apply_arch(net, layers)` | Append layers (validates first) |
+| `print_arch` | Human-readable stack + param breakdown |
+| `HCNNConfig::Build()` | Construct + apply + optional randomize + optimizer |
+
+Pool floor matches the network: cannot pool when `current_dim < 2`. Need ≥1 conv.
+
+---
+
+## 8. Educational training loop (pattern)
 
 The shipped demos keep a single **`DemoConfig`** struct at the top of the `.cpp` and a thin loop. Reproduce that structure in coursework:
 
@@ -378,12 +425,12 @@ In-tree references (not part of the install):
 |---------|--------|--------|
 | `examples/mnist_train.cpp` + `.md` | Classification | Spatial aug → DualPlane embed → `TrainEpoch` + dual checkpoint |
 | `examples/regression_timeseries.cpp` + `.md` | Regression | Synthetic length-N state → next-step sine; best-MSE checkpoint |
-| `examples/demo_arch.h` | Both | `ArchLayer` list, param count vs `GetWeightCount`, print helpers |
+| `examples/demo_arch.h` | Both | Thin `hcnn_demo::` aliases to `HCNNArch.h` (not installed) |
 | `tests/CoreSmokeTest.cpp` | API | Canonical behavior contract for the front door |
 
 ---
 
-## 8. Optional: spatial preprocess (images)
+## 9. Optional: spatial preprocess (images)
 
 **Not** part of the conv graph. Headers: `HCNNSpatialAug.h`, `HCNNSpatialEmbed.h`.
 
@@ -406,7 +453,7 @@ End-to-end image demo: [`examples/mnist_train.md`](../examples/mnist_train.md).
 
 ---
 
-## 9. Optional: train helpers
+## 10. Optional: train helpers
 
 Header: `HCNNTrainHelpers.h`. **Not** part of the conv/pool graph; does not change `HCNN` math. Include it when you want a thin teaching loop instead of re-implementing CE, cosine LR, or weight snapshots. Native cube apps that already own their loop can ignore this header.
 
@@ -487,7 +534,7 @@ See [`spatial_preprocess.md`](spatial_preprocess.md) and `examples/mnist_train.c
 
 ---
 
-## 10. Memory, threading, performance (student-relevant)
+## 11. Memory, threading, performance (student-relevant)
 
 **Layout:** `activations[c * N + v]` at every stage.
 
@@ -507,7 +554,7 @@ See [`spatial_preprocess.md`](spatial_preprocess.md) and `examples/mnist_train.c
 
 ---
 
-## 11. Pitfalls checklist
+## 12. Pitfalls checklist
 
 | Pitfall | Fix |
 |---------|-----|
@@ -524,7 +571,7 @@ See [`spatial_preprocess.md`](spatial_preprocess.md) and `examples/mnist_train.c
 
 ---
 
-## 12. Advanced / internal surfaces (optional)
+## 13. Advanced / internal surfaces (optional)
 
 The installed SDK is **`HCNN` + types + helpers + spatial**.  In the source
 tree (not the install public set), advanced headers exist for tests and
@@ -546,7 +593,7 @@ How training cores, threading, block-pair kernels, and weight blobs actually wor
 
 ---
 
-## 13. Further reading in this repo
+## 14. Further reading in this repo
 
 | Doc / path | Content |
 |------------|---------|
@@ -557,26 +604,24 @@ How training cores, threading, block-pair kernels, and weight blobs actually wor
 
 ---
 
-## 14. One-page cheat sheet
+## 15. One-page cheat sheet
 
 ```text
-#include "HypercubeCNN.h"        // or HCNN.h for core only
+#include "HypercubeCNN.h"        // or HCNN.h / HCNNArch.h for subsets
 
-HCNN net(DIM, outputs [, c_in, TaskType, LossType, threads]);
-// default optimizer = Adam; start_dim in [3, 30]
-net.AddConv(c_out [, act, bias, bn]);
-net.AddPool([MAX|AVG]);          // optional; DIM -= 1
-net.RandomizeWeights([scale], [seed]);
+// Architecture list or one-shot Build
+HCNNConfig cfg;
+cfg.start_dim = DIM; cfg.num_outputs = K;
+cfg.layers = { LayerSpec::Conv(16), LayerSpec::Pool(), LayerSpec::Conv(32) };
+auto net = cfg.Build();          // or HCNN + apply_arch + RandomizeWeights
 
 // Inference
-net.Predict(raw, len, out);      // happy path (embed + forward)
-net.PredictClass(raw, len);      // classification only
-net.ForwardBatch(flat, len, B, out);
+net->Predict(raw, len, out);     // happy path (embed + forward)
+net->PredictClass(raw, len);     // classification only
 
 // Train (pick one family) — prefer TrainParams
 TrainParams p{ .learning_rate = 1e-3f, .weight_decay = 1e-3f, .shuffle_seed = e+1 };
-net.TrainEpoch(x, len, y, n, batch, p);              // classification
-net.TrainEpochRegression(x, len, t, n, batch, p);    // regression
+net->TrainEpoch(x, len, y, n, batch, p);
 
 // Helpers: cosine_lr, evaluate_*, HCNNDualCheckpoint / HCNNBestMetricCheckpoint
 ```
