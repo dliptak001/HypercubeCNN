@@ -10,20 +10,23 @@ First full public SDK release. Package version and FetchContent pin: **v1.0.0**
 - Single public front door: `hcnn::HCNN` (+ umbrella `HypercubeCNN.h`)
 - Unified train API, session defaults, architecture product, full-capacity inputs
 - Portable weight files, movable networks, examples as living facade recipes
+- Pre-binding polish: arch lifecycle, host contracts, smaller train surface
 
 ### Breaking / public API
 
 - **Constructor:** drop `LossType` argument; loss is fixed by `TaskType`
   (Classification → softmax CE, Regression → MSE). `num_threads` is the 5th arg.
-- **Train vocabulary:** prefer `TrainStep` / `TrainBatch` / `TrainEpoch` with
-  target-type overloads (`int` / `const int*` vs `const float*`).  
-  `Train*Regression` remain as **thin aliases** for transition.
+- **Train vocabulary:** `TrainStep` / `TrainBatch` / `TrainEpoch` overload by
+  target type (`int` / `const int*` vs `const float*`).  
+  **`Train*Regression` aliases removed** — use the `float*` overloads.
+- **Arch lifecycle:** `AddConv` / `AddPool` clear `WeightsInitialized`; train,
+  infer, and weight I/O require `RandomizeWeights` for the current stack.
 - **Default optimizer:** Adam (was SGD). Explicit `SetOptimizer` still supported.
 - **Install surface:** only public headers are installed (`HCNN`, types, input,
   arch, helpers, spatial). `HCNNNetwork` / layers / `ThreadPool` are private
   (source-tree + in-tree tests only).
 - **Removed:** `SetReadoutGradInLoop` from `HCNN` (private on `HCNNReadout`);
-  `main.cpp` quick-check exe target.
+  `main.cpp` quick-check exe target; `examples/demo_arch.h` shim.
 
 ### Features
 
@@ -46,13 +49,15 @@ First full public SDK release. Package version and FetchContent pin: **v1.0.0**
 ### Notes for integrators (e.g. HypercubeESN)
 
 - Pin FetchContent / re-vendor to **v1.0.0** (or the release commit) after publish
-- Update ctor (no `LossType`); prefer unified `Train*` overloads
+- Update ctor (no `LossType`); use unified `Train*` with `float*` targets for regression
+- Re-call `RandomizeWeights` after any post-init `AddConv` / `AddPool`
+- Model files: keep arch (`LayerSpec` / `HCNNConfig`) beside HCNW weights
 - See HypercubeESN `docs/adapt_HypercubeCNN.md` for a full host checklist
-- Redistributable binaries: consider `-DHCNN_NATIVE_ARCH=OFF`
+- Redistributable / wheels: `-DHCNN_NATIVE_ARCH=OFF` (default when not top-level)
 
 ### Docs
 
-- README / CPP_SDK / internals aligned with the public facade and v1.0.0 pin
+- README / CPP_SDK host contracts / internals aligned with the public facade
 
 ---
 

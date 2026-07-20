@@ -65,6 +65,8 @@ void HCNNNetwork::add_conv(int c_out, Activation activation, bool use_bias,
                                      adam_eps_);
     channel_counts.push_back(c_out);
     is_conv_layer.push_back(true);
+    // Head size / weight blob no longer match the stack until re-randomize.
+    weights_initialized_ = false;
     invalidate_cached_buffers();
 }
 
@@ -101,6 +103,8 @@ void HCNNNetwork::add_pool(PoolType type) {
     current_dim -= 1;
     channel_counts.push_back(channel_counts.back());
     is_conv_layer.push_back(false);
+    // Head size / weight blob no longer match the stack until re-randomize.
+    weights_initialized_ = false;
     invalidate_cached_buffers();
 }
 
@@ -145,6 +149,11 @@ void HCNNNetwork::embed_input(const float* raw_input, int input_length,
 }
 
 void HCNNNetwork::forward(const float* first_layer_activations, float* logits) const {
+    if (!weights_initialized_) {
+        throw std::logic_error(
+            "HCNNNetwork::forward: call randomize_all_weights() first "
+            "(required after construct or after add_conv/add_pool)");
+    }
     if (conv_layers.empty()) {
         throw std::runtime_error("HCNNNetwork::forward called with no conv layers");
     }
@@ -232,6 +241,11 @@ void HCNNNetwork::prepare_inference_buffers() {
 
 void HCNNNetwork::forward_batch(const float* flat_inputs, int input_length,
                                 int batch_size, float* logits_out) {
+    if (!weights_initialized_) {
+        throw std::logic_error(
+            "HCNNNetwork::forward_batch: call randomize_all_weights() first "
+            "(required after construct or after add_conv/add_pool)");
+    }
     if (conv_layers.empty()) {
         throw std::runtime_error("HCNNNetwork::forward_batch called with no conv layers");
     }
@@ -613,6 +627,11 @@ void HCNNNetwork::train_step_impl(const float* raw_input, int input_length,
                                   const LossGradStepFn& loss_grad,
                                   float learning_rate, float momentum,
                                   float weight_decay) {
+    if (!weights_initialized_) {
+        throw std::logic_error(
+            "HCNNNetwork::train_step: call randomize_all_weights() first "
+            "(required after construct or after add_conv/add_pool)");
+    }
     if (conv_layers.empty()) {
         throw std::runtime_error("HCNNNetwork::train_step_impl called with no conv layers");
     }
@@ -699,6 +718,11 @@ void HCNNNetwork::train_batch_impl(const float* flat_inputs, int input_length,
                                    const LossGradBatchFn& loss_grad,
                                    float learning_rate, float momentum,
                                    float weight_decay) {
+    if (!weights_initialized_) {
+        throw std::logic_error(
+            "HCNNNetwork::train_batch: call randomize_all_weights() first "
+            "(required after construct or after add_conv/add_pool)");
+    }
     if (conv_layers.empty()) {
         throw std::runtime_error("HCNNNetwork::train_batch_impl called with no conv layers");
     }

@@ -251,6 +251,8 @@ Not owned by the network. Every train call takes `lr` explicitly. Optional helpe
 Buffers: `prepare_batch_buffers()` lazy, then reused (allocation-free steady state).
 `add_conv` / `add_pool` / `randomize_all_weights` invalidate step, batch, and
 inference caches so a later prepare matches the current arch and head size.
+`add_conv` / `add_pool` also clear `weights_initialized_`; train and forward
+require a subsequent `randomize_all_weights` (head rebuild + init).
 `set_optimizer` is stored on the network and re-applied to new convs and to the
 rebuilt readout after randomize.
 
@@ -346,7 +348,7 @@ Spatial preprocess may pad with `pad_value = -1`. After spatial embed, train/inf
 | Option | Default | Effect |
 |--------|---------|--------|
 | `HCNN_FAST_TANH` | ON | Rational tanh in conv activate path |
-| `HCNN_NATIVE_ARCH` | ON | `-march=native` style host tuning (non-MSVC) |
+| `HCNN_NATIVE_ARCH` | ON if top-level, **OFF** as subproject | `-march=native` style host tuning (non-MSVC); packagers keep OFF |
 | `HCNN_FAST_MATH` | ON | Relaxed float flags without full associative-math chaos |
 | `HCNN_BUILD_EXAMPLES` | ON if top-level | Examples + smoke test |
 
@@ -380,7 +382,6 @@ ThreadPool.h
 ```
 
 In-tree only (not install surface): `examples/`, `tests/`, `dataloader/`.
-`examples/demo_arch.h` is a thin `hcnn_demo::` alias shim over public `HCNNArch.h`.
 
 ---
 

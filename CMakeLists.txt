@@ -10,9 +10,16 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 # ——— SDK options ———
+# Host-tuned codegen only when this repo is the top-level project (local demos).
+# FetchContent / install consumers default OFF so redistributable builds stay portable.
+set(_HCNN_NATIVE_ARCH_DEFAULT ON)
+if(NOT PROJECT_IS_TOP_LEVEL)
+    set(_HCNN_NATIVE_ARCH_DEFAULT OFF)
+endif()
 option(HCNN_NATIVE_ARCH
     "Tune codegen for the build host (-march=native -mtune=native). \
-Disable when building a binary that must run on a different CPU." ON)
+Disable when building a binary that must run on a different CPU \
+(wheels, package installs, cross-machine deploy)." ${_HCNN_NATIVE_ARCH_DEFAULT})
 option(HCNN_FAST_MATH
     "Enable relaxed floating-point optimizations (inlined math functions, \
 no NaN/Inf guards). Unlike -ffast-math, this does NOT enable \

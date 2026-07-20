@@ -171,7 +171,7 @@ HCNNArch.h                 LayerSpec, apply_arch, HCNNConfig::Build
 HCNNTrainHelpers.*         Metrics, flat dataset, cosine LR, checkpoints, weight files
 HCNNSpatial*               Optional 2D aug + embed (images)
 HCNNNetwork / Conv / …     Private impl (not installed; not for apps)
-examples/                  Recipes (+ demo_arch.h shim)
+examples/                  Recipes (MNIST, regression)
 tests/CoreSmokeTest.cpp    Smoke tests for the public API
 docs/CPP_SDK.md            Canonical SDK guide (integration-first)
 docs/internals.md          Implementation depth (contributors)

@@ -92,14 +92,17 @@ public:
     //  Architecture (incremental builder)
     // -----------------------------------------------------------------
 
+    /// Append a conv layer.  Invalidates weights — call RandomizeWeights again
+    /// before train/infer if the net was already randomized.
     void AddConv(int c_out, Activation activation = Activation::RELU,
                  bool use_bias = true, bool use_batchnorm = false);
 
-    /// Antipodal pool; reduces DIM by 1.
+    /// Antipodal pool; reduces DIM by 1.  Same weight-invalidation rule as AddConv.
     void AddPool(PoolType type = PoolType::MAX);
 
-    /// Initialize all weights.  scale > 0: uniform [-scale, +scale].
-    /// scale <= 0 (default): per-layer Xavier/He init.  Sizes the FLATTEN head.
+    /// Initialize all weights and size the FLATTEN head to the current stack.
+    /// Required after construct (with ≥1 conv) and after any AddConv/AddPool.
+    /// scale > 0: uniform [-scale, +scale]; scale <= 0: per-layer Xavier/He.
     void RandomizeWeights(float scale = 0.0f, unsigned seed = 42);
 
     // -----------------------------------------------------------------
@@ -249,56 +252,6 @@ public:
     void TrainBatch(HCNNInputView in, const float* flat_targets, int batch_size);
     void TrainEpoch(HCNNInputView in, const int* targets, int batch_size);
     void TrainEpoch(HCNNInputView in, const float* flat_targets, int batch_size);
-
-    // -----------------------------------------------------------------
-    //  Compatibility aliases → same as Train*(…, const float* targets, …)
-    //  Prefer the unified names for new code.
-    // -----------------------------------------------------------------
-
-    void TrainStepRegression(const float* raw_input, int input_length,
-                             const float* target, float learning_rate,
-                             float momentum = 0.0f,
-                             float weight_decay = 0.0f);
-    void TrainBatchRegression(const float* flat_inputs, int input_length,
-                              const float* flat_targets, int batch_size,
-                              float learning_rate, float momentum = 0.0f,
-                              float weight_decay = 0.0f);
-    void TrainEpochRegression(const float* flat_inputs, int input_length,
-                              const float* flat_targets,
-                              int sample_count, int batch_size,
-                              float learning_rate, float momentum = 0.0f,
-                              float weight_decay = 0.0f,
-                              unsigned shuffle_seed = 0);
-
-    void TrainStepRegression(const float* raw_input, int input_length,
-                             const float* target, const TrainParams& params);
-    void TrainBatchRegression(const float* flat_inputs, int input_length,
-                              const float* flat_targets, int batch_size,
-                              const TrainParams& params);
-    void TrainEpochRegression(const float* flat_inputs, int input_length,
-                              const float* flat_targets,
-                              int sample_count, int batch_size,
-                              const TrainParams& params);
-
-    void TrainStepRegression(HCNNInputView in, const float* target,
-                             const TrainParams& params);
-    void TrainBatchRegression(HCNNInputView in, const float* flat_targets,
-                              int batch_size, const TrainParams& params);
-    void TrainEpochRegression(HCNNInputView in, const float* flat_targets,
-                              int batch_size, const TrainParams& params);
-
-    void TrainStepRegression(const float* raw_input, int input_length,
-                             const float* target);
-    void TrainBatchRegression(const float* flat_inputs, int input_length,
-                              const float* flat_targets, int batch_size);
-    void TrainEpochRegression(const float* flat_inputs, int input_length,
-                              const float* flat_targets, int sample_count,
-                              int batch_size);
-    void TrainStepRegression(HCNNInputView in, const float* target);
-    void TrainBatchRegression(HCNNInputView in, const float* flat_targets,
-                              int batch_size);
-    void TrainEpochRegression(HCNNInputView in, const float* flat_targets,
-                              int batch_size);
 
     // -----------------------------------------------------------------
     //  Sizing accessors

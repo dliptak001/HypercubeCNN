@@ -24,7 +24,7 @@ namespace hcnn {
 //   - cosine LR schedule with floor
 //   - dual weight checkpoints (best test loss + best test accuracy)
 //   - best-metric checkpoint (minimize a scalar, e.g. test MSE)
-//   - versioned weight file save/load
+//   - versioned weight file save/load (parameters only; rebuild arch first)
 //
 // Include this header only when you need these utilities.  HCNN itself does
 // not depend on them; hosts with their own train loop can ignore this header.

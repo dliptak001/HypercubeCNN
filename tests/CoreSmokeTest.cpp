@@ -1130,10 +1130,6 @@ static void section_regression() {
         double mse_epoch = mse_over_samples(net, inputs, targets, embedded, preds);
         check(std::isfinite(mse_epoch), "TrainEpoch(float*): MSE finite");
         check(all_finite(preds.data(), num_outputs), "regression preds finite");
-        net.TrainEpochRegression(flat_inputs.data(), N, targets.data(),
-                                 n_train, 10, 0.01f);
-        check(std::isfinite(mse_over_samples(net, inputs, targets, embedded, preds)),
-              "TrainEpochRegression alias still works");
     }
 
     // Multi-output shorter
@@ -1225,10 +1221,37 @@ static void section_regression() {
             check(throws([&] {
                 net.TrainBatch(input.data(), N, target.data(), 1, 0.01f);
             }), "TrainBatch(float*) on Classification net throws logic_error");
-            check(throws([&] {
-                net.TrainStepRegression(input.data(), N, target.data(), 0.01f);
-            }), "TrainStepRegression alias still throws on Classification");
         }
+    }
+
+    // Arch mutation invalidates weights until RandomizeWeights
+    {
+        HCNN net(5, 4);
+        net.AddConv(8);
+        net.RandomizeWeights();
+        check(net.WeightsInitialized(), "weights init after RandomizeWeights");
+        net.AddConv(8);
+        check(!net.WeightsInitialized(),
+              "AddConv after RandomizeWeights clears WeightsInitialized");
+        const int N = net.GetStartN();
+        std::vector<float> x(N, 0.1f);
+        std::vector<float> out(4);
+        check(throws([&] { net.Predict(x.data(), N, out.data()); }),
+              "Predict after arch mutation without re-randomize throws");
+        check(throws([&] { net.TrainStep(x.data(), N, 0, 0.01f); }),
+              "TrainStep after arch mutation without re-randomize throws");
+        net.RandomizeWeights();
+        check(net.WeightsInitialized(), "re-randomize restores WeightsInitialized");
+        net.Predict(x.data(), N, out.data());
+        check(all_finite(out.data(), 4), "Predict works after re-randomize");
+        net.AddPool(PoolType::MAX);
+        check(!net.WeightsInitialized(),
+              "AddPool after RandomizeWeights clears WeightsInitialized");
+        check(throws([&] { net.ForwardBatch(x.data(), N, 1, out.data()); }),
+              "ForwardBatch after AddPool without re-randomize throws");
+        net.RandomizeWeights();
+        net.ForwardBatch(x.data(), N, 1, out.data());
+        check(all_finite(out.data(), 4), "ForwardBatch works after pool re-randomize");
     }
 
     // Task construction (loss is fixed by task; no LossType on the API)

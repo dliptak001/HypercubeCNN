@@ -24,7 +24,7 @@ is enough -- not a HypercubeRC accuracy claim.
 No external data files -- the example synthesizes its own series every run.
 
 Pair with [`mnist_train.md`](mnist_train.md): both use top-of-file **`DemoConfig`**,
-public **`HCNNArch.h`** (demo still includes thin `examples/demo_arch.h` aliases), and auto-printed architecture / param counts.
+public **`HCNNArch.h`** (`LayerSpec` / `HCNNConfig`), and auto-printed architecture / param counts.
 
 ## What this example shows
 
@@ -198,7 +198,7 @@ best_mse.restore(net);
 ```
 
 Local packing: `FlatRegDataset` in the example. Architecture types live in
-`HCNNArch.h` (installed) via `examples/demo_arch.h` aliases. Core helpers:
+public `HCNNArch.h` (`LayerSpec`, `HCNNConfig`). Core helpers:
 `evaluate_regression`, `cosine_lr`, `HCNNBestMetricCheckpoint`.
 
 ### Classification vs regression

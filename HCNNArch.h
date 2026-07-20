@@ -314,9 +314,12 @@ struct HCNNConfig {
 
     /**
      * Construct HCNN, apply layers, optional RandomizeWeights, SetOptimizer.
-     * Returns unique_ptr because HCNN is non-copyable / non-movable.
+     * Returns unique_ptr for exclusive ownership (HCNN is movable but not
+     * copyable; unique_ptr is the usual host pattern).
      *
      * Order: construct → apply_arch → RandomizeWeights → SetOptimizer.
+     * Keep the LayerSpec list (or this config) if you will save/load weights:
+     * HCNW stores parameters only, not the layer graph.
      */
     [[nodiscard]] std::unique_ptr<HCNN> Build() const {
         auto sum = summarize();  // validate early

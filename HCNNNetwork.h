@@ -57,9 +57,10 @@ public:
     HCNNNetwork(HCNNNetwork&&) = delete;
     HCNNNetwork& operator=(HCNNNetwork&&) = delete;
 
+    /// Clears weights_initialized_ (call randomize_all_weights before train/infer).
     void add_conv(int c_out, Activation activation = Activation::RELU,
                   bool use_bias = true, bool use_batchnorm = false);
-    /// Antipodal pool; requires current_dim >= 2 (leaves at least dim 1).
+    /// Antipodal pool; requires current_dim >= 2.  Clears weights_initialized_.
     void add_pool(PoolType type = PoolType::MAX);
 
     /// Set training mode (true) or eval mode (false) for all layers with BN.

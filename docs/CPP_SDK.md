@@ -96,21 +96,53 @@ they are **not** part of the installed public surface.
 | Architecture list / Build | `HCNNArch.h` (via umbrella) | Optional |
 | Image preprocess | spatial headers (via umbrella) | Optional |
 | Thin training loop | `HCNNTrainHelpers.h` | Optional |
-| In-tree aliases | `examples/demo_arch.h` | **Not installed** (`hcnn_demo::` → `hcnn::`) |
 
 Link target: **`HypercubeCNNCore`** (or imported `HypercubeCNN::HypercubeCNNCore`).
 
-### Integration contracts
+### Host contracts (integrators and future language bindings)
+
+These rules are intentional product contracts, not implementation accidents.
 
 | Contract | Rule |
 |----------|------|
 | **Capacity** | Embed / train / predict capacity = `input_channels * GetStartN()` |
-| **Pad (HCNN)** | Short inputs zero-fill the tail; over-long inputs throw |
-| **Task / loss** | Classification → softmax CE; Regression → MSE (fixed by `TaskType`) |
-| **Outputs** | `Forward` / `Predict` return raw logits or predictions — never softmax |
-| **Weights** | `GetWeights` / `SetWeights` blob includes kernels, biases, BN (γ/β + running stats); **not** optimizer moments |
-| **Threading** | Internal `ThreadPool`; `num_threads = 1` for host-side parallel nets |
+| **Pad (HCNN)** | Short raw inputs **zero-fill** the tail; over-long inputs throw. Spatial embed may use non-zero `pad_value` — always pass full `N` (or typed `HCNNInputView`) after spatial pack |
+| **Task / loss** | Classification → softmax CE; Regression → **sum-style** MSE grad (`pred − target`, no `/K` factor). Loss is fixed by `TaskType` |
+| **BatchNorm** | Stats are over **vertices of one sample** (per channel), not over the mini-batch |
+| **Outputs** | `Forward` / `Predict` return raw logits or predictions — **never** softmax |
+| **Arch lifecycle** | `AddConv` / `AddPool` after `RandomizeWeights` **invalidate** weights. Train/infer/`GetWeights` require a successful `RandomizeWeights` for the current stack |
+| **Weights blob** | Kernels, biases, BN γ/β + running stats when present; **not** optimizer moments or Adam timestep |
+| **Model I/O** | `save_weights` / HCNW store **parameters + coarse checks** (dims, task, layer counts). They do **not** serialize the layer graph. Keep `LayerSpec` / `HCNNConfig` (or equivalent) as the arch sidecar; rebuild the net, then `load_weights` |
+| **Concurrency** | One `HCNN` instance is exclusive-use (no concurrent train/infer on the same object). Use `num_threads = 1` when the host parallelizes across many nets |
 | **Ownership** | `HCNN` is non-copyable, movable (`unique_ptr` PIMPL) |
+
+**Canonical train/infer surface for new hosts and language bindings** (do not grow beyond this without design review):
+
+```text
+construct → AddConv/AddPool or HCNNConfig::Build
+RandomizeWeights / SetOptimizer / SetTrainDefaults
+Embed / Forward / Predict / PredictClass / ForwardBatch
+TrainStep / TrainBatch / TrainEpoch  (+ TrainParams preferred)
+GetWeights / SetWeights / GetWeightCount + sizing getters
+optional: spatial pack (full N), evaluate_*, cosine_lr, checkpoints, save/load
+```
+
+Prefer `TrainParams` (or session defaults) over long positional train argument lists. Prefer full-capacity typed inputs after spatial embed.
+
+### Integration contracts (quick table)
+
+Same rules as **Host contracts** above in compact form:
+
+| Contract | Rule |
+|----------|------|
+| **Capacity** | `input_channels * GetStartN()` |
+| **Pad (HCNN)** | Short → zero-fill; over-long → throw |
+| **Task / loss** | CE or sum-style MSE by `TaskType` |
+| **Outputs** | Raw logits / preds — no softmax |
+| **Arch** | Randomize after stack changes |
+| **Weights** | Params + BN stats; no optimizer state |
+| **Threading** | Exclusive instance; `num_threads=1` for multi-net |
+| **Ownership** | Non-copyable, movable |
 
 ---
 
@@ -124,10 +156,17 @@ cmake --build build
 cmake --install build --prefix /path/to/sdk   # optional
 ```
 
-Useful CMake options (library): `HCNN_FAST_TANH` (default ON), `HCNN_NATIVE_ARCH`, `HCNN_FAST_MATH`, `HCNN_BUILD_EXAMPLES`.
+Useful CMake options (library):
 
-For redistributable binaries that must run on different CPUs, prefer
-`-DHCNN_NATIVE_ARCH=OFF`.
+| Option | Top-level default | Subproject default | Notes |
+|--------|-------------------|--------------------|-------|
+| `HCNN_FAST_TANH` | ON | ON | Baked into the static lib; wheels should pick one and document it |
+| `HCNN_NATIVE_ARCH` | ON | **OFF** | Host-tuned codegen; **must be OFF** for wheels / redistributable packages |
+| `HCNN_FAST_MATH` | ON | ON | Relaxed float flags (not full associative-math) |
+| `HCNN_BUILD_EXAMPLES` | ON | OFF | Examples/smoke only when this repo is top-level |
+
+**Packagers / language bindings:** configure with at least
+`-DHCNN_NATIVE_ARCH=OFF`. Decide `HCNN_FAST_TANH` once per binary distribution.
 
 ### FetchContent (typical consumer project)
 
@@ -315,10 +354,7 @@ net.TrainEpoch(x, len, float_targets, n, batch, params);
 // Wrong TaskType → std::logic_error.
 ```
 
-Compatibility aliases (prefer unified names): `TrainStepRegression` /
-`TrainBatchRegression` / `TrainEpochRegression` forward to the `float*` overloads.
-
-**Regression tips (from the regression recipe):** center targets on the **train** mean; Adam is already the default; mix activations as needed (recipe often uses RELU then TANH); full-N FLATTEN without pool keeps vertex identity (useful for reservoir-like inputs).
+**Regression tips (from the regression recipe):** center targets on the **train** mean; Adam is already the default; mix activations as needed (recipe often uses RELU then TANH); full-N FLATTEN without pool keeps vertex identity (useful for reservoir-like inputs). Remember train grads are **sum-style** MSE (`pred − target`), not mean over outputs.
 
 ### Sizing and weights
 
@@ -463,7 +499,6 @@ In-tree references (not part of the install):
 |---------|--------|--------|
 | `examples/mnist_train.cpp` + `.md` | Classification | Spatial aug → DualPlane embed → `TrainEpoch` + dual checkpoint |
 | `examples/regression_timeseries.cpp` + `.md` | Regression | Synthetic length-N state → next-step sine; best-MSE checkpoint |
-| `examples/demo_arch.h` | Both | Thin `hcnn_demo::` aliases to `HCNNArch.h` (not installed) |
 | `tests/CoreSmokeTest.cpp` | API | Canonical behavior contract for the front door |
 
 ---
@@ -581,6 +616,7 @@ net.SetWeights(buf.data(), n, /*reset_optimizer_moments=*/false);
 
 // Versioned file (helpers) — portable little-endian (ints + IEEE float32)
 // Checks dim / task / layer counts / weight_count against the live net.
+// Does NOT reconstruct architecture: rebuild from LayerSpec/HCNNConfig first.
 save_weights(net, "model.hcnw");
 load_weights(net, "model.hcnw", /*reset_optimizer_moments=*/true);  // train resume
 ```
@@ -621,7 +657,8 @@ See [`spatial_preprocess.md`](spatial_preprocess.md) and `examples/mnist_train.c
 
 | Pitfall | Fix |
 |---------|-----|
-| Forgot `RandomizeWeights` | Readout not sized; weights zero / unusable |
+| Forgot `RandomizeWeights` | Train/infer/`GetWeights` throw until weights match the stack |
+| `AddConv`/`AddPool` after randomize | Weights invalidated — call `RandomizeWeights` again |
 | Softmax in `Forward` | Don’t; use logits + `argmax` / CE helper |
 | Wrong train family for `TaskType` | `logic_error` — match Classification vs Regression APIs |
 | Short `input_length` after spatial pad −1 | Use `HCNNInputView` / `input_length = N` |
