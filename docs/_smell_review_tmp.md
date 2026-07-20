@@ -126,35 +126,22 @@ One-off experiments under build dirs; gitignore covers them. Accepted process sm
 
 ---
 
-## Architecture map (smell lens)
-
-```text
-Public teach path          Advanced / dual surface
-─────────────────          ───────────────────────
-HypercubeCNN.h             HCNNNetwork (full twin API)
-  HCNN  ──PIMPL──►         HCNNConv / Pool / Readout
-  HCNNArch                 ThreadPool
-  TrainHelpers             (snake_case, source-only install)
-  Spatial*
-```
-
-Smell is not the split — it’s that **value still flows through both**.
-
----
-
 ## Prioritized “if you only fix a few” (updated)
 
 | Priority | Action | Status |
 |----------|--------|--------|
-| 1 | Cut a release — bump 0.3.0, tag, push, align docs | **open** |
+| 1 | Cut a release — **v1.0.0** tag + push + GitHub Release (CMake/docs pin ready; Python SDK pending) | **open** |
 | 2 | Harden public boundary — Network/layers non-API forever | **done** |
-| 3 | One train-entry design — `TrainParams` in demos; deprecate long positional later | **open** |
+| 3 | One train-entry design — `TrainParams` / defaults / `HCNNTrainer` in demos | **done in spirit** |
+| 3b | Formally `[[deprecate]]` long positional train overloads | **won't fix** (keep as power/compat API; ESN-friendly) |
 | 4 | Typed length-N input or spatial→Train helper (pad footgun) | **done** (option C) |
 | 5 | Complement smoke with opt-in numerical/grad or golden test | **won't fix** |
 | 6 | Optional `src/` + `include/HypercubeCNN/` layout | **won't fix** |
 | — | Drop LossType ghost API | **done** |
 | — | Drop facade grad_in loop knob | **done** |
 | — | Unify PascalCase vs snake_case dialects | **won't fix** |
+
+**Note on priority 3:** Preferring `TrainParams` / `SetTrainDefaults` / `HCNNTrainer` is the teaching path (demos use Trainer). Long positional `TrainEpoch(..., lr, mom, wd, …)` stays supported indefinitely — no deprecation attribute planned for v1.0.
 
 ---
 
