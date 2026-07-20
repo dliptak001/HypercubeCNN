@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "HCNN.h"
+#include "HCNNTrainHelpers.h"
 
 namespace py = pybind11;
 using namespace hcnn;
@@ -418,6 +419,24 @@ PYBIND11_MODULE(_core, m)
              },
              py::arg("data"),
              py::arg("reset_optimizer_moments") = false)
+
+        // ── HCNW file I/O (params only; keep arch JSON beside the file) ──
+        .def("save_weights",
+             [](const HCNN& self, const std::string& path) {
+                 py::gil_scoped_release release;
+                 save_weights(self, path);
+             },
+             py::arg("path"),
+             "Write HCNW weight file (parameters + coarse arch checks).")
+
+        .def("load_weights",
+             [](HCNN& self, const std::string& path, bool reset_optimizer_moments) {
+                 py::gil_scoped_release release;
+                 load_weights(self, path, reset_optimizer_moments);
+             },
+             py::arg("path"),
+             py::arg("reset_optimizer_moments") = false,
+             "Load HCNW into an already-built net with matching architecture.")
 
         // ── Sizing ──
         .def_property_readonly("start_dim", &HCNN::GetStartDim)

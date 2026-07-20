@@ -35,8 +35,8 @@ pip install . --no-build-isolation --force-reinstall --no-deps
 
 ## Status
 
-**Phase 2:** core train/infer plus architecture product surface (`LayerSpec`,
-`HCNNConfig`, `export_arch` / `from_arch`). HCNW file I/O is Phase 3 — see
+**Phase 3:** core train/infer, arch product surface, and **HCNW + arch JSON**
+model I/O. Tests/docs/demos are Phase 4 — see
 [docs/python_sdk_plan.md](https://github.com/dliptak001/HypercubeCNN/blob/main/docs/python_sdk_plan.md)
 and
 [docs/CPP_SDK.md](https://github.com/dliptak001/HypercubeCNN/blob/main/docs/CPP_SDK.md).
@@ -59,10 +59,8 @@ net = hc.HCNNConfig(
 x = np.random.randn(net.N).astype(np.float32)  # full capacity N = 2**dim
 logits = net.predict(x)
 
-arch = net.export_arch()           # JSON-serializable sidecar
-w = net.get_weights()
-net2 = hc.HCNN.from_arch(arch)
-net2.set_weights(w)                # bit-identical forward
+net.save("model")                  # model.hcnw + model.arch.json
+net2 = hc.HCNN.load("model")       # rebuild arch, load weights
 ```
 
 ## License

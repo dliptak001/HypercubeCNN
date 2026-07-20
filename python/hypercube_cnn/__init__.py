@@ -13,7 +13,9 @@ See ``docs/python_sdk_plan.md`` and ``docs/CPP_SDK.md``.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import List, Optional, Sequence, Union
 
 import numpy as np
@@ -509,6 +511,78 @@ class HCNN:
     ) -> None:
         """Restore from :meth:`get_weights` layout."""
         self._impl.set_weights(_to_float32(np.ravel(data)), reset_optimizer_moments)
+
+    # ── HCNW + arch sidecar file I/O ──
+
+    def save_weights(self, path: Union[str, Path]) -> None:
+        """Write an HCNW parameter file (not the layer graph).
+
+        Pair with :meth:`export_arch` JSON for a full restore. See :meth:`save`.
+        """
+        self._impl.save_weights(str(Path(path)))
+
+    def load_weights(
+        self, path: Union[str, Path], *, reset_optimizer_moments: bool = False
+    ) -> None:
+        """Load HCNW into this net (must already match the saved architecture).
+
+        Requires :meth:`randomize_weights` first (or a build that randomized).
+        Architecture mismatch, bad magic, or version errors raise ``RuntimeError``.
+        """
+        self._impl.load_weights(str(Path(path)), reset_optimizer_moments)
+
+    @staticmethod
+    def _model_paths(path: Union[str, Path]) -> tuple[Path, Path]:
+        """Resolve ``stem.hcnw`` + ``stem.arch.json`` from a path or stem."""
+        p = Path(path)
+        name = p.name
+        if name.endswith(".arch.json"):
+            stem = name[: -len(".arch.json")]
+            return p.parent / f"{stem}.hcnw", p
+        if p.suffix.lower() == ".hcnw":
+            return p, p.parent / f"{p.stem}.arch.json"
+        # bare stem (or other suffix): append both extensions
+        return Path(str(p) + ".hcnw"), Path(str(p) + ".arch.json")
+
+    def save(self, path: Union[str, Path]) -> None:
+        """Write ``path.hcnw`` + ``path.arch.json`` (or sibling pair if ``.hcnw``).
+
+        HCNW stores parameters only. The arch JSON is required to rebuild the
+        layer stack before :meth:`load_weights`.
+        """
+        hcnw, arch = self._model_paths(path)
+        arch.parent.mkdir(parents=True, exist_ok=True)
+        with open(arch, "w", encoding="utf-8") as f:
+            json.dump(self.export_arch(), f, indent=2)
+            f.write("\n")
+        self.save_weights(hcnw)
+
+    @classmethod
+    def load(
+        cls,
+        path: Union[str, Path],
+        *,
+        num_threads: Optional[int] = None,
+        reset_optimizer_moments: bool = False,
+    ) -> "HCNN":
+        """Load a model saved by :meth:`save` (arch JSON + HCNW).
+
+        Rebuilds from the arch sidecar, randomizes, then loads weights.
+        Optimizer is Adam default (not stored in HCNW).
+        """
+        hcnw, arch = cls._model_paths(path)
+        if not arch.is_file():
+            raise FileNotFoundError(
+                f"arch sidecar not found: {arch} "
+                f"(expected beside {hcnw}; save with HCNN.save or write export_arch JSON)"
+            )
+        if not hcnw.is_file():
+            raise FileNotFoundError(f"HCNW weights not found: {hcnw}")
+        with open(arch, encoding="utf-8") as f:
+            arch_dict = json.load(f)
+        net = cls.from_arch(arch_dict, num_threads=num_threads, randomize=True)
+        net.load_weights(hcnw, reset_optimizer_moments=reset_optimizer_moments)
+        return net
 
     # ── Properties ──
 

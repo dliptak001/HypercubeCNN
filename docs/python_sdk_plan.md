@@ -4,7 +4,7 @@ Living plan for the Python bindings. Capture decisions, reference notes, and pha
 
 | Field | Value |
 |-------|--------|
-| **Status** | **Phase 2 complete** — arch export/from_arch green; Phase 3 (HCNW) next |
+| **Status** | **Phase 3 complete** — HCNW + arch sidecar I/O green; Phase 4 (tests/docs/demos) next |
 | **Last updated** | 2026-07-20 |
 | **C++ peer** | [CPP_SDK.md](CPP_SDK.md) (v1.0.0 surface) |
 | **References** | `C:\CLion\HypercubeESN\python`, `C:\CLion\HypercubeHopfield\python` (patterns, not clones) |
@@ -395,10 +395,11 @@ Phases are ordered by dependency; keep PRs reviewable (prefer one phase per PR w
 
 **Exit:** Round-trip `save_weights` / `load_weights` in Python; ideally load a file produced by C++ smoke/tools on the same arch (or document manual check).
 
-- [ ] Bind `save_weights` / `load_weights` from train helpers
-- [ ] Document pair: `model.hcnw` + `model.arch.json`
-- [ ] Arch mismatch / magic / version errors surface cleanly
-- [ ] No pickle in v1 (deferred)
+- [x] Bind `save_weights` / `load_weights` from train helpers
+- [x] Document pair: `model.hcnw` + `model.arch.json` (`HCNN.save` / `HCNN.load`)
+- [x] Arch mismatch / magic / missing sidecar errors surface cleanly
+- [x] No pickle in v1 (deferred)
+- [x] Smoke: save/load identity logits; mismatch + bad magic rejected
 
 ### Phase 4 — Tests, docs, CI, demos (Tier 0 + 1)
 
@@ -540,6 +541,7 @@ Keep `ci.yml` for C++/smoke. Add `wheels.yml` for Python; do not overload C++ CI
 | 2026-07-20 | **Phase 0 done:** root `pyproject.toml`, `python/CMakeLists.txt` + stub `bindings.cpp`, `hypercube_cnn` package. Local `pip install .` → import `1.0.0`; ships `libwinpthread-1.dll`. Full MinGW `-static` rejected; ESN link recipe used. |
 | 2026-07-20 | **Phase 1 done:** `_HCNN` + enums + train/infer/weights; Python `HCNN` / `TrainParams`. Smoke: classification train, regression MSE, in-memory weight round-trip. MinGW: dynamic winpthread + ship DLL (`-Bstatic pthread` broke CLion 15.2). Use `==` not `is` for pybind enums. |
 | 2026-07-20 | **Phase 2 done:** pure-Python `arch.py` (LayerSpec, summarize_arch, HCNNConfig, arch JSON v1). `export_arch`/`from_arch`/`from_layers`; layer list tracked on `HCNN`. Smoke: param total==weight_count; set_weights identity after from_arch. |
+| 2026-07-20 | **Phase 3 done:** bind C++ HCNW `save_weights`/`load_weights`; `HCNN.save`/`load` write/read `.hcnw` + `.arch.json`. Smoke: bit-identical logits; arch mismatch + bad magic + missing sidecar rejected. |
 
 ---
 
