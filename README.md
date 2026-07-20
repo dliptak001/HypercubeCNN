@@ -169,6 +169,7 @@ CMake library target: **`HypercubeCNNCore`**. Optional targets: `MNISTTrain`, `R
 | Doc | Role |
 |-----|------|
 | **[docs/CPP_SDK.md](docs/CPP_SDK.md)** | Onboarding + API + educational train loops |
+| **[ChangeLog.md](ChangeLog.md)** | Release notes (v1.0.0 public SDK arc) |
 | [docs/internals.md](docs/internals.md) | Training cores, threading, optimizers, build options |
 | [docs/spatial_preprocess.md](docs/spatial_preprocess.md) | Image aug/embed (pad contracts) |
 | [examples/mnist_train.md](examples/mnist_train.md) | Classification demo |

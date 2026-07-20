@@ -122,7 +122,7 @@ One-off experiments under build dirs; gitignore covers them. Accepted process sm
 | — | Native/fast-math defaults ON | **won't fix** | Demo/local Release defaults; packagers use `-DHCNN_NATIVE_ARCH=OFF` (etc.) |
 | — | README FetchContent tag | **done** (pin v1.0.0) | Aligns with planned release; create tag on push |
 | — | No Python / bindings | open | Product choice |
-| — | No ChangeLog for big arc | open | Release hygiene |
+| — | No ChangeLog for big arc | **done** | `ChangeLog.md` for v1.0.0 (pre-tag) |
 
 ---
 

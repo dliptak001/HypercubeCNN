@@ -1,6 +1,6 @@
 # HypercubeCNN C++ SDK
 
-Canonical C++ SDK guide for **HypercubeCNN** (`HypercubeCNNCore` **v1.0.0**). Aligned with the core headers and in-tree teaching demos.
+Canonical C++ SDK guide for **HypercubeCNN** (`HypercubeCNNCore` **v1.0.0**). Aligned with the core headers and in-tree teaching demos. Release notes: **[ChangeLog.md](../ChangeLog.md)**.
 
 **Audience:** undergrad / grad students who know C++ and the basics of neural nets (forward, loss, SGD/Adam). No framework background required.
 
