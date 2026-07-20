@@ -113,7 +113,7 @@ include(FetchContent)
 FetchContent_Declare(
     HypercubeCNN
     GIT_REPOSITORY https://github.com/dliptak001/HypercubeCNN.git
-    GIT_TAG        v0.1.0          # pin a tag or commit you trust
+    GIT_TAG        v1.0.0          # pin a release tag (see GitHub Releases)
 )
 FetchContent_MakeAvailable(HypercubeCNN)
 target_link_libraries(my_app PRIVATE HypercubeCNNCore)

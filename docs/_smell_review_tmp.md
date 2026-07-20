@@ -47,10 +47,12 @@ Kept two-type PIMPL. Tightened boundary:
 
 **Type:** thin facade over fat twin (boundary fixed; merge not desired).
 
-### 4. Version / release story lags the work — **open**
-CMake/docs still **v0.2.0** after a large public-API arc (Predict, TrainParams, Arch, FlatDataset, save/load, Adam default, install surface, LossType removal). Branch was ~30+ commits ahead of origin when reviewed.
+### 4. Version / release story lags the work — **partial**
+CMake + docs + FetchContent pins set to **v1.0.0** (planned first full public release).
+Still need: finish Python SDK / remaining polish, push `main`, create git tag
+`v1.0.0` + GitHub Release, ChangeLog. Until then the tag is aspirational on remote.
 
-**Type:** version and remote don’t match product reality.
+**Type:** version and remote don’t match product reality (docs aligned; publish pending).
 
 ### 5. Single smoke binary is both strength and gap — **won't fix**
 `CoreSmokeTest` is the sole fast behavioral contract (~200+ checks, sub-second). Accepted: one well-maintained smoke suite is enough for this stage; no separate grad-check / golden / fuzz suite required. Revisit only if kernel/optimizer refactors demand numerical gates.
@@ -115,10 +117,10 @@ One-off experiments under build dirs; gitignore covers them. Accepted process sm
 | # | Item | Status | Note |
 |---|------|--------|------|
 | — | Non-movable `HCNN` | **done** | Movable via heap PIMPL; still non-copyable |
-| — | No multi-channel spatial | open / by design | Documented limit |
-| — | C++23 hard requirement | open | Narrows coursework environments |
-| — | Native/fast-math defaults ON | open | Demo-friendly; packaging risk |
-| — | README FetchContent tag | open | Easy to show stale tag |
+| — | No multi-channel spatial | **won't fix** | Spatial helpers are single-channel by design; core `c_in > 1` via custom pack |
+| — | C++23 hard requirement | **won't fix** | Project standard; coursework/toolchains must support C++23 |
+| — | Native/fast-math defaults ON | **won't fix** | Demo/local Release defaults; packagers use `-DHCNN_NATIVE_ARCH=OFF` (etc.) |
+| — | README FetchContent tag | **done** (pin v1.0.0) | Aligns with planned release; create tag on push |
 | — | No Python / bindings | open | Product choice |
 | — | No ChangeLog for big arc | open | Release hygiene |
 

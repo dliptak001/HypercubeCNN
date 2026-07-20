@@ -1,6 +1,6 @@
 # HypercubeCNN C++ SDK
 
-Canonical C++ SDK guide for **HypercubeCNN** (`HypercubeCNNCore` **v0.2.0**). Aligned with the core headers and in-tree teaching demos.
+Canonical C++ SDK guide for **HypercubeCNN** (`HypercubeCNNCore` **v1.0.0**). Aligned with the core headers and in-tree teaching demos.
 
 **Audience:** undergrad / grad students who know C++ and the basics of neural nets (forward, loss, SGD/Adam). No framework background required.
 
@@ -114,7 +114,7 @@ include(FetchContent)
 FetchContent_Declare(
     HypercubeCNN
     GIT_REPOSITORY https://github.com/dliptak001/HypercubeCNN.git
-    GIT_TAG        v0.2.0   # or a commit / branch you pin
+    GIT_TAG        v1.0.0   # pin a release tag (see GitHub Releases)
 )
 FetchContent_MakeAvailable(HypercubeCNN)
 
