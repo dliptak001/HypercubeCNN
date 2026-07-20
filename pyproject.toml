@@ -1,0 +1,99 @@
+[build-system]
+requires = ["scikit-build-core>=0.10", "pybind11>=2.13"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "hypercube-cnn"
+version = "1.0.0"
+description = "Python bindings for HypercubeCNN: dependency-free hypercube CNN core"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.21"]
+license = "Apache-2.0"
+readme = "python/README.md"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: C++",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+]
+
+[project.urls]
+Homepage = "https://github.com/dliptak001/HypercubeCNN"
+Repository = "https://github.com/dliptak001/HypercubeCNN"
+Documentation = "https://github.com/dliptak001/HypercubeCNN/blob/main/docs/python_sdk_plan.md"
+
+[project.optional-dependencies]
+test = ["pytest>=7.0"]
+
+[tool.scikit-build]
+cmake.source-dir = "python"
+cmake.build-type = "Release"
+# Package lives under python/; last path component is the import name.
+wheel.packages = ["python/hypercube_cnn"]
+# Sdist must carry C++ sources + private headers compiled into _core.
+sdist.include = [
+    "HCNN.cpp",
+    "HCNN.h",
+    "HCNNArch.h",
+    "HCNNConv.cpp",
+    "HCNNConv.h",
+    "HCNNInput.h",
+    "HCNNNetwork.cpp",
+    "HCNNNetwork.h",
+    "HCNNPool.cpp",
+    "HCNNPool.h",
+    "HCNNReadout.cpp",
+    "HCNNReadout.h",
+    "HCNNTrainHelpers.cpp",
+    "HCNNTrainHelpers.h",
+    "HCNNTypes.h",
+    "HypercubeCNN.h",
+    "ThreadPool.h",
+    "LICENSE",
+    "python/**",
+]
+
+[tool.pytest.ini_options]
+addopts = "--import-mode=importlib"
+
+# ── cibuildwheel ──
+# Wheel matrix: portable arch via HYPERCUBE_ARCH (not -march=native).
+# HCNN_FAST_TANH defaults ON in python/CMakeLists.txt (matches C++ default).
+
+[tool.cibuildwheel]
+build = "cp310-* cp311-* cp312-* cp313-*"
+skip = ["*-win32", "*-manylinux_i686", "*-musllinux*", "pp*"]
+test-requires = ["numpy>=1.21"]
+# Phase 0: import smoke only. Replace with pytest once Phase 4 tests land.
+test-command = "python -c \"import hypercube_cnn as hc; print(hc.__version__)\""
+
+[tool.cibuildwheel.linux]
+archs = ["x86_64", "aarch64"]
+manylinux-x86_64-image = "manylinux_2_28"
+manylinux-aarch64-image = "manylinux_2_28"
+before-all = "yum install -y gcc-toolset-13-gcc-c++"
+environment = { PATH="/opt/rh/gcc-toolset-13/root/usr/bin:$PATH", CC="gcc", CXX="g++", SKBUILD_CMAKE_ARGS="-DHYPERCUBE_ARCH=x86-64-v2" }
+
+[[tool.cibuildwheel.overrides]]
+select = "*-manylinux_aarch64"
+environment = { PATH="/opt/rh/gcc-toolset-13/root/usr/bin:$PATH", CC="gcc", CXX="g++", SKBUILD_CMAKE_ARGS="-DHYPERCUBE_ARCH=none" }
+
+[tool.cibuildwheel.macos]
+archs = ["x86_64", "arm64"]
+environment = { SKBUILD_CMAKE_ARGS="-DHYPERCUBE_ARCH=x86-64-v2", MACOSX_DEPLOYMENT_TARGET="13.0" }
+
+[[tool.cibuildwheel.overrides]]
+select = "*-macosx_arm64"
+environment = { SKBUILD_CMAKE_ARGS="-DHYPERCUBE_ARCH=none", MACOSX_DEPLOYMENT_TARGET="13.0" }
+
+[tool.cibuildwheel.windows]
+archs = ["AMD64"]
+environment = { SKBUILD_CMAKE_ARGS="-DHYPERCUBE_ARCH=none" }
