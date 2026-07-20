@@ -150,7 +150,7 @@ cmake --build build --target MNISTTrain RegressionTimeseries
 HypercubeCNN.h             Umbrella include (core + arch + helpers + spatial)
 HCNN.h / HCNNTypes.h       Public front door + enums
 HCNNArch.h                 LayerSpec, apply_arch, HCNNConfig::Build
-HCNNTrainHelpers.*         Metrics, cosine LR, checkpoints
+HCNNTrainHelpers.*         Metrics, flat dataset, cosine LR, checkpoints, weight files
 HCNNSpatial*               Optional 2D aug + embed (images)
 HCNNNetwork / Conv / …     Advanced / internal (not in install public set)
 examples/                  Teaching demos (+ demo_arch.h shim)

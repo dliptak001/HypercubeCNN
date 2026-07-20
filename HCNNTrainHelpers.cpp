@@ -4,10 +4,60 @@
 #include "HCNNTrainHelpers.h"
 
 #include <cmath>
+#include <cstdint>
+#include <cstring>
+#include <fstream>
 #include <numbers>
 #include <stdexcept>
+#include <string>
+#include <vector>
 
 namespace hcnn {
+
+namespace {
+
+// Little-endian integer I/O (file format is LE regardless of host).
+void write_u32_le(std::ostream& os, std::uint32_t v) {
+    const unsigned char b[4] = {
+        static_cast<unsigned char>(v & 0xFFu),
+        static_cast<unsigned char>((v >> 8) & 0xFFu),
+        static_cast<unsigned char>((v >> 16) & 0xFFu),
+        static_cast<unsigned char>((v >> 24) & 0xFFu),
+    };
+    os.write(reinterpret_cast<const char*>(b), 4);
+}
+
+void write_i32_le(std::ostream& os, std::int32_t v) {
+    write_u32_le(os, static_cast<std::uint32_t>(v));
+}
+
+void write_u64_le(std::ostream& os, std::uint64_t v) {
+    write_u32_le(os, static_cast<std::uint32_t>(v & 0xFFFFFFFFu));
+    write_u32_le(os, static_cast<std::uint32_t>((v >> 32) & 0xFFFFFFFFu));
+}
+
+std::uint32_t read_u32_le(std::istream& is) {
+    unsigned char b[4];
+    is.read(reinterpret_cast<char*>(b), 4);
+    if (!is)
+        throw std::runtime_error("hcnn::load_weights: short read (u32)");
+    return static_cast<std::uint32_t>(b[0])
+         | (static_cast<std::uint32_t>(b[1]) << 8)
+         | (static_cast<std::uint32_t>(b[2]) << 16)
+         | (static_cast<std::uint32_t>(b[3]) << 24);
+}
+
+std::int32_t read_i32_le(std::istream& is) {
+    return static_cast<std::int32_t>(read_u32_le(is));
+}
+
+std::uint64_t read_u64_le(std::istream& is) {
+    const std::uint64_t lo = read_u32_le(is);
+    const std::uint64_t hi = read_u32_le(is);
+    return lo | (hi << 32);
+}
+
+} // namespace
 
 // -----------------------------------------------------------------------------
 // Metrics
@@ -112,10 +162,53 @@ void HCNNFlatDataset::reset(int n, int len) {
     std::vector<float> new_inputs(
         static_cast<size_t>(n) * static_cast<size_t>(len));
     std::vector<int> new_targets(static_cast<size_t>(n));
+    std::vector<float> empty_ft;
     inputs.swap(new_inputs);
     targets.swap(new_targets);
+    float_targets.swap(empty_ft);
     count = n;
     input_length = len;
+    num_outputs = 0;
+}
+
+void HCNNFlatDataset::reset_regression(int n, int len, int n_out) {
+    if (n < 0 || len < 0 || n_out < 1)
+        throw std::invalid_argument(
+            "HCNNFlatDataset::reset_regression: n,len >= 0 and num_outputs >= 1");
+    std::vector<float> new_inputs(
+        static_cast<size_t>(n) * static_cast<size_t>(len));
+    std::vector<float> new_ft(
+        static_cast<size_t>(n) * static_cast<size_t>(n_out));
+    std::vector<int> empty_cls;
+    inputs.swap(new_inputs);
+    float_targets.swap(new_ft);
+    targets.swap(empty_cls);
+    count = n;
+    input_length = len;
+    num_outputs = n_out;
+}
+
+HCNNRegEval evaluate_regression(HCNN& net, const HCNNFlatDataset& ds) {
+    if (ds.count <= 0 || ds.input_length <= 0)
+        throw std::invalid_argument(
+            "hcnn::evaluate_regression: empty HCNNFlatDataset");
+    if (!ds.has_float_targets())
+        throw std::invalid_argument(
+            "hcnn::evaluate_regression: dataset has no float_targets "
+            "(use reset_regression)");
+
+    const size_t need_in =
+        static_cast<size_t>(ds.count) * static_cast<size_t>(ds.input_length);
+    if (ds.inputs.size() < need_in)
+        throw std::invalid_argument(
+            "hcnn::evaluate_regression: inputs.size() < count * input_length");
+
+    return evaluate_regression(net,
+                               ds.inputs.data(),
+                               ds.input_length,
+                               ds.float_targets.data(),
+                               ds.count,
+                               ds.num_outputs);
 }
 
 // -----------------------------------------------------------------------------
@@ -266,6 +359,109 @@ void HCNNBestMetricCheckpoint::restore(HCNN& net) const {
         throw std::logic_error(
             "HCNNBestMetricCheckpoint::restore: no snapshot");
     net.SetWeights(weights_);
+}
+
+// -----------------------------------------------------------------------------
+// Versioned weight file I/O
+// -----------------------------------------------------------------------------
+
+void save_weights(const HCNN& net, const std::string& path) {
+    if (!net.WeightsInitialized())
+        throw std::logic_error(
+            "hcnn::save_weights: call RandomizeWeights() first");
+    if (path.empty())
+        throw std::invalid_argument("hcnn::save_weights: empty path");
+
+    const size_t n = net.GetWeightCount();
+    std::vector<float> blob(n);
+    net.GetWeights(blob.data(), n);
+
+    std::ofstream os(path, std::ios::binary | std::ios::trunc);
+    if (!os)
+        throw std::runtime_error("hcnn::save_weights: cannot open " + path);
+
+    os.write("HCNW", 4);
+    write_u32_le(os, kHCNNWeightFileVersion);
+    write_i32_le(os, net.GetStartDim());
+    write_i32_le(os, net.GetCurrentDim());
+    write_i32_le(os, net.GetNumOutputs());
+    write_i32_le(os, net.GetInputChannels());
+    write_i32_le(os, static_cast<std::int32_t>(net.GetTaskType()));
+    write_i32_le(os, static_cast<std::int32_t>(net.GetNumConv()));
+    write_i32_le(os, static_cast<std::int32_t>(net.GetNumPool()));
+    write_u64_le(os, static_cast<std::uint64_t>(n));
+    os.write(reinterpret_cast<const char*>(blob.data()),
+             static_cast<std::streamsize>(n * sizeof(float)));
+    if (!os)
+        throw std::runtime_error("hcnn::save_weights: write failed for " + path);
+}
+
+void load_weights(HCNN& net, const std::string& path,
+                  bool reset_optimizer_moments) {
+    if (!net.WeightsInitialized())
+        throw std::logic_error(
+            "hcnn::load_weights: call RandomizeWeights() first "
+            "(network must already match the saved architecture)");
+    if (path.empty())
+        throw std::invalid_argument("hcnn::load_weights: empty path");
+
+    std::ifstream is(path, std::ios::binary);
+    if (!is)
+        throw std::runtime_error("hcnn::load_weights: cannot open " + path);
+
+    char magic[4];
+    is.read(magic, 4);
+    if (!is || magic[0] != 'H' || magic[1] != 'C' || magic[2] != 'N'
+        || magic[3] != 'W') {
+        throw std::runtime_error(
+            "hcnn::load_weights: bad magic (expected HCNW) in " + path);
+    }
+
+    const std::uint32_t version = read_u32_le(is);
+    if (version != kHCNNWeightFileVersion) {
+        throw std::runtime_error(
+            "hcnn::load_weights: unsupported version "
+            + std::to_string(version) + " (want "
+            + std::to_string(kHCNNWeightFileVersion) + ") in " + path);
+    }
+
+    const int start_dim = read_i32_le(is);
+    const int current_dim = read_i32_le(is);
+    const int num_outputs = read_i32_le(is);
+    const int input_channels = read_i32_le(is);
+    const int task_type = read_i32_le(is);
+    const int num_conv = read_i32_le(is);
+    const int num_pool = read_i32_le(is);
+    const std::uint64_t weight_count = read_u64_le(is);
+
+    if (start_dim != net.GetStartDim()
+        || current_dim != net.GetCurrentDim()
+        || num_outputs != net.GetNumOutputs()
+        || input_channels != net.GetInputChannels()
+        || task_type != static_cast<int>(net.GetTaskType())
+        || num_conv != static_cast<int>(net.GetNumConv())
+        || num_pool != static_cast<int>(net.GetNumPool())) {
+        throw std::runtime_error(
+            "hcnn::load_weights: architecture mismatch vs live network in "
+            + path);
+    }
+
+    const size_t need = net.GetWeightCount();
+    if (weight_count != static_cast<std::uint64_t>(need)) {
+        throw std::runtime_error(
+            "hcnn::load_weights: weight_count "
+            + std::to_string(weight_count) + " != GetWeightCount "
+            + std::to_string(need) + " in " + path);
+    }
+
+    std::vector<float> blob(need);
+    is.read(reinterpret_cast<char*>(blob.data()),
+            static_cast<std::streamsize>(need * sizeof(float)));
+    if (!is)
+        throw std::runtime_error(
+            "hcnn::load_weights: short read of weight blob in " + path);
+
+    net.SetWeights(blob.data(), need, reset_optimizer_moments);
 }
 
 } // namespace hcnn

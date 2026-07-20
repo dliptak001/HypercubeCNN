@@ -341,96 +341,129 @@ size_t HCNN::GetWeightCount() const {
     return total;
 }
 
-std::vector<float> HCNN::GetWeights() const {
+void HCNN::GetWeights(float* out, size_t n) const {
     require_weights_initialized_("HCNN::GetWeights");
-    std::vector<float> blob;
-    blob.reserve(GetWeightCount());
-
-    for (size_t i = 0; i < net_->get_num_conv(); ++i) {
-        const auto& conv = net_->get_conv(i);
-        const float* k = conv.get_kernel_data();
-        blob.insert(blob.end(), k, k + conv.get_kernel_size());
-        const float* b = conv.get_bias_data();
-        blob.insert(blob.end(), b, b + conv.get_bias_size());
-        if (conv.has_batchnorm()) {
-            const int p = conv.get_bn_param_size();
-            const float* g = conv.get_bn_gamma_data();
-            const float* bt = conv.get_bn_beta_data();
-            const float* rm = conv.get_bn_running_mean_data();
-            const float* rv = conv.get_bn_running_var_data();
-            blob.insert(blob.end(), g, g + p);
-            blob.insert(blob.end(), bt, bt + p);
-            blob.insert(blob.end(), rm, rm + p);
-            blob.insert(blob.end(), rv, rv + p);
-        }
-    }
-
-    const auto& ro = net_->get_readout();
-    const float* w = ro.get_weight_data();
-    blob.insert(blob.end(), w, w + ro.get_weight_size());
-    const float* b = ro.get_bias_data();
-    blob.insert(blob.end(), b, b + ro.get_bias_size());
-
-    return blob;
-}
-
-void HCNN::SetWeights(const std::vector<float>& blob,
-                      bool reset_optimizer_moments) {
-    require_weights_initialized_("HCNN::SetWeights");
-    if (blob.size() != GetWeightCount()) {
+    if (out == nullptr)
+        throw std::invalid_argument("HCNN::GetWeights: out is null");
+    const size_t need = GetWeightCount();
+    if (n != need) {
         throw std::invalid_argument(
-            "HCNN::SetWeights: blob size " + std::to_string(blob.size()) +
-            " != weight count " + std::to_string(GetWeightCount()));
+            "HCNN::GetWeights: n=" + std::to_string(n)
+            + " != weight count " + std::to_string(need));
     }
 
     size_t offset = 0;
-
     for (size_t i = 0; i < net_->get_num_conv(); ++i) {
-        auto& conv = net_->get_conv(i);
-        int ks = conv.get_kernel_size();
-        std::memcpy(conv.get_kernel_data(), blob.data() + offset,
+        const auto& conv = net_->get_conv(i);
+        const int ks = conv.get_kernel_size();
+        std::memcpy(out + offset, conv.get_kernel_data(),
                     static_cast<size_t>(ks) * sizeof(float));
         offset += static_cast<size_t>(ks);
-        int bs = conv.get_bias_size();
+        const int bs = conv.get_bias_size();
         if (bs > 0) {
-            std::memcpy(conv.get_bias_data(), blob.data() + offset,
+            std::memcpy(out + offset, conv.get_bias_data(),
                         static_cast<size_t>(bs) * sizeof(float));
             offset += static_cast<size_t>(bs);
         }
         if (conv.has_batchnorm()) {
             const int p = conv.get_bn_param_size();
             const size_t bytes = static_cast<size_t>(p) * sizeof(float);
-            std::memcpy(conv.get_bn_gamma_data(), blob.data() + offset, bytes);
+            std::memcpy(out + offset, conv.get_bn_gamma_data(), bytes);
             offset += static_cast<size_t>(p);
-            std::memcpy(conv.get_bn_beta_data(), blob.data() + offset, bytes);
+            std::memcpy(out + offset, conv.get_bn_beta_data(), bytes);
             offset += static_cast<size_t>(p);
-            std::memcpy(conv.get_bn_running_mean_data(), blob.data() + offset, bytes);
+            std::memcpy(out + offset, conv.get_bn_running_mean_data(), bytes);
             offset += static_cast<size_t>(p);
-            std::memcpy(conv.get_bn_running_var_data(), blob.data() + offset, bytes);
+            std::memcpy(out + offset, conv.get_bn_running_var_data(), bytes);
+            offset += static_cast<size_t>(p);
+        }
+    }
+
+    const auto& ro = net_->get_readout();
+    const int ws = ro.get_weight_size();
+    std::memcpy(out + offset, ro.get_weight_data(),
+                static_cast<size_t>(ws) * sizeof(float));
+    offset += static_cast<size_t>(ws);
+    const int rbs = ro.get_bias_size();
+    std::memcpy(out + offset, ro.get_bias_data(),
+                static_cast<size_t>(rbs) * sizeof(float));
+    offset += static_cast<size_t>(rbs);
+
+    if (offset != need) {
+        throw std::logic_error(
+            "HCNN::GetWeights: internal layout mismatch (offset "
+            + std::to_string(offset) + " vs need " + std::to_string(need) + ")");
+    }
+}
+
+std::vector<float> HCNN::GetWeights() const {
+    const size_t n = GetWeightCount();
+    std::vector<float> blob(n);
+    GetWeights(blob.data(), n);
+    return blob;
+}
+
+void HCNN::SetWeights(const float* data, size_t n, bool reset_optimizer_moments) {
+    require_weights_initialized_("HCNN::SetWeights");
+    if (data == nullptr)
+        throw std::invalid_argument("HCNN::SetWeights: data is null");
+    const size_t need = GetWeightCount();
+    if (n != need) {
+        throw std::invalid_argument(
+            "HCNN::SetWeights: n=" + std::to_string(n)
+            + " != weight count " + std::to_string(need));
+    }
+
+    size_t offset = 0;
+    for (size_t i = 0; i < net_->get_num_conv(); ++i) {
+        auto& conv = net_->get_conv(i);
+        const int ks = conv.get_kernel_size();
+        std::memcpy(conv.get_kernel_data(), data + offset,
+                    static_cast<size_t>(ks) * sizeof(float));
+        offset += static_cast<size_t>(ks);
+        const int bs = conv.get_bias_size();
+        if (bs > 0) {
+            std::memcpy(conv.get_bias_data(), data + offset,
+                        static_cast<size_t>(bs) * sizeof(float));
+            offset += static_cast<size_t>(bs);
+        }
+        if (conv.has_batchnorm()) {
+            const int p = conv.get_bn_param_size();
+            const size_t bytes = static_cast<size_t>(p) * sizeof(float);
+            std::memcpy(conv.get_bn_gamma_data(), data + offset, bytes);
+            offset += static_cast<size_t>(p);
+            std::memcpy(conv.get_bn_beta_data(), data + offset, bytes);
+            offset += static_cast<size_t>(p);
+            std::memcpy(conv.get_bn_running_mean_data(), data + offset, bytes);
+            offset += static_cast<size_t>(p);
+            std::memcpy(conv.get_bn_running_var_data(), data + offset, bytes);
             offset += static_cast<size_t>(p);
         }
     }
 
     auto& ro = net_->get_readout();
-    int ws = ro.get_weight_size();
-    std::memcpy(ro.get_weight_data(), blob.data() + offset,
+    const int ws = ro.get_weight_size();
+    std::memcpy(ro.get_weight_data(), data + offset,
                 static_cast<size_t>(ws) * sizeof(float));
     offset += static_cast<size_t>(ws);
-    int rbs = ro.get_bias_size();
-    std::memcpy(ro.get_bias_data(), blob.data() + offset,
+    const int rbs = ro.get_bias_size();
+    std::memcpy(ro.get_bias_data(), data + offset,
                 static_cast<size_t>(rbs) * sizeof(float));
     offset += static_cast<size_t>(rbs);
 
-    if (offset != blob.size()) {
+    if (offset != need) {
         throw std::logic_error(
             "HCNN::SetWeights: internal layout mismatch (offset "
-            + std::to_string(offset) + " vs blob " + std::to_string(blob.size())
-            + ")");
+            + std::to_string(offset) + " vs need " + std::to_string(need) + ")");
     }
 
-    if (reset_optimizer_moments) {
+    if (reset_optimizer_moments)
         net_->reset_optimizer_moments();
-    }
+}
+
+void HCNN::SetWeights(const std::vector<float>& blob,
+                      bool reset_optimizer_moments) {
+    SetWeights(blob.data(), blob.size(), reset_optimizer_moments);
 }
 
 } // namespace hcnn

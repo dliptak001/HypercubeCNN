@@ -5,7 +5,9 @@
 
 #include "HCNN.h"
 
+#include <cstdint>
 #include <limits>
+#include <string>
 #include <vector>
 
 namespace hcnn {
@@ -16,10 +18,11 @@ namespace hcnn {
 // Extracted from the shipped demos so teaching examples stay thin:
 //   - classification metrics (softmax CE, argmax, batch evaluate)
 //   - regression metrics (MSE, target variance, R^2)
+//   - contiguous flat datasets (classification and/or regression targets)
 //   - cosine LR schedule with floor
 //   - dual weight checkpoints (best test loss + best test accuracy)
 //   - best-metric checkpoint (minimize a scalar, e.g. test MSE)
-//   - contiguous flat classification dataset for TrainEpoch / ForwardBatch
+//   - versioned weight file save/load
 //
 // Include this header only when you need these utilities.  HCNN itself does
 // not depend on them.
@@ -56,18 +59,45 @@ struct HCNNClassEval {
     int count);
 
 // -----------------------------------------------------------------------------
-// Flat classification dataset
+// Flat dataset (classification and/or regression targets)
 // -----------------------------------------------------------------------------
 
-/// Contiguous buffers for HCNN's flat TrainEpoch / ForwardBatch APIs.
+/**
+ * Contiguous row-major buffers for HCNN train / infer APIs.
+ *
+ * Layout:
+ *   - `inputs`:          count * input_length floats
+ *   - `targets`:         count int class labels (classification; empty if unused)
+ *   - `float_targets`:   count * num_outputs floats (regression; empty if unused)
+ *
+ * Use `reset` for classification-only, `reset_regression` for regression-only.
+ * Both target buffers may be filled if you need dual-task bookkeeping, but
+ * evaluate/train helpers pick one family based on which buffer is sized.
+ */
 struct HCNNFlatDataset {
-    std::vector<float> inputs;   ///< count * input_length
-    std::vector<int>   targets;  ///< count class indices
+    std::vector<float> inputs;
+    std::vector<int>   targets;         ///< class indices; size count when used
+    std::vector<float> float_targets;   ///< count * num_outputs when used
     int count = 0;
     int input_length = 0;
+    int num_outputs = 0;  ///< regression target dim; 0 when classification-only
 
-    /// Resize/reallocate for `n` samples of length `len`.  Contents undefined.
+    /// Classification layout: size inputs + targets; clear float_targets.
     void reset(int n, int len);
+
+    /// Regression layout: size inputs + float_targets; clear class targets.
+    void reset_regression(int n, int len, int num_outputs);
+
+    /// True when targets is sized for classification eval/train.
+    [[nodiscard]] bool has_class_targets() const {
+        return count > 0 && targets.size() >= static_cast<size_t>(count);
+    }
+    /// True when float_targets is sized for regression eval/train.
+    [[nodiscard]] bool has_float_targets() const {
+        return count > 0 && num_outputs > 0
+            && float_targets.size()
+                   >= static_cast<size_t>(count) * static_cast<size_t>(num_outputs);
+    }
 
     /// Pointer to sample `i`'s input (length `input_length`).  No bounds check.
     [[nodiscard]] float* sample_input(int i) {
@@ -76,9 +106,19 @@ struct HCNNFlatDataset {
     [[nodiscard]] const float* sample_input(int i) const {
         return inputs.data() + static_cast<size_t>(i) * static_cast<size_t>(input_length);
     }
+
+    /// Pointer to sample `i`'s regression target (length `num_outputs`).
+    [[nodiscard]] float* sample_float_target(int i) {
+        return float_targets.data()
+            + static_cast<size_t>(i) * static_cast<size_t>(num_outputs);
+    }
+    [[nodiscard]] const float* sample_float_target(int i) const {
+        return float_targets.data()
+            + static_cast<size_t>(i) * static_cast<size_t>(num_outputs);
+    }
 };
 
-/// Convenience overload for HCNNFlatDataset.
+/// Convenience overload for HCNNFlatDataset (uses `targets`).
 [[nodiscard]] HCNNClassEval evaluate_classification(HCNN& net,
                                                     const HCNNFlatDataset& ds);
 
@@ -110,6 +150,9 @@ struct HCNNRegEval {
     const float* flat_targets,
     int count,
     int num_outputs = 0);
+
+/// Convenience overload for HCNNFlatDataset (uses `float_targets` / `num_outputs`).
+[[nodiscard]] HCNNRegEval evaluate_regression(HCNN& net, const HCNNFlatDataset& ds);
 
 // -----------------------------------------------------------------------------
 // Cosine LR schedule
@@ -225,4 +268,38 @@ private:
     int   best_epoch_ = 0;
 };
 
+// -----------------------------------------------------------------------------
+// Versioned weight file I/O
+// -----------------------------------------------------------------------------
+
+/// Current on-disk format version written by save_weights.
+inline constexpr std::uint32_t kHCNNWeightFileVersion = 1;
+
+/**
+ * Write a versioned weight file for `net` (must be WeightsInitialized).
+ *
+ * Binary layout (little-endian integers; IEEE-754 floats, host byte order):
+ *   magic[4] = 'H','C','N','W'
+ *   uint32 version (= kHCNNWeightFileVersion)
+ *   int32  start_dim, current_dim, num_outputs, input_channels
+ *   int32  task_type (0=Classification, 1=Regression)
+ *   int32  num_conv, num_pool
+ *   uint64 weight_count
+ *   float32 weights[weight_count]   // same layout as GetWeights
+ *
+ * Does not include optimizer moments.  Throws on I/O failure.
+ */
+void save_weights(const HCNN& net, const std::string& path);
+
+/**
+ * Load weights from a file written by save_weights into an already-built net
+ * (same architecture sizing).  Validates magic, version, dims, task, layer
+ * counts, and weight_count against the live network.
+ *
+ * @param reset_optimizer_moments  forwarded to SetWeights (default false = eval).
+ */
+void load_weights(HCNN& net, const std::string& path,
+                  bool reset_optimizer_moments = false);
+
 } // namespace hcnn
+

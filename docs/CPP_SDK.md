@@ -291,7 +291,7 @@ Calling the wrong family’s train methods throws `std::logic_error`.
 | `GetNumConv()` / `GetNumPool()` | Layer counts |
 | `GetTaskType()` / `GetLossType()` / `GetOptimizerType()` | Resolved enums |
 | `WeightsInitialized()` | True after `RandomizeWeights` |
-| `GetWeightCount()` / `GetWeights()` / `SetWeights()` | Full param blob (incl. BN when used) |
+| `GetWeightCount()` / `GetWeights` / `SetWeights` | Full param blob (vector or `float*` + n; incl. BN when used) |
 
 **Weight blob layout** (requires `RandomizeWeights` first):
 
@@ -462,10 +462,11 @@ Header: `HCNNTrainHelpers.h`. **Not** part of the conv/pool graph; does not chan
 | `argmax`, `softmax_cross_entropy` | Building blocks for custom eval |
 | `evaluate_classification` / `HCNNClassEval` | Mean CE + accuracy % over a flat batch |
 | `evaluate_regression` / `HCNNRegEval` | MSE, target variance, `r2()` |
-| `HCNNFlatDataset` | Contiguous `inputs` + int labels (classification only) |
+| `HCNNFlatDataset` | Contiguous `inputs` + class `targets` and/or `float_targets` |
 | `cosine_lr(lr_max, lr_min, epoch, num_epochs)` | Cosine anneal; epoch 0 → max, last → min |
 | `HCNNDualCheckpoint` | Best test loss **and** best test accuracy (`GetWeights` blobs) |
 | `HCNNBestMetricCheckpoint` | Best (lowest) scalar, e.g. test MSE |
+| `save_weights` / `load_weights` | Versioned binary weight files (architecture-checked) |
 
 ### Cosine LR
 
@@ -510,17 +511,39 @@ best.restore(net);
 
 Checkpoints use `GetWeights` / `SetWeights` (kernels, biases, BN γ/β + running stats when present). **No** optimizer moments. Dual-checkpoint restore is eval-oriented; for train resume after restore use `SetWeights(blob, true)` or `SetOptimizer`.
 
-### Flat classification dataset
+### Flat dataset (classification and regression)
 
 ```cpp
+// Classification
 HCNNFlatDataset ds;
-ds.reset(n, input_length);   // inputs = n*len, targets = n
+ds.reset(n, input_length);   // inputs = n*len, targets = n ints
 // fill ds.sample_input(i) and ds.targets[i]
 net.TrainEpoch(ds.inputs.data(), ds.input_length,
-               ds.targets.data(), ds.count, batch, lr, ...);
+               ds.targets.data(), ds.count, batch, tp);
+auto r = evaluate_classification(net, ds);
+
+// Regression
+HCNNFlatDataset reg;
+reg.reset_regression(n, input_length, /*num_outputs=*/1);
+// fill reg.sample_input(i) and reg.sample_float_target(i)[0..]
+net.TrainEpochRegression(reg.inputs.data(), reg.input_length,
+                         reg.float_targets.data(), reg.count, batch, tp);
+auto re = evaluate_regression(net, reg);
 ```
 
-Regression demos keep their own `float` target buffers; there is no regression twin of `HCNNFlatDataset`.
+### Weight blob I/O (core + helpers)
+
+```cpp
+// In-memory (HCNN) — pointer form avoids extra allocation
+size_t n = net.GetWeightCount();
+std::vector<float> buf(n);
+net.GetWeights(buf.data(), n);
+net.SetWeights(buf.data(), n, /*reset_optimizer_moments=*/false);
+
+// Versioned file (helpers) — checks dim / task / layer counts / weight_count
+save_weights(net, "model.hcnw");
+load_weights(net, "model.hcnw", /*reset_optimizer_moments=*/true);  // train resume
+```
 
 ### Image demo pipeline
 
@@ -623,7 +646,7 @@ net->PredictClass(raw, len);     // classification only
 TrainParams p{ .learning_rate = 1e-3f, .weight_decay = 1e-3f, .shuffle_seed = e+1 };
 net->TrainEpoch(x, len, y, n, batch, p);
 
-// Helpers: cosine_lr, evaluate_*, HCNNDualCheckpoint / HCNNBestMetricCheckpoint
+// Helpers: cosine_lr, evaluate_*, FlatDataset, save/load_weights, checkpoints
 ```
 
 **Dependencies:** C++23 standard library + threads only.

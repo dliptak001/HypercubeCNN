@@ -221,14 +221,23 @@ public:
     /// Total floats in the GetWeights blob (requires WeightsInitialized).
     [[nodiscard]] size_t GetWeightCount() const;
 
-    /// Flatten parameters + BN running stats (when present).
-    /// Layout: per conv (kernel, bias?, gamma/beta/running_mean/running_var?)
-    /// then readout weights + bias.  Does **not** include optimizer moments.
+    /// Flatten parameters + BN running stats (when present) into caller buffer.
+    /// @param out  Must hold at least GetWeightCount() floats.
+    /// @param n    Size of `out` in floats; must equal GetWeightCount().
+    /// Layout: per conv (kernel, bias?, γ/β/running_mean/running_var?) then
+    /// readout weights + bias.  Does **not** include optimizer moments.
+    void GetWeights(float* out, size_t n) const;
+
+    /// Allocating convenience wrapper around GetWeights(float*, size_t).
     [[nodiscard]] std::vector<float> GetWeights() const;
 
-    /// Restore from GetWeights layout.
+    /// Restore from GetWeights layout (pointer form; no extra allocation).
     /// @param reset_optimizer_moments true → zero moments + Adam step (train resume).
     ///        false (default) → weights/BN only (eval/export restore).
+    void SetWeights(const float* data, size_t n,
+                    bool reset_optimizer_moments = false);
+
+    /// Vector overload of SetWeights(const float*, size_t, bool).
     void SetWeights(const std::vector<float>& blob,
                     bool reset_optimizer_moments = false);
 

@@ -177,30 +177,25 @@ drive_and_collect(const ReservoirParams& params,
 }
 
 // ---------------------------------------------------------------------------
-// Flat regression buffers
+// Pack samples into public HCNNFlatDataset (regression layout)
 // ---------------------------------------------------------------------------
 
-struct FlatRegDataset {
-    std::vector<float> inputs;
-    std::vector<float> targets;
-    int count = 0;
-    int input_length = 0;
-
-    void from_samples(const std::vector<TimeseriesSample>& ds, int N) {
-        count = static_cast<int>(ds.size());
-        input_length = N;
-        inputs.resize(static_cast<size_t>(count) * static_cast<size_t>(N));
-        targets.resize(static_cast<size_t>(count));
-        for (int i = 0; i < count; ++i) {
-            if (static_cast<int>(ds[static_cast<size_t>(i)].state.size()) != N)
-                throw std::runtime_error("FlatRegDataset: state length != N");
-            std::copy(ds[static_cast<size_t>(i)].state.begin(),
-                      ds[static_cast<size_t>(i)].state.end(),
-                      inputs.begin() + static_cast<size_t>(i) * static_cast<size_t>(N));
-            targets[static_cast<size_t>(i)] = ds[static_cast<size_t>(i)].target;
-        }
+static void fill_flat_regression(hcnn::HCNNFlatDataset& flat,
+                                 const std::vector<TimeseriesSample>& ds,
+                                 int N,
+                                 int num_outputs) {
+    if (num_outputs != 1)
+        throw std::runtime_error("fill_flat_regression: demo expects num_outputs=1");
+    flat.reset_regression(static_cast<int>(ds.size()), N, num_outputs);
+    for (int i = 0; i < flat.count; ++i) {
+        if (static_cast<int>(ds[static_cast<size_t>(i)].state.size()) != N)
+            throw std::runtime_error("fill_flat_regression: state length != N");
+        std::copy(ds[static_cast<size_t>(i)].state.begin(),
+                  ds[static_cast<size_t>(i)].state.end(),
+                  flat.sample_input(i));
+        flat.sample_float_target(i)[0] = ds[static_cast<size_t>(i)].target;
     }
-};
+}
 
 static void print_eval(const char* label, const hcnn::HCNNRegEval& r) {
     std::cout << label << ": mse=" << std::scientific << std::setprecision(4)
@@ -257,18 +252,18 @@ int main() {
     std::cout << "Drive:     sin(" << cfg.input_freq << "*t)\n";
     std::cout << "Threads:   " << std::thread::hardware_concurrency() << "\n";
 
-    FlatRegDataset train_flat;
-    FlatRegDataset test_flat;
-    train_flat.from_samples(train_data, N);
-    test_flat.from_samples(test_data, N);
+    hcnn::HCNNFlatDataset train_flat;
+    hcnn::HCNNFlatDataset test_flat;
+    fill_flat_regression(train_flat, train_data, N, cfg.num_outputs);
+    fill_flat_regression(test_flat, test_data, N, cfg.num_outputs);
 
     double train_mean_d = 0.0;
-    for (float t : train_flat.targets)
+    for (float t : train_flat.float_targets)
         train_mean_d += t;
     train_mean_d /= static_cast<double>(train_flat.count);
     const float train_mean = static_cast<float>(train_mean_d);
-    for (float& t : train_flat.targets) t -= train_mean;
-    for (float& t : test_flat.targets)  t -= train_mean;
+    for (float& t : train_flat.float_targets) t -= train_mean;
+    for (float& t : test_flat.float_targets)  t -= train_mean;
 
     std::cout << "Centering: subtracted train target mean "
               << std::scientific << std::setprecision(3) << train_mean
@@ -302,10 +297,8 @@ int main() {
               << ", wd=" << cfg.weight_decay
               << ", epochs=" << cfg.epochs << ") ===\n";
 
-    auto eval_ds = [&](const FlatRegDataset& ds) {
-        return hcnn::evaluate_regression(net, ds.inputs.data(), ds.input_length,
-                                         ds.targets.data(), ds.count,
-                                         cfg.num_outputs);
+    auto eval_ds = [&](const hcnn::HCNNFlatDataset& ds) {
+        return hcnn::evaluate_regression(net, ds);
     };
 
     hcnn::HCNNRegEval before = eval_ds(test_flat);
@@ -320,7 +313,7 @@ int main() {
 
         auto t0 = std::chrono::steady_clock::now();
         net.TrainEpochRegression(train_flat.inputs.data(), train_flat.input_length,
-                                 train_flat.targets.data(),
+                                 train_flat.float_targets.data(),
                                  train_flat.count, cfg.batch_size,
                                  lr, cfg.momentum, cfg.weight_decay,
                                  /*shuffle_seed=*/static_cast<unsigned>(e + 1));

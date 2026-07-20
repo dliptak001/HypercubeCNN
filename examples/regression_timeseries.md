@@ -213,6 +213,7 @@ Local packing: `FlatRegDataset` in the example. Architecture types live in
 | Metrics helper | `evaluate_classification` | `evaluate_regression` |
 | Checkpoint | `HCNNDualCheckpoint` | `HCNNBestMetricCheckpoint` |
 | Shared arch product | `HCNNArch.h` (+ demo shim) | same |
+| Flat data | `HCNNFlatDataset::reset_regression` | public helper |
 
 Conv/pool stack, forward, weight init, optimizer, and batch parallelism are
 shared; only loss gradient and target type differ.

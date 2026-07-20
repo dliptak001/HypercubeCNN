@@ -25,6 +25,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <iostream>
 #include <random>
 #include <stdexcept>
@@ -58,6 +59,8 @@ using hcnn::softmax_cross_entropy;
 using hcnn::evaluate_classification;
 using hcnn::evaluate_regression;
 using hcnn::cosine_lr;
+using hcnn::save_weights;
+using hcnn::load_weights;
 
 // ---------------------------------------------------------------------------
 //  Reporting
@@ -1719,6 +1722,92 @@ static void section_train_helpers() {
         HCNNBestMetricCheckpoint empty;
         check(throws([&] { empty.restore(net); }),
               "empty best-metric restore throws");
+    }
+
+    // Unified FlatDataset regression path
+    {
+        HCNN net(5, /*num_outputs=*/2, 1, TaskType::Regression);
+        net.AddConv(4);
+        net.RandomizeWeights(/*scale=*/0.0f, /*seed=*/5);
+        const int N = net.GetStartN();
+        const int n = 8;
+
+        HCNNFlatDataset ds;
+        ds.reset_regression(n, N, /*num_outputs=*/2);
+        check(ds.has_float_targets() && !ds.has_class_targets(),
+              "reset_regression sizes float_targets only");
+        for (int i = 0; i < n; ++i) {
+            std::fill(ds.sample_input(i), ds.sample_input(i) + N, 0.05f * i);
+            ds.sample_float_target(i)[0] = 0.1f * i;
+            ds.sample_float_target(i)[1] = -0.05f * i;
+        }
+        auto r = evaluate_regression(net, ds);
+        check(r.count == n && std::isfinite(r.mse),
+              "evaluate_regression(FlatDataset) finite");
+
+        TrainParams p;
+        p.learning_rate = 0.05f;
+        net.TrainEpochRegression(ds.inputs.data(), ds.input_length,
+                                 ds.float_targets.data(), ds.count, 4, p);
+        check(std::isfinite(evaluate_regression(net, ds).mse),
+              "TrainEpochRegression from FlatDataset buffers");
+    }
+
+    // Pointer Get/SetWeights + versioned save/load
+    {
+        HCNN net(5, 3);
+        net.AddConv(4);
+        net.AddPool(PoolType::MAX);
+        net.AddConv(4);
+        net.RandomizeWeights(/*scale=*/0.0f, /*seed=*/21);
+
+        const size_t n = net.GetWeightCount();
+        std::vector<float> buf(n, 0.0f);
+        net.GetWeights(buf.data(), n);
+        auto v = net.GetWeights();
+        check(v.size() == n, "vector GetWeights size");
+        float max_diff = 0.0f;
+        for (size_t i = 0; i < n; ++i)
+            max_diff = std::max(max_diff, std::abs(buf[i] - v[i]));
+        check(max_diff == 0.0f, "pointer GetWeights matches vector form");
+
+        check(throws([&] { net.GetWeights(buf.data(), n + 1); }),
+              "GetWeights wrong n throws");
+        check(throws([&] { net.SetWeights(static_cast<const float*>(nullptr), n); }),
+              "SetWeights null throws");
+
+        // Mutate then restore via pointer SetWeights
+        std::vector<float> zeros(n, 0.0f);
+        net.SetWeights(zeros.data(), n, /*reset_optimizer_moments=*/true);
+        std::vector<float> after_zero(n);
+        net.GetWeights(after_zero.data(), n);
+        bool all_zero = true;
+        for (float x : after_zero)
+            if (x != 0.0f) { all_zero = false; break; }
+        check(all_zero, "pointer SetWeights zeros blob");
+        net.SetWeights(buf.data(), n, true);
+
+        const char* path = "hcnn_smoke_weights_v1.bin";
+        save_weights(net, path);
+
+        // Corrupt live weights then reload
+        net.SetWeights(zeros.data(), n, true);
+        load_weights(net, path, /*reset_optimizer_moments=*/true);
+        std::vector<float> restored(n);
+        net.GetWeights(restored.data(), n);
+        max_diff = 0.0f;
+        for (size_t i = 0; i < n; ++i)
+            max_diff = std::max(max_diff, std::abs(restored[i] - buf[i]));
+        check(max_diff == 0.0f, "save/load_weights round-trip");
+
+        // Architecture mismatch
+        HCNN other(5, 3);
+        other.AddConv(8);  // different width
+        other.RandomizeWeights();
+        check(throws([&] { load_weights(other, path); }),
+              "load_weights rejects arch mismatch");
+
+        std::remove(path);
     }
 
     end_section();
