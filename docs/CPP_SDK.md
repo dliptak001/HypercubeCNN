@@ -546,7 +546,8 @@ std::vector<float> buf(n);
 net.GetWeights(buf.data(), n);
 net.SetWeights(buf.data(), n, /*reset_optimizer_moments=*/false);
 
-// Versioned file (helpers) — checks dim / task / layer counts / weight_count
+// Versioned file (helpers) — portable little-endian (ints + IEEE float32)
+// Checks dim / task / layer counts / weight_count against the live net.
 save_weights(net, "model.hcnw");
 load_weights(net, "model.hcnw", /*reset_optimizer_moments=*/true);  // train resume
 ```

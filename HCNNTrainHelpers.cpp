@@ -16,7 +16,9 @@ namespace hcnn {
 
 namespace {
 
-// Little-endian integer I/O (file format is LE regardless of host).
+// Portable little-endian I/O (ints + IEEE-754 binary32 floats).
+static_assert(sizeof(float) == 4, "HCNW requires 32-bit float");
+
 void write_u32_le(std::ostream& os, std::uint32_t v) {
     const unsigned char b[4] = {
         static_cast<unsigned char>(v & 0xFFu),
@@ -34,6 +36,17 @@ void write_i32_le(std::ostream& os, std::int32_t v) {
 void write_u64_le(std::ostream& os, std::uint64_t v) {
     write_u32_le(os, static_cast<std::uint32_t>(v & 0xFFFFFFFFu));
     write_u32_le(os, static_cast<std::uint32_t>((v >> 32) & 0xFFFFFFFFu));
+}
+
+void write_f32_le(std::ostream& os, float f) {
+    std::uint32_t u = 0;
+    std::memcpy(&u, &f, sizeof(u));
+    write_u32_le(os, u);
+}
+
+void write_f32_le_array(std::ostream& os, const float* data, size_t n) {
+    for (size_t i = 0; i < n; ++i)
+        write_f32_le(os, data[i]);
 }
 
 std::uint32_t read_u32_le(std::istream& is) {
@@ -55,6 +68,18 @@ std::uint64_t read_u64_le(std::istream& is) {
     const std::uint64_t lo = read_u32_le(is);
     const std::uint64_t hi = read_u32_le(is);
     return lo | (hi << 32);
+}
+
+float read_f32_le(std::istream& is) {
+    const std::uint32_t u = read_u32_le(is);
+    float f = 0.0f;
+    std::memcpy(&f, &u, sizeof(f));
+    return f;
+}
+
+void read_f32_le_array(std::istream& is, float* data, size_t n) {
+    for (size_t i = 0; i < n; ++i)
+        data[i] = read_f32_le(is);
 }
 
 } // namespace
@@ -390,8 +415,7 @@ void save_weights(const HCNN& net, const std::string& path) {
     write_i32_le(os, static_cast<std::int32_t>(net.GetNumConv()));
     write_i32_le(os, static_cast<std::int32_t>(net.GetNumPool()));
     write_u64_le(os, static_cast<std::uint64_t>(n));
-    os.write(reinterpret_cast<const char*>(blob.data()),
-             static_cast<std::streamsize>(n * sizeof(float)));
+    write_f32_le_array(os, blob.data(), n);
     if (!os)
         throw std::runtime_error("hcnn::save_weights: write failed for " + path);
 }
@@ -455,8 +479,7 @@ void load_weights(HCNN& net, const std::string& path,
     }
 
     std::vector<float> blob(need);
-    is.read(reinterpret_cast<char*>(blob.data()),
-            static_cast<std::streamsize>(need * sizeof(float)));
+    read_f32_le_array(is, blob.data(), need);
     if (!is)
         throw std::runtime_error(
             "hcnn::load_weights: short read of weight blob in " + path);

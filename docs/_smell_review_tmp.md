@@ -97,8 +97,10 @@ Demos keep fat `DemoConfig` + local loops; SDK has `HCNNConfig` / `TrainParams` 
 ### 13. `main.cpp` “quick check” vs CoreSmokeTest — **done**
 Removed `main.cpp` and the `HypercubeCNN` exe target. **CoreSmokeTest** is the sole in-tree smoke path (CTest `smoke`).
 
-### 14. Weight file format is host-float endian — **open** (intentional-ish)
-Ints LE; floats host IEEE. Fine for coursework on x86_64; not a portable model zoo.
+### 14. Weight file format is host-float endian — **done**
+HCNW v1 now writes/reads **all** fields little-endian, including IEEE-754
+binary32 weights (`write_f32_le` / `read_f32_le`). Safe to ship across LE archs
+(and correct on BE hosts). No legacy host-endian files to support.
 
 ### 15. Build-tree cruft risk — **open**
 One-off experiments under build dirs; gitignore covers them. Process smell, not tree pollution in git.

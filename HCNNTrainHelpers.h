@@ -407,16 +407,18 @@ inline constexpr std::uint32_t kHCNNWeightFileVersion = 1;
 /**
  * Write a versioned weight file for `net` (must be WeightsInitialized).
  *
- * Binary layout (little-endian integers; IEEE-754 floats, host byte order):
+ * Binary layout — **portable little-endian** on all hosts:
  *   magic[4] = 'H','C','N','W'
  *   uint32 version (= kHCNNWeightFileVersion)
  *   int32  start_dim, current_dim, num_outputs, input_channels
  *   int32  task_type (0=Classification, 1=Regression)
  *   int32  num_conv, num_pool
  *   uint64 weight_count
- *   float32 weights[weight_count]   // same layout as GetWeights
+ *   float32 weights[weight_count]  // IEEE-754 binary32, little-endian
+ *                                  // layout matches GetWeights
  *
- * Does not include optimizer moments.  Throws on I/O failure.
+ * Safe to ship across archs (x86_64, aarch64 LE, etc.).  Does not include
+ * optimizer moments.  Throws on I/O failure.
  */
 void save_weights(const HCNN& net, const std::string& path);
 
