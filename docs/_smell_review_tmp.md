@@ -91,8 +91,11 @@ Removed public enum and ctor param. Loss fixed by `TaskType` only (CE / MSE). `G
 ### 11. `SetReadoutGradInLoop` still on the facade — **done** (commit `acad57e`)
 Removed from `HCNN`. `ReadoutGradInLoop` lives on `HCNNReadout` only (advanced / smoke).
 
-### 12. Demo vs product config duplication — **open**
-Demos keep fat `DemoConfig` + local loops; SDK has `HCNNConfig` / `TrainParams` / helpers but demos don’t fully live on that stack.
+### 12. Demo vs product config duplication — **done** (light pass)
+MNIST + regression demos now use public facade for net/train:
+`LayerSpec`, `HCNNConfig::Build`, `HCNNTrainer`, `summarize_arch` / `print_arch`,
+`input_view`. `DemoConfig` remains for data / aug / logging only.
+`examples/demo_arch.h` still a thin alias shim (optional).
 
 ### 13. `main.cpp` “quick check” vs CoreSmokeTest — **done**
 Removed `main.cpp` and the `HypercubeCNN` exe target. **CoreSmokeTest** is the sole in-tree smoke path (CTest `smoke`).
@@ -102,8 +105,8 @@ HCNW v1 now writes/reads **all** fields little-endian, including IEEE-754
 binary32 weights (`write_f32_le` / `read_f32_le`). Safe to ship across LE archs
 (and correct on BE hosts). No legacy host-endian files to support.
 
-### 15. Build-tree cruft risk — **open**
-One-off experiments under build dirs; gitignore covers them. Process smell, not tree pollution in git.
+### 15. Build-tree cruft risk — **won't fix**
+One-off experiments under build dirs; gitignore covers them. Accepted process smell — promote keepers into `tests/`/`examples` + CMake when needed; no repo/CI impact.
 
 ---
 

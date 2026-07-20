@@ -11,23 +11,22 @@
 //   TrainEpoch(float targets) + cosine_lr + evaluate_regression (MSE / R^2)
 //   HCNNBestMetricCheckpoint (best test MSE)
 //
-// Developer knobs: DemoConfig below (same flavor as mnist_train.cpp).
-// Architecture scaffolding: examples/demo_arch.h
+// Developer knobs: DemoConfig below. Net/train core uses public HCNNConfig,
+// LayerSpec, and HCNNTrainer (living facade example).
 //
 // What this demo proves
 //   - Regression API (TaskType::Regression, MSE, TrainEpoch with float*)
 //   - Mixed activations + full-N FLATTEN at DIM=10 (N=1024)
-//   - Train-loop hygiene: cosine LR, target centering, best-MSE restore
+//   - Train-loop hygiene: HCNNTrainer cosine LR, target centering, best-MSE
 //
 // What this demo does NOT prove
-//   - Real HypercubeRC / ESN dynamics (reservoir here is uncoupled; no
+//   - Real HypercubeESN dynamics (reservoir here is uncoupled; no
 //     spectral radius, no recurrent mixing between vertices)
 //   - Hard multi-step forecasting or chaotic attractor skill
 //   - That near-perfect R^2 will transfer to production RC workloads
 //     (synthetic next-step sine is an easy target once capacity is enough)
 
 #include "HypercubeCNN.h"
-#include "demo_arch.h"  // hcnn_demo:: aliases → HCNNArch
 
 #include <algorithm>
 #include <chrono>
@@ -39,9 +38,6 @@
 #include <string>
 #include <thread>
 #include <vector>
-
-using hcnn_demo::ArchLayer;
-using hcnn_demo::ArchParamSummary;
 
 // =============================================================================
 // DEVELOPER CONFIG - edit knobs here; the rest of the file follows
@@ -60,12 +56,12 @@ struct DemoConfig {
     int input_channels = 1;
 
     // Documented recipe: RELU head + TANH second conv, full N (no pool).
-    std::vector<ArchLayer> layers = {
-        ArchLayer::Conv(16, hcnn::Activation::RELU, /*bias=*/true, /*bn=*/false),
-        ArchLayer::Conv(16, hcnn::Activation::TANH, /*bias=*/true, /*bn=*/false),
+    std::vector<hcnn::LayerSpec> layers = {
+        hcnn::LayerSpec::Conv(16, hcnn::Activation::RELU, /*bias=*/true, /*bn=*/false),
+        hcnn::LayerSpec::Conv(16, hcnn::Activation::TANH, /*bias=*/true, /*bn=*/false),
         // Examples:
-        // ArchLayer::Pool(hcnn::PoolType::MAX),
-        // ArchLayer::Conv(16, hcnn::Activation::TANH),
+        // hcnn::LayerSpec::Pool(hcnn::PoolType::MAX),
+        // hcnn::LayerSpec::Conv(16, hcnn::Activation::TANH),
     };
 
     // ----- Synthetic data -----
@@ -97,15 +93,29 @@ struct DemoConfig {
     int N() const { return 1 << dim; }
 };
 
-static ArchParamSummary summarize_demo(const DemoConfig& cfg) {
+static hcnn::ArchParamSummary summarize_demo(const DemoConfig& cfg) {
     if (cfg.epochs < 1 || cfg.batch_size < 1)
         throw std::runtime_error("DemoConfig: epochs and batch_size must be >= 1");
     if (cfg.n_train < 1 || cfg.n_test < 1)
         throw std::runtime_error("DemoConfig: n_train and n_test must be >= 1");
     if (cfg.lr_max <= 0.0f || cfg.lr_min_ratio < 0.0f || cfg.lr_min_ratio > 1.0f)
         throw std::runtime_error("DemoConfig: invalid lr_max / lr_min_ratio");
-    return hcnn_demo::summarize_arch(cfg.dim, cfg.num_outputs, cfg.input_channels,
-                                     cfg.layers);
+    return hcnn::summarize_arch(cfg.dim, cfg.num_outputs, cfg.input_channels,
+                                cfg.layers);
+}
+
+static hcnn::HCNNConfig make_net_config(const DemoConfig& cfg) {
+    hcnn::HCNNConfig nc;
+    nc.start_dim = cfg.dim;
+    nc.num_outputs = cfg.num_outputs;
+    nc.input_channels = cfg.input_channels;
+    nc.task = hcnn::TaskType::Regression;
+    nc.layers = cfg.layers;
+    nc.optimizer = cfg.optimizer;
+    nc.weight_seed = cfg.weight_seed;
+    nc.weight_scale = 0.0f;
+    nc.randomize = true;
+    return nc;
 }
 
 // ---------------------------------------------------------------------------
@@ -220,7 +230,7 @@ static bool should_log_epoch(int epoch_0, int epochs, const DemoConfig& cfg) {
 int main() {
     const DemoConfig cfg{};
     const int N = cfg.N();
-    const ArchParamSummary arch_sum = summarize_demo(cfg);
+    const hcnn::ArchParamSummary arch_sum = summarize_demo(cfg);
 
     std::cout << "HypercubeCNN Time-Series Regression\n";
     std::cout << "===================================\n";
@@ -269,25 +279,23 @@ int main() {
               << std::scientific << std::setprecision(3) << train_mean
               << std::defaultfloat << "\n";
 
-    hcnn::HCNN net(cfg.dim, cfg.num_outputs, cfg.input_channels,
-                   hcnn::TaskType::Regression);
-    hcnn_demo::apply_arch(net, cfg.dim, cfg.num_outputs, cfg.input_channels,
-                          cfg.layers);
-    net.RandomizeWeights(/*scale=*/0.0f, cfg.weight_seed);
-    net.SetOptimizer(cfg.optimizer);
+    auto net = make_net_config(cfg).Build();
+    if (!net) {
+        throw std::runtime_error("HCNNConfig::Build returned null");
+    }
 
-    if (net.GetStartN() != N) {
+    if (net->GetStartN() != N) {
         throw std::runtime_error("HCNN start N does not match DemoConfig::dim");
     }
-    if (static_cast<long long>(net.GetWeightCount()) != arch_sum.total) {
+    if (static_cast<long long>(net->GetWeightCount()) != arch_sum.total) {
         throw std::runtime_error(
             "param count mismatch: summary " + std::to_string(arch_sum.total)
-            + " vs GetWeightCount " + std::to_string(net.GetWeightCount()));
+            + " vs GetWeightCount " + std::to_string(net->GetWeightCount()));
     }
 
     std::cout << "Weight init seed: " << cfg.weight_seed << "\n";
-    hcnn_demo::print_arch(std::cout, cfg.dim, cfg.num_outputs, cfg.input_channels,
-                          cfg.layers, arch_sum);
+    hcnn::print_arch(std::cout, cfg.dim, cfg.num_outputs, cfg.input_channels,
+                     cfg.layers, arch_sum);
 
     const float lr_max = cfg.lr_max;
     const float lr_min = cfg.lr_min();
@@ -298,34 +306,36 @@ int main() {
               << ", epochs=" << cfg.epochs << ") ===\n";
 
     auto eval_ds = [&](const hcnn::HCNNFlatDataset& ds) {
-        return hcnn::evaluate_regression(net, ds);
+        return hcnn::evaluate_regression(*net, ds);
     };
 
     hcnn::HCNNRegEval before = eval_ds(test_flat);
     print_eval("Initial test", before);
     std::cout << "\n";
 
+    hcnn::HCNNTrainer trainer(*net);
+    trainer.params().momentum = cfg.momentum;
+    trainer.params().weight_decay = cfg.weight_decay;
+    trainer.set_cosine(lr_max, lr_min, cfg.epochs);
+
     hcnn::HCNNBestMetricCheckpoint best_mse;
     auto t_run0 = std::chrono::steady_clock::now();
 
     for (int e = 0; e < cfg.epochs; ++e) {
-        const float lr = hcnn::cosine_lr(lr_max, lr_min, e, cfg.epochs);
-
         auto t0 = std::chrono::steady_clock::now();
-        net.TrainEpoch(train_flat.inputs.data(), train_flat.input_length,
-                       train_flat.float_targets.data(),
-                       train_flat.count, cfg.batch_size,
-                       lr, cfg.momentum, cfg.weight_decay,
-                       /*shuffle_seed=*/static_cast<unsigned>(e + 1));
+        trainer.train_epoch(train_flat.input_view(),
+                            train_flat.float_targets.data(),
+                            cfg.batch_size, e);
         auto t1 = std::chrono::steady_clock::now();
         const double secs = std::chrono::duration<double>(t1 - t0).count();
         const double samples_per_s =
             (secs > 0.0) ? (static_cast<double>(train_flat.count) / secs) : 0.0;
+        const float lr = trainer.params().learning_rate;
 
         // Always score test for best-MSE; log train+test on selected epochs.
         hcnn::HCNNRegEval test_r = eval_ds(test_flat);
         const bool is_best = best_mse.observe(
-            net, static_cast<float>(test_r.mse), e + 1);
+            *net, static_cast<float>(test_r.mse), e + 1);
 
         if (should_log_epoch(e, cfg.epochs, cfg)) {
             hcnn::HCNNRegEval train_r = eval_ds(train_flat);
@@ -353,7 +363,7 @@ int main() {
         std::cout << "Best test MSE: epoch " << best_mse.best_epoch()
                   << "  mse=" << std::scientific << std::setprecision(4)
                   << best_mse.best_metric() << "\n";
-        best_mse.restore(net);
+        best_mse.restore(*net);
         print_eval("Restored best-mse", eval_ds(test_flat));
     }
 
@@ -375,12 +385,12 @@ int main() {
     for (int s = 0; s < n_show; ++s) {
         const int i = s * stride;
         if (i >= test_flat.count) break;
-        net.Embed(test_flat.inputs.data()
-                      + static_cast<size_t>(i) * static_cast<size_t>(N),
-                  N, embedded.data());
-        net.Forward(embedded.data(), pred.data());
+        net->Embed(test_flat.inputs.data()
+                       + static_cast<size_t>(i) * static_cast<size_t>(N),
+                   N, embedded.data());
+        net->Forward(embedded.data(), pred.data());
         const float target_orig =
-            test_flat.targets[static_cast<size_t>(i)] + train_mean;
+            test_flat.float_targets[static_cast<size_t>(i)] + train_mean;
         const float pred_orig = pred[0] + train_mean;
         const float err = pred_orig - target_orig;
         std::cout << "  " << std::setw(4) << i

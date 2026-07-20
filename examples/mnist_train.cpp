@@ -3,7 +3,6 @@
 
 #include "HypercubeCNN.h"
 #include "HCNNDataset.h"
-#include "demo_arch.h"  // hcnn_demo:: aliases → HCNNArch
 
 #include <chrono>
 #include <filesystem>
@@ -14,16 +13,13 @@
 #include <thread>
 #include <vector>
 
-using hcnn_demo::ArchLayer;
-using hcnn_demo::ArchParamSummary;
-
 // =============================================================================
-// MNIST teaching demo - thin loop on core helpers
+// MNIST teaching demo — living example of the public HCNN facade
 //
 // Loader yields 28x28 in [-1, 1].  Pipeline:
 //   (train only) HCNNSpatialAugmenter  - rot/scale/shift/shear/elastic + noise
 //   HCNNSpatialEmbedder                - DualPlaneResize -> N = 2^dim
-//   HCNN TrainEpoch + cosine_lr + dual checkpoint + evaluate_classification
+//   HCNNConfig::Build + HCNNTrainer + dual checkpoint + evaluate_classification
 //
 // Why default dim=11 (not "because N=2048 > 784"):
 //
@@ -64,7 +60,7 @@ static constexpr float kBackground  = -1.0f;   // "ink off" after loader norm
  * All developer-facing knobs for this demo.
  * Change fields / layers / seeds here - main, train loop, aug, and embed read
  * this struct.  `dim` is shared by HCNN start capacity and SpatialEmbed.
- * Architecture helpers: shared `examples/demo_arch.h` (hcnn_demo::).
+ * Net/train core: public HCNNConfig + LayerSpec + HCNNTrainer (see main).
  */
 struct DemoConfig {
     // ----- Data -----
@@ -74,16 +70,16 @@ struct DemoConfig {
     // ----- Architecture (dim also drives SpatialEmbed N = 2^dim) -----
     int dim            = 11;   // start DIM; DualPlane auto side = floor(sqrt(N/2))
     int num_outputs    = 10;   // MNIST classes
-    int input_channels = 1;    // must stay 1 (Spatial* is single-channel)
-    std::vector<ArchLayer> layers = {
+    int input_channels = 1;    // must stay 1 (Spatial* path is single-channel)
+    std::vector<hcnn::LayerSpec> layers = {
         // Documented ~99.44% mean recipe: three 16-wide RELU convs, no pool
-        ArchLayer::Conv(16, hcnn::Activation::RELU, /*bias=*/true, /*bn=*/false),
-        ArchLayer::Conv(16, hcnn::Activation::RELU, /*bias=*/true, /*bn=*/false),
-        ArchLayer::Conv(16, hcnn::Activation::RELU, /*bias=*/true, /*bn=*/false)
+        hcnn::LayerSpec::Conv(16, hcnn::Activation::RELU, /*bias=*/true, /*bn=*/false),
+        hcnn::LayerSpec::Conv(16, hcnn::Activation::RELU, /*bias=*/true, /*bn=*/false),
+        hcnn::LayerSpec::Conv(16, hcnn::Activation::RELU, /*bias=*/true, /*bn=*/false)
         // Examples:
-        // ArchLayer::Conv(32),
-        // ArchLayer::Pool(hcnn::PoolType::MAX),
-        // ArchLayer::Conv(32),
+        // hcnn::LayerSpec::Conv(32),
+        // hcnn::LayerSpec::Pool(hcnn::PoolType::MAX),
+        // hcnn::LayerSpec::Conv(32),
     };
 
     // ----- Weight init / optimizer -----
@@ -124,7 +120,7 @@ struct DemoConfig {
     float lr_min() const { return lr_max * lr_min_ratio; }
 };
 
-static ArchParamSummary summarize_demo(const DemoConfig& cfg) {
+static hcnn::ArchParamSummary summarize_demo(const DemoConfig& cfg) {
     // Demo-specific contracts beyond shared arch validation.
     if (cfg.input_channels != 1)
         throw std::runtime_error(
@@ -133,8 +129,23 @@ static ArchParamSummary summarize_demo(const DemoConfig& cfg) {
         throw std::runtime_error("DemoConfig: epochs and batch_size must be >= 1");
     if (cfg.lr_max <= 0.0f || cfg.lr_min_ratio < 0.0f || cfg.lr_min_ratio > 1.0f)
         throw std::runtime_error("DemoConfig: invalid lr_max / lr_min_ratio");
-    return hcnn_demo::summarize_arch(cfg.dim, cfg.num_outputs, cfg.input_channels,
-                                     cfg.layers);
+    return hcnn::summarize_arch(cfg.dim, cfg.num_outputs, cfg.input_channels,
+                                cfg.layers);
+}
+
+/// Map demo knobs → public HCNNConfig (Build applies layers, randomize, optimizer).
+static hcnn::HCNNConfig make_net_config(const DemoConfig& cfg) {
+    hcnn::HCNNConfig nc;
+    nc.start_dim = cfg.dim;
+    nc.num_outputs = cfg.num_outputs;
+    nc.input_channels = cfg.input_channels;
+    nc.task = hcnn::TaskType::Classification;
+    nc.layers = cfg.layers;
+    nc.optimizer = cfg.optimizer;
+    nc.weight_seed = cfg.weight_seed;
+    nc.weight_scale = 0.0f;
+    nc.randomize = true;
+    return nc;
 }
 
 // ---------------------------------------------------------------------------
@@ -241,28 +252,26 @@ static void train_and_evaluate(const char* name, hcnn::HCNN& net,
     hcnn::HCNNFlatDataset train_ds;
     hcnn::HCNNDualCheckpoint ckpt;
 
-    for (int epoch = 0; epoch < cfg.epochs; ++epoch) {
-        const float current_lr =
-            hcnn::cosine_lr(lr_max, lr_min, epoch, cfg.epochs);
+    // Public train session: cosine LR + shuffle_seed + TrainEpoch via facade.
+    hcnn::HCNNTrainer trainer(net);
+    trainer.params().momentum = cfg.momentum;
+    trainer.params().weight_decay = cfg.weight_decay;
+    trainer.set_cosine(lr_max, lr_min, cfg.epochs);
 
+    for (int epoch = 0; epoch < cfg.epochs; ++epoch) {
         // Fresh train-time aug each epoch; seed from DemoConfig.
         // Timer includes pack+aug rebuild (wall-clock cost of the epoch).
         auto t0 = std::chrono::steady_clock::now();
         const unsigned aug_seed =
             cfg.aug_seed_base + static_cast<unsigned>(epoch) * cfg.aug_seed_stride;
         fill_spatial_dataset(train_raw, train_ds, emb, train_aug, aug_seed);
-        // Full-capacity view (length N): typed path cannot zero-pad over pad_value.
-        hcnn::TrainParams tp;
-        tp.learning_rate = current_lr;
-        tp.momentum = cfg.momentum;
-        tp.weight_decay = cfg.weight_decay;
-        tp.shuffle_seed = static_cast<unsigned>(epoch + 1);
-        net.TrainEpoch(train_ds.input_view(), train_ds.targets.data(),
-                       cfg.batch_size, tp);
+        // Full-capacity input_view: typed path cannot zero-pad over pad_value.
+        trainer.train_epoch(train_ds, cfg.batch_size, epoch);
         auto t1 = std::chrono::steady_clock::now();
         const double secs = std::chrono::duration<double>(t1 - t0).count();
         const double samples_per_s =
             (secs > 0.0) ? (static_cast<double>(train_ds.count) / secs) : 0.0;
+        const float current_lr = trainer.params().learning_rate;
 
         std::string label = "Epoch " + std::to_string(epoch + 1) + "/"
                             + std::to_string(cfg.epochs);
@@ -328,7 +337,7 @@ int main() {
               << "Test: " << test_raw.size() << " samples\n";
     std::cout << "Threads: " << std::thread::hardware_concurrency() << "\n";
 
-    const ArchParamSummary arch_sum = summarize_demo(cfg);
+    const hcnn::ArchParamSummary arch_sum = summarize_demo(cfg);
 
     hcnn::HCNNSpatialEmbedder emb(make_embed_config(cfg));
     hcnn::HCNNSpatialAugmenter train_aug(make_aug_config(cfg, /*enabled=*/true));
@@ -379,27 +388,27 @@ int main() {
               << ", Gaussian noise sigma=" << cfg.aug_noise_sigma
               << " (train only, refreshed each epoch)\n";
 
-    hcnn::HCNN net(cfg.dim, cfg.num_outputs, cfg.input_channels);
-    hcnn_demo::apply_arch(net, cfg.dim, cfg.num_outputs, cfg.input_channels,
-                          cfg.layers);
-    net.RandomizeWeights(/*scale=*/0.0f, cfg.weight_seed);
-    net.SetOptimizer(cfg.optimizer);
+    // Public facade: LayerSpec list → HCNNConfig::Build (randomize + optimizer).
+    auto net = make_net_config(cfg).Build();
+    if (!net) {
+        throw std::runtime_error("HCNNConfig::Build returned null");
+    }
 
-    if (net.GetStartDim() != cfg.dim || net.GetStartN() != N) {
+    if (net->GetStartDim() != cfg.dim || net->GetStartN() != N) {
         throw std::runtime_error(
             "HCNN start DIM/N does not match DemoConfig / SpatialEmbed");
     }
 
     std::cout << "Weight init seed: " << cfg.weight_seed << "\n";
-    hcnn_demo::print_arch(std::cout, cfg.dim, cfg.num_outputs, cfg.input_channels,
-                          cfg.layers, arch_sum);
+    hcnn::print_arch(std::cout, cfg.dim, cfg.num_outputs, cfg.input_channels,
+                     cfg.layers, arch_sum);
 
-    if (static_cast<long long>(net.GetWeightCount()) != arch_sum.total) {
+    if (static_cast<long long>(net->GetWeightCount()) != arch_sum.total) {
         throw std::runtime_error(
             "DemoConfig param count " + std::to_string(arch_sum.total)
-            + " != HCNN::GetWeightCount " + std::to_string(net.GetWeightCount()));
+            + " != HCNN::GetWeightCount " + std::to_string(net->GetWeightCount()));
     }
 
-    train_and_evaluate("HCNN", net, train_raw, test_flat, emb, train_aug, cfg);
+    train_and_evaluate("HCNN", *net, train_raw, test_flat, emb, train_aug, cfg);
     return 0;
 }

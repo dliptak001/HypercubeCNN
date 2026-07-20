@@ -31,7 +31,7 @@ public **`HCNNArch.h`** (demo still includes thin `examples/demo_arch.h` aliases
 - **`DemoConfig` at the top of `regression_timeseries.cpp`**: dim, layers,
   data sizes, seeds, schedule, logging -- one place to edit; architecture print
   + param counts follow
-- **`HCNNArch.h`** (via `demo_arch.h` aliases): `LayerSpec` / `ArchLayer`, `summarize_arch`, `print_arch`, `apply_arch`
+- **Public facade:** `HCNNConfig::Build`, `LayerSpec`, `HCNNTrainer`; demo knobs in `DemoConfig`
 - `hcnn::HCNN` with `TaskType::Regression` (default loss MSE)
 - Param count checked against `HCNN::GetWeightCount()` at startup
 - Contiguous `TrainEpoch` (float targets) + `hcnn::evaluate_regression` (MSE / R²)
