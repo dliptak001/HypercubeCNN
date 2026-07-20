@@ -35,15 +35,27 @@ pip install . --no-build-isolation --force-reinstall --no-deps
 
 ## Status
 
-**Phase 0 scaffold:** the native extension loads and reports a version. The
-full train/infer API is not yet exposed — see
+**Phase 1:** core `HCNN` train/infer surface is available (construct, stack,
+`randomize_weights`, predict, train_*, weights). Arch JSON / HCNW file I/O and
+docs polish land in later phases — see
 [docs/python_sdk_plan.md](https://github.com/dliptak001/HypercubeCNN/blob/main/docs/python_sdk_plan.md)
-and the C++ guide
+and
 [docs/CPP_SDK.md](https://github.com/dliptak001/HypercubeCNN/blob/main/docs/CPP_SDK.md).
 
 ```python
+import numpy as np
 import hypercube_cnn as hc
-print(hc.__version__)
+
+net = hc.HCNN(dim=6, num_outputs=3, task=hc.TaskType.Classification)
+net.add_conv(8)
+net.add_pool(hc.PoolType.MAX)
+net.add_conv(8)
+net.randomize_weights(seed=1)
+
+x = np.random.randn(net.N).astype(np.float32)  # full capacity N = 2**dim
+logits = net.predict(x)
+cls = net.predict_class(x)
+net.train_step(x, target=0, params=hc.TrainParams(learning_rate=1e-3))
 ```
 
 ## License

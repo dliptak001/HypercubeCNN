@@ -63,13 +63,12 @@ else()
     # "none" = no -march (portable wheels, ARM, MSVC-style portable builds)
 endif()
 
-# MinGW: static-link libgcc/libstdc++; static-link winpthread into the .pyd
-# when possible. Full `-static` breaks on some CLion MinGW toolchains
-# (undefined __intrinsic_setjmpex / __ms_vsnprintf). Fall back: ship
-# libwinpthread-1.dll next to the extension (ESN pattern).
+# MinGW: static-link libgcc/libstdc++. Prefer dynamic winpthread and ship
+# libwinpthread-1.dll next to the extension (ThreadPool / std::thread).
+# Full `-static` and `-Bstatic pthread` both fail on CLion MinGW 15.2
+# (undefined __intrinsic_setjmpex / __ms_vsnprintf).
 if(MINGW)
     target_link_options(_core PRIVATE -static-libgcc -static-libstdc++)
-    target_link_libraries(_core PRIVATE -Wl,-Bstatic pthread winpthread -Wl,-Bdynamic)
     find_file(WINPTHREAD_DLL libwinpthread-1.dll PATHS ENV PATH NO_DEFAULT_PATH)
     if(WINPTHREAD_DLL)
         install(FILES ${WINPTHREAD_DLL} DESTINATION hypercube_cnn)

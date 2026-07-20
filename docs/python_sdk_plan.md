@@ -4,7 +4,7 @@ Living plan for the Python bindings. Capture decisions, reference notes, and pha
 
 | Field | Value |
 |-------|--------|
-| **Status** | **Phase 0 complete** — extension installs and imports; Phase 1 not started |
+| **Status** | **Phase 1 complete** — core train/infer façade green; Phase 2 (arch) next |
 | **Last updated** | 2026-07-20 |
 | **C++ peer** | [CPP_SDK.md](CPP_SDK.md) (v1.0.0 surface) |
 | **References** | `C:\CLion\HypercubeESN\python`, `C:\CLion\HypercubeHopfield\python` (patterns, not clones) |
@@ -367,17 +367,18 @@ Phases are ordered by dependency; keep PRs reviewable (prefer one phase per PR w
 
 **Exit:** Synthetic classification loss moves the right way; regression smoke; clear errors for bad shapes / uninitialized weights.
 
-- [ ] Enums: `Activation`, `PoolType`, `TaskType`, `OptimizerType`
-- [ ] `HCNN` construct, exclusive ownership, `add_conv` / `add_pool`, `randomize_weights`
-- [ ] Sizing getters + `weights_initialized`
-- [ ] `set_optimizer`, `set_training`, `TrainParams` / `set_train_defaults`
-- [ ] Infer: `predict`, `predict_class`, `forward` / `forward_batch`
-- [ ] Train: `train_step` / `train_batch` / `train_epoch` (dispatch on task; no parallel Regression API names)
-- [ ] Weights: `get_weights` / `set_weights` / `weight_count` as NumPy (enables Phase 2 identity checks without HCNW)
-- [ ] Contiguous float32 / int conversion; capacity and task checks
-- [ ] GIL release on long ops (with safe buffer ownership)
-- [ ] `__repr__` + exclusive-use note in class docstring
-- [ ] Map C++ exceptions to `ValueError` / `RuntimeError`
+- [x] Enums: `Activation`, `PoolType`, `TaskType`, `OptimizerType`
+- [x] `HCNN` construct, exclusive ownership, `add_conv` / `add_pool`, `randomize_weights`
+- [x] Sizing getters + `weights_initialized`
+- [x] `set_optimizer`, `set_training`, `TrainParams` / `set_train_defaults`
+- [x] Infer: `predict`, `predict_class`, `forward` / `forward_batch`
+- [x] Train: `train_step` / `train_batch` / `train_epoch` (dispatch on task; no parallel Regression API names)
+- [x] Weights: `get_weights` / `set_weights` / `weight_count` as NumPy (enables Phase 2 identity checks without HCNW)
+- [x] Contiguous float32 / int conversion; capacity and task checks
+- [x] GIL release on long ops (with safe buffer ownership)
+- [x] `__repr__` + exclusive-use note in class docstring
+- [x] C++ exceptions surface as `RuntimeError` / `ValueError` (pybind11 default + Python validation)
+- [x] Local smoke: cls acc 0.41→1.00; reg MSE drop; weight blob identity; invalid dim + uninit weights
 
 ### Phase 2 — Arch product surface
 
@@ -536,6 +537,7 @@ Keep `ci.yml` for C++/smoke. Add `wheels.yml` for Python; do not overload C++ CI
 | 2026-07-20 | Refine pass: locked decisions; non-goals; NumPy layout; API inventory; arch JSON sketch; Phase 2/3 split (in-memory vs HCNW); pickle deferred; risks; versioning; DoD; train-helpers always in `_core` for HCNW. |
 | 2026-07-20 | Added `.github/workflows/wheels.yml` (ESN-style cibuildwheel v4 + OIDC publish, `skip-existing`). Matches pending PyPI trusted publisher. `package-dir: .` for repo-root packaging. Workflow will fail until Phase 0 lands. |
 | 2026-07-20 | **Phase 0 done:** root `pyproject.toml`, `python/CMakeLists.txt` + stub `bindings.cpp`, `hypercube_cnn` package. Local `pip install .` → import `1.0.0`; ships `libwinpthread-1.dll`. Full MinGW `-static` rejected; ESN link recipe used. |
+| 2026-07-20 | **Phase 1 done:** `_HCNN` + enums + train/infer/weights; Python `HCNN` / `TrainParams`. Smoke: classification train, regression MSE, in-memory weight round-trip. MinGW: dynamic winpthread + ship DLL (`-Bstatic pthread` broke CLion 15.2). Use `==` not `is` for pybind enums. |
 
 ---
 
