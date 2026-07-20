@@ -180,7 +180,7 @@ Returns **0** if final (restored) test **R² > 0.9**, else **1** (CI smoke).
 
 ```cpp
 // Training
-net.TrainEpochRegression(train_flat.inputs.data(), N,
+net.TrainEpoch(train_flat.inputs.data(), N,
                          train_flat.targets.data(),
                          train_flat.count, batch_size,
                          lr, momentum, weight_decay,
@@ -207,7 +207,7 @@ Local packing: `FlatRegDataset` in the example. Architecture types live in
 |------|--------------------------------|---------------------------|
 | Construction | `HCNN(dim, 10)` (class count) | `HCNN(dim, 1, 1, TaskType::Regression)` |
 | Targets | `const int*` class indices | `const float*` contiguous |
-| Training | `TrainEpoch` | `TrainEpochRegression` |
+| Training | `TrainEpoch` (int labels) | `TrainEpoch` (float targets) |
 | Loss | Softmax + CE | MSE |
 | Forward output | Logits | Raw predictions |
 | Metrics helper | `evaluate_classification` | `evaluate_regression` |
