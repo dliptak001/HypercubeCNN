@@ -2,13 +2,14 @@
 
 [![Build wheels](https://github.com/dliptak001/HypercubeCNN/actions/workflows/wheels.yml/badge.svg)](https://github.com/dliptak001/HypercubeCNN/actions/workflows/wheels.yml)
 
-Python bindings for **HypercubeCNN** — a dependency-free CNN whose feature map
-is a Boolean hypercube. Each channel lives on `N = 2^DIM` vertices; a Hamming
-conv at a vertex reaches only that site and its distance-1 neighbors, and every
-neighbor index is a single XOR on the binary address — no spatial grid, no
-adjacency list, no stencil table to store. The activations stay ordinary
-real-valued units (ReLU, tanh, …); only the *topology* is binary, so capacity is
-power-of-two by construction and packing non-cube data is host work.
+Python bindings for **HypercubeCNN** — a dependency-free convolutional neural
+network whose feature map is a Boolean hypercube. Choose a dimension **DIM**; each channel then lives on
+exactly `N = 2^DIM` vertices (for example DIM 6 → 64 sites, DIM 10 → 1024).
+A local filter at a vertex reaches only that site and its nearest neighbors,
+and every neighbor index is a single XOR on the binary address — no spatial
+grid, no adjacency list, no stencil table to store. The activations stay
+ordinary real-valued units (ReLU, tanh, …); only the *topology* is binary, so
+capacity is power-of-two by construction and packing non-cube data is host work.
 
 You build a stack of local layers, train for classification or regression, and
 save a weight file with a small architecture sidecar so another host can rebuild
@@ -16,6 +17,22 @@ the same network. Optional helpers turn ordinary images into length-N inputs
 without pretending the cube is a pixel grid. Practical demos use a few dozen to
 a few thousand vertices per channel; larger cubes are available when you need
 them.
+
+Compared with a standard vision CNN, the familiar pieces stay: shared local
+weights, stacked layers, end-to-end training. What changes is the domain. A
+usual network slides a small window across a rectangle and has to invent padding
+at the borders. Here every site has the same number of neighbors, found by
+flipping one bit of its address, so there is no image edge and no stencil table —
+only a power-of-two number of sites and geometry that is exact under the cube’s
+symmetry.
+
+How you feed the network is part of that story. Pixels are not the native layout:
+if you have an image, you (or the optional spatial helpers) first lay it out onto
+the N vertices — pad, resize, dual-plane ink-and-gradient packs, or any scheme you
+prefer — then train and infer on full-capacity vectors. Many hosts never touch
+images at all. Reservoir or ESN state, bit-indexed fingerprints, product-space
+features, and other signals that already sit at length 2^D can drive the network
+directly, with no packing step and no pretense that the cube is a camera sensor.
 
 ## Installation
 

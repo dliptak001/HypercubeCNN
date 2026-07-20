@@ -5,17 +5,36 @@
 [![C++23](https://img.shields.io/badge/C%2B%2B-23-blue.svg)]()
 [![CMake](https://img.shields.io/badge/CMake-3.21+-blue.svg)]()
 
-HypercubeCNN is a **dependency-free C++23 hypercube CNN core** for research and systems integration (including [HypercubeESN](https://github.com/dliptak001/HypercubeESN)). The public surface is **small and contract-driven** so it stays usable in production hosts and legible for engineers learning the stack.
+HypercubeCNN is a **dependency-free C++23 convolutional neural network core** for
+research and systems integration (including
+[HypercubeESN](https://github.com/dliptak001/HypercubeESN)). The public surface is
+**small and contract-driven** so it stays usable in production hosts and legible
+for engineers learning the stack.
 
-It is a **convolutional neural network that lives on a Boolean hypercube** instead of a 2D pixel grid: familiar CNN structure (shared local kernels, stacked layers, end-to-end backpropagation) with **bitwise (XOR) geometry** in place of spatial neighborhoods. Ships as the static library **`HypercubeCNNCore`**. Also used beside [HypercubeHopfield](https://github.com/dliptak001/HypercubeHopfield).
+It lives on a **Boolean hypercube** instead of a 2D pixel grid: familiar structure
+(shared local kernels, stacked layers, end-to-end backpropagation) with
+**bitwise (XOR) geometry** in place of spatial neighborhoods. You choose a
+dimension **DIM**; each channel then has exactly **N = 2^DIM** vertices (for
+example DIM 6 → 64 sites, DIM 10 → 1024). Neighbors of a site are found by
+flipping one bit of its address — no image edge to pad, no adjacency list or
+stencil table to store. Activations stay ordinary **floats**; only the
+*topology* is binary. Ships as the static library **`HypercubeCNNCore`**. Also
+used beside [HypercubeHopfield](https://github.com/dliptak001/HypercubeHopfield).
 
-**Examples stay examples. Helpers stay optional. Neither is the product’s reason for existing** — the core (`HCNN`) is.
+**Examples stay examples. Helpers stay optional. Neither is the product’s reason
+for existing** — the core (`HCNN`) is.
 
 ---
 
 ## What is HypercubeCNN?
 
-A standard CNN slides a small kernel (e.g. 3×3) across an image, reusing the same weights at every location. **HypercubeCNN does the same thing on a different domain:** a `DIM`-dimensional binary hypercube with **N = 2^DIM** vertices. Each vertex has a **self** (center) contribution plus exactly **DIM** nearest neighbors, reached by flipping one bit of its address (`v ^ (1 << k)`). The layer learns one weight per tap — **`K = DIM + 1`** total — shared across all vertices.
+A standard CNN slides a small kernel (e.g. 3×3) across an image, reusing the same
+weights at every location. **HypercubeCNN does the same thing on a different
+domain:** a `DIM`-dimensional binary hypercube with **N = 2^DIM** vertices (DIM
+is the cube dimension you pick at construction). Each vertex has a **self**
+(center) contribution plus exactly **DIM** nearest neighbors, reached by flipping
+one bit of its address (`v ^ (1 << k)`). The layer learns one weight per tap —
+**`K = DIM + 1`** total — shared across all vertices.
 
 | Spatial CNN | HypercubeCNN |
 |-------------|--------------|
@@ -24,21 +43,46 @@ A standard CNN slides a small kernel (e.g. 3×3) across an image, reusing the sa
 | Shared 3×3 (center + edges) | Shared **`K = DIM + 1`** taps (self + one weight per bit axis) |
 | Borders, padding, edge cases | No borders — the cube is **vertex-transitive** |
 
-**Terminology:** “Boolean hypercube” names the **topology** — indices are DIM-bit integers and connectivity is bitwise. Values on vertices are ordinary **floats** (typically in `[-1, 1]`), not bits. The cube is the graph data lives on, not a constraint that activations be binary.
+**Terminology:** “Boolean hypercube” names the **topology** — indices are DIM-bit
+integers and connectivity is bitwise. Values on vertices are ordinary **floats**
+(typically in `[-1, 1]`), not bits. The cube is the graph data lives on, not a
+constraint that activations be binary.
 
-Because every vertex looks the same under the symmetry group of the cube, weight sharing is mathematically exact (not a convenience that breaks at image borders). Neighbor lookup is a single XOR; there are no adjacency lists.
+Because every vertex looks the same under the symmetry group of the cube, weight
+sharing is mathematically exact (not a convenience that breaks at image borders).
+Neighbor lookup is a single XOR; there are no adjacency lists.
 
-You stack convolutions (and optional **antipodal** pooling) into a feature body, then a **single linear readout** over every final `(channel, vertex)`. Classification (softmax cross-entropy) and regression (MSE) share that forward path; only the training loss and target type change.
+You stack convolutions (and optional **antipodal** pooling) into a feature body,
+then a **single linear readout** over every final `(channel, vertex)`.
+Classification (softmax cross-entropy) and regression (MSE) share that forward
+path; only the training loss and target type change.
 
-**Capacity is always a power of two.** That is not a convenience limit you can turn off — it is the hypercube. For each channel the network holds **N = 2^DIM** vertices. Arbitrary-length or non-square data is a **host packing problem**: pad, resize, hash, dual-plane layout, reservoir indexing, or any other map you invent into length ≤ N (then pass full capacity or use the built-in zero-pad for short tails). Optional spatial helpers are one recipe for images; the core does not invent a packing for you and will not grow a non–power-of-two “input size” knob.
+**Capacity is always a power of two.** That is not a convenience limit you can
+turn off — it is the hypercube. For each channel the network holds
+**N = 2^DIM** vertices.
+
+How you feed the network is part of that contract. **Pixels are not the native
+layout.** If you have an image, you (or the optional spatial helpers) first lay
+it out onto the N vertices — pad, resize, hash, dual-plane ink-and-gradient
+packs, or any scheme you prefer — then train and infer on **full-capacity**
+vectors (short tails may zero-pad in the core; intentional non-zero pad must not
+rely on that). The core does not invent packing for you and will not grow a
+non–power-of-two “input size” knob.
+
+**Many hosts never touch images at all.** Reservoir or ESN state, bit-indexed
+fingerprints, product-space features, and other signals that already sit at
+length `2^D` can drive the network directly, with no packing step and no
+pretense that the cube is a camera sensor.
 
 **A good fit when:**
 
-- Inputs already live at length `2^D` (reservoir / ESN state, bit-indexed fingerprints, product-space features), or you are willing to own a pack into N
+- Inputs already live at length `2^D`, or you are willing to own a pack into N
 - You need a small, dependency-free C++ CNN core with a stable public API
 - You are exploring what “convolution” means outside Euclidean grids
 
-**Not a drop-in replacement for spatial vision stacks:** mapping images onto the cube is an explicit packing step (the MNIST example does this for you). Hamming neighbors are **not** automatic 2D adjacency unless packing makes them so.
+**Not a drop-in replacement for spatial vision stacks:** mapping images onto the
+cube is always an explicit packing step (the MNIST example does this for you).
+Hamming neighbors are **not** automatic 2D adjacency unless packing makes them so.
 
 ---
 
@@ -59,10 +103,11 @@ Full API guide: **[docs/CPP_SDK.md](docs/CPP_SDK.md)**.
 
 Package **`hypercube-cnn`** (`import hypercube_cnn`): same core contracts, NumPy
 train/infer, arch JSON + HCNW model I/O, spatial embed/aug, metrics / cosine LR,
-pickle secondary.
+pickle secondary. Wheels for Python 3.10–3.13 on Windows, Linux, and macOS
+(see [wheels.yml](.github/workflows/wheels.yml)).
 
 ```bash
-pip install hypercube-cnn   # when published; or pip install . from this repo
+pip install hypercube-cnn   # when published on PyPI; or: pip install . from this repo
 ```
 
 - API: **[docs/Python_SDK.md](docs/Python_SDK.md)**
