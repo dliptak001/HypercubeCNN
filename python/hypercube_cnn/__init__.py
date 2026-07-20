@@ -38,6 +38,19 @@ from .arch import (
     layers_from_iterable,
     summarize_arch,
 )
+from .metrics import (
+    ClassEval,
+    RegEval,
+    cosine_lr,
+    evaluate_classification,
+    evaluate_regression,
+)
+from .spatial import (
+    SpatialAugmenter,
+    SpatialEmbedMode,
+    SpatialEmbedPlan,
+    SpatialEmbedder,
+)
 
 __version__ = _core_version
 __all__ = [
@@ -54,8 +67,21 @@ __all__ = [
     "OptimizerType",
     "ARCH_FORMAT",
     "ARCH_VERSION",
+    "SpatialEmbedMode",
+    "SpatialEmbedPlan",
+    "SpatialEmbedder",
+    "SpatialAugmenter",
+    "ClassEval",
+    "RegEval",
+    "cosine_lr",
+    "evaluate_classification",
+    "evaluate_regression",
     "__version__",
 ]
+
+# Pickle is a Python-only convenience secondary to HCNW + arch JSON.
+_PICKLE_FORMAT = "hcnn_pickle"
+_PICKLE_VERSION = 1
 
 
 def _to_float32(arr) -> np.ndarray:
@@ -657,3 +683,64 @@ class HCNN:
             f"conv={self.num_conv}, pool={self.num_pool}, "
             f"weights_initialized={self.weights_initialized})"
         )
+
+    # ── Pickle (secondary; prefer HCNW + arch JSON for durable / C++ interop) ──
+
+    def __getstate__(self) -> dict:
+        """Serialize arch + weight blob for ``pickle``.
+
+        Requires a recorded layer stack and initialized weights. Optimizer
+        moments are **not** stored (same as HCNW). Prefer :meth:`save` for
+        durable files and C++ interop.
+        """
+        if not self._layers:
+            raise ValueError(
+                "pickle: no layers recorded; build with add_conv/HCNNConfig first"
+            )
+        if not self.weights_initialized:
+            raise ValueError(
+                "pickle: weights not initialized; call randomize_weights first"
+            )
+        return {
+            "format": _PICKLE_FORMAT,
+            "version": _PICKLE_VERSION,
+            "arch": self.export_arch(),
+            "weights": np.asarray(self.get_weights(), dtype=np.float32).copy(),
+            "num_threads": 1,  # reconstructed; caller can rebuild with more
+            "optimizer": self.optimizer.name,
+        }
+
+    def __setstate__(self, state: dict) -> None:
+        """Restore from :meth:`__getstate__` (used by ``pickle.loads``)."""
+        if not isinstance(state, dict):
+            raise TypeError("HCNN pickle state must be a dict")
+        fmt = state.get("format", _PICKLE_FORMAT)
+        if fmt != _PICKLE_FORMAT:
+            raise ValueError(
+                f"Unknown pickle format {fmt!r} (expected {_PICKLE_FORMAT!r})"
+            )
+        version = int(state.get("version", 0))
+        if version > _PICKLE_VERSION:
+            raise ValueError(
+                f"Model was pickled with version {version}, but this library "
+                f"only supports up to {_PICKLE_VERSION}. Upgrade hypercube-cnn."
+            )
+        if version < 1:
+            raise ValueError(f"Invalid pickle version {version}")
+        arch = state["arch"]
+        weights = state["weights"]
+        num_threads = int(state.get("num_threads", 0))
+        # Rebuild on a temporary instance, then steal its fields (pickle uses
+        # object.__new__ so __init__ has not run).
+        rebuilt = HCNN.from_arch(
+            arch, num_threads=num_threads, randomize=True, weight_seed=0
+        )
+        rebuilt.set_weights(weights, reset_optimizer_moments=True)
+        opt_name = state.get("optimizer")
+        if opt_name is not None:
+            # pybind11 enums are not subscriptable like Python Enum
+            for cand in (OptimizerType.ADAM, OptimizerType.SGD):
+                if cand.name == str(opt_name):
+                    rebuilt.set_optimizer(cand)
+                    break
+        self.__dict__.update(rebuilt.__dict__)

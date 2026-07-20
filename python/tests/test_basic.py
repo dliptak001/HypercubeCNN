@@ -8,6 +8,7 @@ cibuildwheel uses test_wheel.py only.
 from __future__ import annotations
 
 import json
+import pickle
 from pathlib import Path
 
 import numpy as np
@@ -170,3 +171,81 @@ class TestArchAndWeights:
         ).build()
         with pytest.raises(RuntimeError, match="mismatch"):
             other.load_weights(path)
+
+    def test_pickle_roundtrip(self, tiny_cls):
+        net, _ = tiny_cls
+        x = np.random.default_rng(6).standard_normal(net.N).astype(np.float32)
+        logits0 = net.predict(x)
+        loaded = pickle.loads(pickle.dumps(net))
+        np.testing.assert_array_equal(logits0, loaded.predict(x))
+        assert loaded.dim == net.dim
+        assert loaded.num_conv == net.num_conv
+
+
+class TestMetrics:
+    def test_cosine_lr_endpoints(self):
+        assert hc.cosine_lr(1e-3, 1e-4, 0, 10) == pytest.approx(1e-3)
+        assert hc.cosine_lr(1e-3, 1e-4, 9, 10) == pytest.approx(1e-4)
+
+    def test_evaluate_classification(self, tiny_cls):
+        net, _ = tiny_cls
+        rng = np.random.default_rng(7)
+        B = 8
+        X = rng.standard_normal((B, net.N), dtype=np.float32)
+        y = rng.integers(0, net.num_outputs, size=B, dtype=np.int32)
+        r = hc.evaluate_classification(net, X, y)
+        assert r.count == B
+        assert 0.0 <= r.accuracy <= 100.0
+        assert r.correct >= 0
+
+    def test_evaluate_regression(self):
+        net = hc.HCNNConfig(
+            dim=5,
+            num_outputs=2,
+            task=hc.TaskType.Regression,
+            num_threads=1,
+            layers=[hc.LayerSpec.conv(4)],
+            weight_seed=2,
+        ).build()
+        X = np.zeros((4, net.N), dtype=np.float32)
+        T = np.zeros((4, 2), dtype=np.float32)
+        r = hc.evaluate_regression(net, X, T)
+        assert r.count == 4
+        assert r.mse >= 0.0
+
+
+class TestSpatial:
+    def test_row_major_pad_preserves_pad_value(self):
+        emb = hc.SpatialEmbedder(
+            dim=6, mode=hc.SpatialEmbedMode.RowMajorPad, pad_value=-1.0
+        )
+        assert emb.capacity == 64
+        img = np.ones((4, 4), dtype=np.float32)
+        out = emb.embed(img)
+        assert out.shape == (64,)
+        np.testing.assert_array_equal(out[:16], 1.0)
+        np.testing.assert_array_equal(out[16:], -1.0)
+
+    def test_embed_batch_and_aug_identity(self):
+        emb = hc.SpatialEmbedder(
+            dim=6, mode=hc.SpatialEmbedMode.ResizeToFit, pad_value=-1.0
+        )
+        imgs = np.random.default_rng(0).standard_normal((2, 8, 8)).astype(np.float32)
+        packed = emb.embed_batch(imgs)
+        assert packed.shape == (2, emb.N)
+        # identity aug (defaults) should copy
+        aug = hc.SpatialAugmenter(enabled=False)
+        out = aug.apply(imgs[0], seed=1)
+        np.testing.assert_array_equal(out, imgs[0])
+
+    def test_dual_plane_fits(self):
+        emb = hc.SpatialEmbedder(
+            dim=9, mode=hc.SpatialEmbedMode.DualPlaneResize, pad_value=-1.0
+        )
+        # N=512, dual S=16, 2*S*S=512
+        img = np.zeros((28, 28), dtype=np.float32)
+        img[10:18, 10:18] = 1.0
+        out = emb.embed(img)
+        assert out.shape == (512,)
+        plan = emb.plan(28, 28)
+        assert plan.pattern_length == 2 * plan.plane_side * plan.plane_side

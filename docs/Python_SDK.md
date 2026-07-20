@@ -123,6 +123,7 @@ Same rules as the C++ SDK (language-agnostic):
 | Class targets | `(B,)` int |
 | Regression targets | `(num_outputs,)` or `(B, num_outputs)` float32 |
 | Weights blob | `(weight_count,)` float32 |
+| Spatial image | `(H, W)` float32; batch `(B, H, W)` before embed |
 
 `dim` is in **[3, 30]**. Demos typically use 5–8.
 
@@ -139,6 +140,7 @@ automatically when needed.
 - `PoolType`: `MAX`, `AVG`
 - `TaskType`: `Classification`, `Regression`
 - `OptimizerType`: `SGD`, `ADAM` (default at construction is Adam)
+- `SpatialEmbedMode`: `RowMajorPad`, `ResizeToFit`, `DualPlaneResize`
 
 ### `TrainParams`
 
@@ -183,9 +185,46 @@ hc.apply_arch(net, layers)
 **Classification** targets: int class index (step) or `(B,)` int (batch/epoch).  
 **Regression** targets: float array of length `num_outputs` per sample.
 
+### Metrics and cosine LR
+
+Same definitions as C++ `HCNNTrainHelpers` (MNIST / timeseries demos):
+
+```python
+lr = hc.cosine_lr(1e-3, 1e-4, epoch, num_epochs)  # epoch 0 -> max, last -> min
+
+r = hc.evaluate_classification(net, X, y)   # mean CE; accuracy in [0, 100]
+# r.loss, r.accuracy, r.correct, r.count
+
+rr = hc.evaluate_regression(net, X, T)      # rr.mse, rr.r2, rr.target_var
+```
+
+### Spatial preprocess
+
+Optional product (not part of the conv graph). Full contracts:
+[spatial_preprocess.md](spatial_preprocess.md).
+
+```python
+# Augment at native H×W, then embed to length N (always full capacity)
+aug = hc.SpatialAugmenter(rot_deg_max=12, shear_x_max=0.15, border_value=-1.0)
+emb = hc.SpatialEmbedder(
+    dim=11,
+    mode=hc.SpatialEmbedMode.DualPlaneResize,
+    pad_value=-1.0,   # digit-like background — not 0
+)
+img = ...  # (H, W) float32
+work = aug.apply(img, seed=epoch)
+x = emb.embed(work)   # (N,); train/infer with this full length
+```
+
+Modes: `RowMajorPad`, `ResizeToFit`, `DualPlaneResize`.  
+**After embed, pass full capacity** — short lengths zero-pad in the network and
+can wipe a non-zero `pad_value`.
+
 ---
 
 ## Model I/O
+
+### Primary: HCNW + arch JSON (C++ interop)
 
 HCNW stores **parameters + coarse checks** only (same binary format as C++
 `hcnn::save_weights`). The layer graph is **not** in the weight file.
@@ -211,6 +250,17 @@ in HCNW.
 Arch JSON future versions raise `ValueError` with an upgrade message. HCNW
 architecture mismatch or bad magic raise `RuntimeError`.
 
+### Secondary: pickle (Python-only convenience)
+
+```python
+import pickle
+blob = pickle.dumps(net)       # arch + weight blob (not optimizer moments)
+net2 = pickle.loads(blob)
+```
+
+Prefer HCNW + arch for durable models and C++ interop. Never unpickle data from
+untrusted sources (pickle can execute code).
+
 ---
 
 ## Examples
@@ -222,6 +272,7 @@ In-repo recipes (not installed with the wheel):
 | [examples/python/synthetic_classification.py](../examples/python/synthetic_classification.py) | Short CE train loop |
 | [examples/python/synthetic_regression.py](../examples/python/synthetic_regression.py) | Short MSE train loop |
 | [examples/python/arch_and_weights_io.py](../examples/python/arch_and_weights_io.py) | Arch JSON + HCNW identity |
+| [examples/python/spatial_embed_smoke.py](../examples/python/spatial_embed_smoke.py) | Spatial pad contract + DualPlane |
 
 See [examples/python/README.md](../examples/python/README.md).
 
@@ -232,11 +283,12 @@ synthetic and offline.
 
 ## Build notes
 
-- Extension compiles core + train-helpers into `_core` (scikit-build-core).
+- Extension compiles core + train-helpers + spatial into `_core` (scikit-build-core).
 - Wheels: `HCNN_NATIVE_ARCH` off; portable `HYPERCUBE_ARCH` (`x86-64-v2` / `none`).
 - `HCNN_FAST_TANH` defaults **ON** (matches C++ library default).
 - MinGW: static libgcc/libstdc++; ships `libwinpthread-1.dll` on Windows wheels.
 - Do not reconfigure CLion `cmake-build-*` for the Python package.
 
 Living implementation tracker: [python_sdk_plan.md](python_sdk_plan.md).  
-C++ contracts: [CPP_SDK.md](CPP_SDK.md).
+C++ contracts: [CPP_SDK.md](CPP_SDK.md).  
+Spatial: [spatial_preprocess.md](spatial_preprocess.md).

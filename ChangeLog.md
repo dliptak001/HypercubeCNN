@@ -61,8 +61,11 @@ First full public SDK release. Package version and FetchContent pin: **v1.0.0**
 - Core surface: `HCNN`, `TrainParams`, enums; train/infer/weights; GIL released on long ops
 - Arch product: `LayerSpec`, `HCNNConfig`, `export_arch` / `from_arch`, versioned JSON sidecar
 - Model I/O: HCNW `save_weights` / `load_weights`; `HCNN.save` / `load` (`.hcnw` + `.arch.json`)
+- **Phase 5:** spatial embed/aug (`SpatialEmbedder`, `SpatialAugmenter`); metrics
+  (`evaluate_classification` / `evaluate_regression`, `cosine_lr`); pickle secondary
+  (`pickle.dumps` of arch + weights; HCNW remains primary)
 - Lean tests: `python/tests/test_wheel.py` (cibuildwheel), `test_basic.py` (local)
-- Tier 1 recipes: `examples/python/` (synthetic cls/reg + arch I/O)
+- Tier 1 recipes: `examples/python/` (synthetic cls/reg, arch I/O, spatial smoke)
 - Docs: `docs/Python_SDK.md`; wheels: `.github/workflows/wheels.yml` (OIDC PyPI on `v*`)
 
 ### Docs

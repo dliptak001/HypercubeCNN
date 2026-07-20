@@ -59,7 +59,9 @@ net.save("model")  # model.hcnw + model.arch.json
 
 - Core `HCNN` train/infer (classification CE, regression MSE)
 - `LayerSpec` / `HCNNConfig` architecture product surface
-- HCNW weights + arch JSON sidecar (C++-interop)
+- HCNW weights + arch JSON sidecar (C++-interop); pickle as secondary
+- Spatial embed/aug (`SpatialEmbedder`, `SpatialAugmenter`)
+- Metrics: `evaluate_classification` / `evaluate_regression`, `cosine_lr`
 - NumPy float32 integration
 
 ## Documentation

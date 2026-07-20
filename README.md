@@ -58,7 +58,8 @@ Full API guide: **[docs/CPP_SDK.md](docs/CPP_SDK.md)**.
 ### Python SDK
 
 Package **`hypercube-cnn`** (`import hypercube_cnn`): same core contracts, NumPy
-train/infer, arch JSON + HCNW model I/O.
+train/infer, arch JSON + HCNW model I/O, spatial embed/aug, metrics / cosine LR,
+pickle secondary.
 
 ```bash
 pip install hypercube-cnn   # when published; or pip install . from this repo

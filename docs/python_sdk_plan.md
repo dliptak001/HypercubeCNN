@@ -4,7 +4,7 @@ Living plan for the Python bindings. Capture decisions, reference notes, and pha
 
 | Field | Value |
 |-------|--------|
-| **Status** | **Phase 4 complete** — tests/docs/Tier 1 demos; ready for Phase 5 polish / first publish |
+| **Status** | **Phase 5 complete** — spatial, metrics/cosine LR, pickle secondary; publish when CI green |
 | **Last updated** | 2026-07-20 |
 | **C++ peer** | [CPP_SDK.md](CPP_SDK.md) (v1.0.0 surface) |
 | **References** | `C:\CLion\HypercubeESN\python`, `C:\CLion\HypercubeHopfield\python` (patterns, not clones) |
@@ -49,9 +49,9 @@ Update this table when a choice is locked or reversed. **Bold** = locked for v1 
 | High-level `fit` | **Not in v1 public API** | Demos use explicit loops; optional helper only later |
 | Persistence primary | **HCNW + arch sidecar (JSON)** | Interop with C++; pickle secondary if at all |
 | Persistence bundle | **Separate `*.hcnw` + `*.arch.json`** | No zip/archive in v1 |
-| Spatial in v1 | **Core-only** | No spatial bind in Phases 0–4; Phase 5 optional |
-| Metrics / cosine LR helpers | **Defer** | Not required for Tier 1; bind later if cheap |
-| Pickle | **Defer (Phase 5 or never)** | Prefer HCNW + JSON only for v1; avoids dual persistence stories |
+| Spatial in v1 | **Bound in Phase 5** | `SpatialEmbedder` / `SpatialAugmenter`; contracts in spatial_preprocess.md |
+| Metrics / cosine LR helpers | **Bound in Phase 5** | `evaluate_*`, `cosine_lr` (not Trainer / checkpoints) |
+| Pickle | **Secondary in Phase 5** | Arch + weights blob; HCNW + arch JSON remains primary |
 | Wheel arch | **`HCNN_NATIVE_ARCH=OFF` + `HYPERCUBE_ARCH`** | Portable wheels (`x86-64-v2` / `none` like ESN) |
 | Fast tanh | **`HCNN_FAST_TANH=ON` in wheels; document it** | Match C++ default |
 | Fast math | **Follow extension Release flags / lib options; document** | Same spirit as C++ `HCNN_FAST_MATH` |
@@ -418,12 +418,15 @@ Phases are ordered by dependency; keep PRs reviewable (prefer one phase per PR w
 - [x] ChangeLog entry
 - [x] pytest `import-mode=importlib` (pyproject `addopts` + wheel test-command)
 
-### Phase 5 — Polish / extras
+### Phase 5 — Spatial, helpers, pickle
 
-- [ ] Spatial module if needed; link [spatial_preprocess.md](spatial_preprocess.md)
-- [ ] Tier 2 demos if needed
-- [ ] Optional pickle wrapper **or** leave unsupported
-- [ ] Optional metrics / cosine LR
+- [x] Spatial module (`SpatialEmbedder`, `SpatialAugmenter`); link [spatial_preprocess.md](spatial_preprocess.md)
+- [x] Compile `HCNNSpatial*.cpp` into `_core`; sdist includes
+- [x] Metrics: `evaluate_classification` / `evaluate_regression`, `cosine_lr`
+- [x] Pickle secondary (`__getstate__` / `__setstate__` = arch + weights; not primary)
+- [x] Lean tests + `examples/python/spatial_embed_smoke.py`
+- [x] Docs: `Python_SDK.md`, ChangeLog, this plan
+- [ ] Tier 2 demos if needed (MNIST-scale; deferred)
 - [ ] Type stubs (`.pyi`) if users need them
 - [ ] Align HypercubeESN vendored HCNN (downstream; not a CNN v1 gate)
 - [ ] First PyPI publish on tag when ready
@@ -516,9 +519,10 @@ Keep `ci.yml` for C++/smoke. Add `wheels.yml` for Python; do not overload C++ CI
 - [ ] Optional sdist tarball install smoke
 - [ ] Optional: one C++-written HCNW fixture in `tests/data/` for cross-language load (nice-to-have in Phase 3–4)
 - [x] Packaging root default: repo-root `pyproject.toml` (workflow `package-dir: .`)
-- [x] Persistence: separate `.hcnw` + `.arch.json`; pickle deferred
-- [x] Spatial: not in v1 core path
-- [x] Demos: Tier 0 + Tier 1 in Phase 4
+- [x] Persistence: separate `.hcnw` + `.arch.json` primary; pickle secondary (Phase 5)
+- [x] Spatial: bound in Phase 5
+- [x] Demos: Tier 0 + Tier 1 in Phase 4; spatial smoke in Phase 5
+- [x] Metrics / cosine_lr bound (Phase 5); Trainer/checkpoints still C++-only
 
 ### PyPI trusted publishing checklist
 

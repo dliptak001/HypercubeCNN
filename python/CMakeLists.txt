@@ -35,6 +35,8 @@ set(CORE_SOURCES
     ${CORE_DIR}/HCNNNetwork.cpp
     ${CORE_DIR}/HCNNReadout.cpp
     ${CORE_DIR}/HCNNTrainHelpers.cpp
+    ${CORE_DIR}/HCNNSpatialAug.cpp
+    ${CORE_DIR}/HCNNSpatialEmbed.cpp
 )
 
 pybind11_add_module(_core bindings.cpp ${CORE_SOURCES})

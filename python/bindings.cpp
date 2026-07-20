@@ -10,11 +10,14 @@
 
 #include <cstring>
 #include <memory>
+#include <random>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 #include "HCNN.h"
+#include "HCNNSpatialAug.h"
+#include "HCNNSpatialEmbed.h"
 #include "HCNNTrainHelpers.h"
 
 namespace py = pybind11;
@@ -450,4 +453,283 @@ PYBIND11_MODULE(_core, m)
         .def_property_readonly("optimizer_type", &HCNN::GetOptimizerType)
         .def_property_readonly("weights_initialized", &HCNN::WeightsInitialized)
         ;
+
+    // ── Train helpers: metrics + cosine LR (optional product) ──
+    m.def(
+        "cosine_lr",
+        &cosine_lr,
+        py::arg("lr_max"), py::arg("lr_min"), py::arg("epoch"), py::arg("num_epochs"),
+        "Cosine anneal: epoch 0 -> lr_max, last epoch -> lr_min.");
+
+    py::class_<HCNNClassEval>(m, "ClassEval")
+        .def_readonly("loss", &HCNNClassEval::loss)
+        .def_readonly("accuracy", &HCNNClassEval::accuracy)
+        .def_readonly("correct", &HCNNClassEval::correct)
+        .def_readonly("count", &HCNNClassEval::count)
+        .def("__repr__", [](const HCNNClassEval& r) {
+            return "ClassEval(loss=" + std::to_string(r.loss)
+                + ", accuracy=" + std::to_string(r.accuracy)
+                + ", correct=" + std::to_string(r.correct)
+                + "/" + std::to_string(r.count) + ")";
+        });
+
+    py::class_<HCNNRegEval>(m, "RegEval")
+        .def_readonly("mse", &HCNNRegEval::mse)
+        .def_readonly("target_var", &HCNNRegEval::target_var)
+        .def_readonly("count", &HCNNRegEval::count)
+        .def_property_readonly("r2", &HCNNRegEval::r2)
+        .def("__repr__", [](const HCNNRegEval& r) {
+            return "RegEval(mse=" + std::to_string(r.mse)
+                + ", r2=" + std::to_string(r.r2())
+                + ", count=" + std::to_string(r.count) + ")";
+        });
+
+    m.def(
+        "evaluate_classification",
+        [](HCNN& net, FloatArray flat_inputs, int input_length, IntArray targets,
+           int count) {
+            auto in = req_float(flat_inputs);
+            auto y = req_int(targets);
+            const size_t need =
+                static_cast<size_t>(count) * static_cast<size_t>(input_length);
+            if (in.size != need)
+                throw std::invalid_argument(
+                    "evaluate_classification: flat_inputs size mismatch");
+            if (static_cast<int>(y.size) != count)
+                throw std::invalid_argument(
+                    "evaluate_classification: targets length must equal count");
+            HCNNClassEval r;
+            {
+                py::gil_scoped_release release;
+                r = evaluate_classification(net, in.ptr, input_length, y.ptr,
+                                            count);
+            }
+            return r;
+        },
+        py::arg("net"), py::arg("flat_inputs"), py::arg("input_length"),
+        py::arg("targets"), py::arg("count"),
+        "Mean softmax CE + accuracy percent over a flat batch.");
+
+    m.def(
+        "evaluate_regression",
+        [](HCNN& net, FloatArray flat_inputs, int input_length,
+           FloatArray flat_targets, int count, int num_outputs) {
+            auto in = req_float(flat_inputs);
+            auto t = req_float(flat_targets);
+            const size_t need_in =
+                static_cast<size_t>(count) * static_cast<size_t>(input_length);
+            if (in.size != need_in)
+                throw std::invalid_argument(
+                    "evaluate_regression: flat_inputs size mismatch");
+            const int K = num_outputs > 0 ? num_outputs : net.GetNumOutputs();
+            const size_t need_t =
+                static_cast<size_t>(count) * static_cast<size_t>(K);
+            if (t.size != need_t)
+                throw std::invalid_argument(
+                    "evaluate_regression: flat_targets size mismatch");
+            HCNNRegEval r;
+            {
+                py::gil_scoped_release release;
+                r = evaluate_regression(net, in.ptr, input_length, t.ptr, count,
+                                        num_outputs);
+            }
+            return r;
+        },
+        py::arg("net"), py::arg("flat_inputs"), py::arg("input_length"),
+        py::arg("flat_targets"), py::arg("count"),
+        py::arg("num_outputs") = 0,
+        "Mean MSE (+ target variance / R^2) over a flat batch.");
+
+    // ── Spatial embed (optional product) ──
+    py::enum_<HCNNSpatialEmbedMode>(m, "SpatialEmbedMode")
+        .value("RowMajorPad", HCNNSpatialEmbedMode::RowMajorPad)
+        .value("ResizeToFit", HCNNSpatialEmbedMode::ResizeToFit)
+        .value("DualPlaneResize", HCNNSpatialEmbedMode::DualPlaneResize);
+
+    py::class_<HCNNSpatialEmbedPlan>(m, "SpatialEmbedPlan")
+        .def_readonly("dim", &HCNNSpatialEmbedPlan::dim)
+        .def_readonly("N", &HCNNSpatialEmbedPlan::N)
+        .def_readonly("height_in", &HCNNSpatialEmbedPlan::height_in)
+        .def_readonly("width_in", &HCNNSpatialEmbedPlan::width_in)
+        .def_readonly("plane_side", &HCNNSpatialEmbedPlan::plane_side)
+        .def_readonly("pattern_length", &HCNNSpatialEmbedPlan::pattern_length)
+        .def_readonly("mode", &HCNNSpatialEmbedPlan::mode)
+        .def("__repr__", [](const HCNNSpatialEmbedPlan& p) {
+            return "SpatialEmbedPlan(N=" + std::to_string(p.N)
+                + ", pattern_length=" + std::to_string(p.pattern_length)
+                + ", plane_side=" + std::to_string(p.plane_side) + ")";
+        });
+
+    py::class_<HCNNSpatialEmbedder>(m, "_SpatialEmbedder")
+        .def(py::init([](int dim, HCNNSpatialEmbedMode mode, float pad_value,
+                         int plane_side) {
+                 HCNNSpatialEmbedConfig cfg;
+                 cfg.dim = dim;
+                 cfg.mode = mode;
+                 cfg.pad_value = pad_value;
+                 cfg.plane_side = plane_side;
+                 return std::make_unique<HCNNSpatialEmbedder>(cfg);
+             }),
+             py::arg("dim") = 10,
+             py::arg("mode") = HCNNSpatialEmbedMode::RowMajorPad,
+             py::arg("pad_value") = 0.0f,
+             py::arg("plane_side") = 0)
+
+        .def_property_readonly("capacity", &HCNNSpatialEmbedder::capacity)
+        .def_property_readonly(
+            "dim",
+            [](const HCNNSpatialEmbedder& self) { return self.config().dim; })
+        .def_property_readonly(
+            "mode",
+            [](const HCNNSpatialEmbedder& self) { return self.config().mode; })
+        .def_property_readonly(
+            "pad_value",
+            [](const HCNNSpatialEmbedder& self) {
+                return self.config().pad_value;
+            })
+        .def_property_readonly(
+            "plane_side",
+            [](const HCNNSpatialEmbedder& self) {
+                return self.config().plane_side;
+            })
+
+        .def(
+            "plan",
+            [](const HCNNSpatialEmbedder& self, int height, int width) {
+                return self.plan(height, width);
+            },
+            py::arg("height"), py::arg("width"))
+
+        .def(
+            "embed",
+            [](const HCNNSpatialEmbedder& self, FloatArray image, int height,
+               int width) {
+                auto in = req_float(image);
+                const size_t need =
+                    static_cast<size_t>(height) * static_cast<size_t>(width);
+                if (in.size != need)
+                    throw std::invalid_argument(
+                        "embed: image size must equal height * width");
+                const int N = self.capacity();
+                py::array_t<float> out(N);
+                {
+                    py::gil_scoped_release release;
+                    self.embed(in.ptr, height, width, out.mutable_data());
+                }
+                return out;
+            },
+            py::arg("image"), py::arg("height"), py::arg("width"),
+            "Embed one HxW image to length-N (full capacity).")
+
+        .def(
+            "embed_batch",
+            [](const HCNNSpatialEmbedder& self, FloatArray images, int batch,
+               int height, int width) {
+                auto in = req_float(images);
+                const size_t need = static_cast<size_t>(batch)
+                                    * static_cast<size_t>(height)
+                                    * static_cast<size_t>(width);
+                if (in.size != need)
+                    throw std::invalid_argument(
+                        "embed_batch: images size must equal batch*height*width");
+                const int N = self.capacity();
+                py::array_t<float> out({batch, N});
+                {
+                    py::gil_scoped_release release;
+                    self.embed_batch(in.ptr, batch, height, width,
+                                     out.mutable_data());
+                }
+                return out;
+            },
+            py::arg("images"), py::arg("batch"), py::arg("height"),
+            py::arg("width"),
+            "Embed batch of HxW images -> (batch, N).")
+
+        .def_static("max_square_side", &HCNNSpatialEmbedder::max_square_side,
+                    py::arg("N"))
+        .def_static("max_dual_plane_side",
+                    &HCNNSpatialEmbedder::max_dual_plane_side, py::arg("N"));
+
+    // ── Spatial aug (optional product) ──
+    py::class_<HCNNSpatialAugmenter>(m, "_SpatialAugmenter")
+        .def(py::init([](float rot_deg_max, float scale_min, float scale_max,
+                         int shift_max, float shear_x_max, float shear_y_max,
+                         float elastic_alpha, float elastic_sigma,
+                         float noise_sigma, float value_min, float value_max,
+                         float border_value, bool enabled) {
+                 HCNNSpatialAugConfig cfg;
+                 cfg.rot_deg_max = rot_deg_max;
+                 cfg.scale_min = scale_min;
+                 cfg.scale_max = scale_max;
+                 cfg.shift_max = shift_max;
+                 cfg.shear_x_max = shear_x_max;
+                 cfg.shear_y_max = shear_y_max;
+                 cfg.elastic_alpha = elastic_alpha;
+                 cfg.elastic_sigma = elastic_sigma;
+                 cfg.noise_sigma = noise_sigma;
+                 cfg.value_min = value_min;
+                 cfg.value_max = value_max;
+                 cfg.border_value = border_value;
+                 cfg.enabled = enabled;
+                 return std::make_unique<HCNNSpatialAugmenter>(cfg);
+             }),
+             py::arg("rot_deg_max") = 0.0f,
+             py::arg("scale_min") = 1.0f,
+             py::arg("scale_max") = 1.0f,
+             py::arg("shift_max") = 0,
+             py::arg("shear_x_max") = 0.0f,
+             py::arg("shear_y_max") = 0.0f,
+             py::arg("elastic_alpha") = 0.0f,
+             py::arg("elastic_sigma") = 0.0f,
+             py::arg("noise_sigma") = 0.0f,
+             py::arg("value_min") = -1.0f,
+             py::arg("value_max") = 1.0f,
+             py::arg("border_value") = 0.0f,
+             py::arg("enabled") = true)
+
+        .def(
+            "apply",
+            [](const HCNNSpatialAugmenter& self, FloatArray image, int height,
+               int width, unsigned seed) {
+                auto in = req_float(image);
+                const size_t need =
+                    static_cast<size_t>(height) * static_cast<size_t>(width);
+                if (in.size != need)
+                    throw std::invalid_argument(
+                        "apply: image size must equal height * width");
+                // Always write a separate out buffer (safe for geometry warps).
+                py::array_t<float> out(static_cast<py::ssize_t>(need));
+                std::mt19937 rng(seed);
+                {
+                    py::gil_scoped_release release;
+                    self.apply(in.ptr, out.mutable_data(), height, width, rng);
+                }
+                return out;
+            },
+            py::arg("image"), py::arg("height"), py::arg("width"),
+            py::arg("seed") = 0u,
+            "Augment one HxW image; seed drives std::mt19937.")
+
+        .def(
+            "apply_batch",
+            [](const HCNNSpatialAugmenter& self, FloatArray images, int batch,
+               int height, int width, unsigned seed) {
+                auto in = req_float(images);
+                const size_t plane =
+                    static_cast<size_t>(height) * static_cast<size_t>(width);
+                const size_t need = static_cast<size_t>(batch) * plane;
+                if (in.size != need)
+                    throw std::invalid_argument(
+                        "apply_batch: images size must equal batch*height*width");
+                py::array_t<float> out({batch, height, width});
+                std::mt19937 rng(seed);
+                {
+                    py::gil_scoped_release release;
+                    self.apply_batch(in.ptr, out.mutable_data(), batch, height,
+                                     width, rng);
+                }
+                return out;
+            },
+            py::arg("images"), py::arg("batch"), py::arg("height"),
+            py::arg("width"), py::arg("seed") = 0u);
 }
