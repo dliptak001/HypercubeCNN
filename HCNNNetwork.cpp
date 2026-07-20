@@ -131,7 +131,7 @@ void HCNNNetwork::randomize_all_weights(float scale, unsigned seed) {
     const ReadoutGradInLoop gin_loop = readout.get_grad_in_loop();
     readout = HCNNReadout(num_outputs, final_channels * final_N);
     readout.set_grad_in_loop(gin_loop);
-    // Re-apply optimizer (new HCNNReadout defaults to SGD).
+    // Re-apply optimizer (fresh HCNNReadout has its own default moments).
     readout.set_optimizer(optimizer_type_, adam_beta1_, adam_beta2_, adam_eps_);
 
     std::mt19937 rng(seed);

@@ -61,23 +61,27 @@ out[co, v] = bias[co]
 ```text
 <prefix>/
   include/HypercubeCNN/
-    HCNN.h                 # front door — start here
-    HCNNNetwork.h          # re-exported internals
-    HCNNConv.h / HCNNPool.h / HCNNReadout.h
+    HypercubeCNN.h         # umbrella — core + helpers + spatial
+    HCNN.h                 # front door (core only)
+    HCNNTypes.h            # public enums
     HCNNSpatialAug.h       # optional 2D aug (not part of the graph)
     HCNNSpatialEmbed.h     # optional 2D → length-N pack
     HCNNTrainHelpers.h     # optional metrics / LR / checkpoints
-    ThreadPool.h
   lib/libHypercubeCNNCore.a   # (name may be .lib on MSVC)
   lib/cmake/HypercubeCNN/…
 ```
 
+Layer/orchestrator headers (`HCNNNetwork`, `HCNNConv`, `HCNNPool`, `HCNNReadout`,
+`ThreadPool`) ship in the **source tree** for tests and research instrumentation;
+they are **not** part of the installed teaching surface.
+
 | Layer of the product | Include | Required? |
 |----------------------|---------|-----------|
-| Core train / infer | `HCNN.h` | Yes |
-| Image preprocess | `HCNNSpatialAug.h`, `HCNNSpatialEmbed.h` | Optional |
+| Full teaching stack | `HypercubeCNN.h` | Recommended for demos |
+| Core train / infer only | `HCNN.h` | Yes (minimal) |
+| Image preprocess | spatial headers (via umbrella) | Optional |
 | Thin training loop | `HCNNTrainHelpers.h` | Optional |
-| Demo-only scaffolding | `examples/demo_arch.h` | **Not installed** (in-tree teaching only) |
+| Demo-only scaffolding | `examples/demo_arch.h` | **Not installed** |
 
 Link target: **`HypercubeCNNCore`** (or imported `HypercubeCNN::HypercubeCNNCore`).
 
@@ -137,7 +141,7 @@ target_link_libraries(my_app PRIVATE HypercubeCNN::HypercubeCNNCore)
 int main() {
     using namespace hcnn;
 
-    // DIM=6 → N=64 vertices; 4 output logits
+    // DIM=6 → N=64 vertices; 4 output logits; default optimizer = Adam
     HCNN net(/*start_dim=*/6, /*num_outputs=*/4);
     net.AddConv(16, Activation::RELU);
     net.AddPool(PoolType::MAX);          // DIM 6→5, N 64→32
@@ -147,11 +151,11 @@ int main() {
     const int N = net.GetStartN();
     std::mt19937 rng(0);
     std::uniform_real_distribution<float> U(-1.f, 1.f);
-    std::vector<float> x(N), emb(N), logits(net.GetNumOutputs());
+    std::vector<float> x(N), logits(net.GetNumOutputs());
     for (float& v : x) v = U(rng);
 
-    net.Embed(x.data(), N, emb.data());   // copy + zero-pad if short
-    net.Forward(emb.data(), logits.data());  // raw logits (no softmax)
+    net.Predict(x.data(), N, logits.data());  // embed + forward (raw logits)
+    // Or: Embed into a caller buffer, then Forward — same math.
 
     for (float z : logits) std::cout << z << ' ';
     std::cout << '\n';
@@ -161,24 +165,25 @@ int main() {
 **Habits this teaches:**
 
 1. Build with `AddConv` / `AddPool`, then **`RandomizeWeights`** (sizes the readout).
-2. Caller owns `embedded` and `logits` buffers and reuses them.
-3. `Forward` does not apply softmax.
+2. Prefer **`Predict`** for single-sample inference; use `Embed`+`Forward` when you cache embeddings.
+3. `Predict` / `Forward` do not apply softmax — use `PredictClass` or `argmax` for a label.
 
 ---
 
 ## 6. Core API (`hcnn::HCNN`)
 
-### Enums (all via `HCNN.h`)
+### Enums (via `HCNNTypes.h` / `HCNN.h`)
 
 | Enum | Values | Role |
 |------|--------|------|
 | `TaskType` | `Classification`, `Regression` | Which train API + default loss |
-| `LossType` | `Default`, `CrossEntropy`, `MSE` | `Default` → CE or MSE by task; invalid pairs throw at construct |
 | `Activation` | `NONE`, `RELU`, `LEAKY_RELU`, `TANH` | After conv (+ optional BN) |
 | `PoolType` | `MAX`, `AVG` | Antipodal reduction |
-| `OptimizerType` | `SGD`, `ADAM` | Via `SetOptimizer` (AdamW-style decoupled decay on kernels) |
+| `OptimizerType` | `SGD`, `ADAM` | Default **Adam**; override with `SetOptimizer` |
 
-Constraints: `3 ≤ start_dim ≤ 32`, `num_outputs ≥ 1`, `input_channels ≥ 1`.  
+`LossType` (`Default`, `CrossEntropy`, `MSE`) is rarely needed: pass `LossType::Default` (the constructor default) and the task picks CE or MSE. Explicit non-matching pairs throw at construct. Advanced A/B: `ReadoutGradInLoop` (see end of this section).
+
+Constraints: **`3 ≤ start_dim ≤ 30`**, `num_outputs ≥ 1`, `input_channels ≥ 1`.  
 `Classification` only pairs with CE; `Regression` only with MSE.
 
 ### Construct and build
@@ -204,13 +209,16 @@ void SetTraining(bool training);   // BN train/eval flag
 void PrepareBuffers();             // optional: allocate scratch up front
 ```
 
-- Default optimizer is **SGD** (+ optional momentum/weight decay on train calls). Prefer **`SetOptimizer(ADAM)`** for demos and regression.
+- Default optimizer is **Adam** (AdamW-style decoupled decay on kernels when `weight_decay > 0`). Use `SetOptimizer(SGD)` if you want classical momentum SGD.
 - `RandomizeWeights`: `scale > 0` → uniform `[-scale, scale]`; else He (ReLU/Leaky, `c_in > 1`) or Xavier. Rebuilds readout to match final `c * N`. Clears optimizer moments / Adam timestep.
 - **Non-copyable, non-movable** (live thread pool). Use `std::unique_ptr<HCNN>` if ownership must move.
 
 ### Inference
 
 ```cpp
+void Predict(const float* raw, int input_length, float* outputs) const;
+int  PredictClass(const float* raw, int input_length) const;  // classif. only
+
 void Embed(const float* raw, int input_length, float* embedded_out) const;
 void Forward(const float* embedded, float* outputs) const;
 void ForwardBatch(const float* flat_inputs, int input_length,
@@ -222,47 +230,55 @@ void ForwardBatch(const float* flat_inputs, int input_length,
 | Capacity | `input_channels * GetStartN()` |
 | Short input | Copied; **remainder zero-filled** (always 0, not a custom pad) |
 | Over-long input | Throws |
+| `Predict` | Embed into internal scratch + Forward (single-sample happy path) |
+| `PredictClass` | `Predict` + argmax; throws on Regression nets |
 | `Forward` outputs | Raw logits (classif.) or predictions (regress.); no softmax |
-| BN during `Forward*` | Forced eval for the call (safe mid-training) |
+| BN during `Forward*` / `Predict*` | Forced eval for the call (safe mid-training) |
 
 ### Training — classification
 
 Targets: `int` class indices. Loss: softmax + cross-entropy.
 
+**Preferred (TrainParams):**
+
 ```cpp
-void TrainStep(const float* raw, int len, int target_class,
-               float lr, float momentum = 0, float weight_decay = 0,
-               const float* class_weights = nullptr);
+struct TrainParams {
+    float learning_rate = 1e-3f;
+    float momentum = 0.0f;          // SGD only; ignored by Adam
+    float weight_decay = 0.0f;
+    const float* class_weights = nullptr;  // optional, length num_outputs
+    unsigned shuffle_seed = 0;      // epoch only; 0 = sequential
+};
 
+void TrainStep(const float* raw, int len, int target, const TrainParams& p);
 void TrainBatch(const float* flat_inputs, int input_length,
-                const int* targets, int batch_size,
-                float lr, float momentum = 0, float weight_decay = 0,
-                const float* class_weights = nullptr);
-
+                const int* targets, int batch_size, const TrainParams& p);
 void TrainEpoch(const float* flat_inputs, int input_length,
                 const int* targets, int sample_count, int batch_size,
-                float lr, float momentum = 0, float weight_decay = 0,
-                const float* class_weights = nullptr,
-                unsigned shuffle_seed = 0);
+                const TrainParams& p);
 ```
+
+**Positional overloads** (same math; kept for compatibility) take
+`lr, momentum=0, weight_decay=0, class_weights=nullptr[, shuffle_seed=0]`.
 
 - Contiguous **row-major** inputs: sample `i` starts at `flat_inputs + i * input_length`.
 - `shuffle_seed == 0`: sequential, zero-copy slices. Nonzero: deterministic shuffle (use a new seed each epoch, e.g. `epoch + 1`).
-- **You pass `lr` every call** — HCNN does not own a schedule (use `hcnn::cosine_lr` helper if desired).
+- **You pass `lr` every call** (or via `TrainParams`) — HCNN does not own a schedule (use `hcnn::cosine_lr` if desired).
 
 ### Training — regression
 
 Construct with `TaskType::Regression`. Targets: `float` vectors of length `GetNumOutputs()`.
 
 ```cpp
-void TrainStepRegression(...);
+void TrainStepRegression(..., const TrainParams& p);
 void TrainBatchRegression(...);   // flat_targets: batch * num_outputs
 void TrainEpochRegression(...);   // flat_targets: samples * num_outputs
+// + positional overloads
 ```
 
 Calling the wrong family’s train methods throws `std::logic_error`.
 
-**Regression tips (from the teaching demo):** center targets on the **train** mean; prefer Adam; mix activations as needed (demo often uses RELU then TANH); full-N FLATTEN without pool keeps vertex identity (useful for reservoir-like inputs).
+**Regression tips (from the teaching demo):** center targets on the **train** mean; Adam is already the default; mix activations as needed (demo often uses RELU then TANH); full-N FLATTEN without pool keeps vertex identity (useful for reservoir-like inputs).
 
 ### Sizing and weights
 
@@ -286,6 +302,7 @@ readout weights[num_outputs * (c_final * N_final)]
 readout bias[num_outputs]
 ```
 
+**In the blob when BN is enabled:** γ, β, running mean, running var (each `c_out`).  
 **Not in the blob:** optimizer moments, Adam timestep.  
 `SetWeights(blob)` — eval restore.  
 `SetWeights(blob, /*reset_optimizer_moments=*/true)` — safe train resume.
@@ -298,7 +315,7 @@ The shipped demos keep a single **`DemoConfig`** struct at the top of the `.cpp`
 
 ```cpp
 // 1) Config: dim, layers, lr, batch, seeds, epochs
-// 2) Build net from config; RandomizeWeights; SetOptimizer(ADAM)
+// 2) Build net from config; RandomizeWeights (Adam is default)
 // 3) Pack data into contiguous float arrays (+ int labels or float targets)
 // 4) for epoch:
 //      lr = cosine_lr(lr_max, lr_min, epoch, num_epochs);
@@ -311,24 +328,23 @@ The shipped demos keep a single **`DemoConfig`** struct at the top of the `.cpp`
 ### Classification sketch
 
 ```cpp
-#include "HCNN.h"
-#include "HCNNTrainHelpers.h"
+#include "HypercubeCNN.h"
 
 using namespace hcnn;
 
-HCNN net(dim, /*classes=*/10);
+HCNN net(dim, /*classes=*/10);  // Adam by default
 net.AddConv(16);
 net.AddConv(16);
 net.RandomizeWeights(0.f, weight_seed);
-net.SetOptimizer(OptimizerType::ADAM);
 
-// flat: sample_count * input_length floats; labels: sample_count ints
+TrainParams tp;
+tp.weight_decay = 1e-3f;
+
 HCNNDualCheckpoint ckpt;
 for (int e = 0; e < epochs; ++e) {
-    float lr = cosine_lr(1e-3f, 1e-4f, e, epochs);
-    net.TrainEpoch(train_x, input_length, train_y, n_train, batch,
-                   lr, /*mom=*/0.f, /*wd=*/1e-3f, nullptr,
-                   /*shuffle_seed=*/static_cast<unsigned>(e + 1));
+    tp.learning_rate = cosine_lr(1e-3f, 1e-4f, e, epochs);
+    tp.shuffle_seed  = static_cast<unsigned>(e + 1);
+    net.TrainEpoch(train_x, input_length, train_y, n_train, batch, tp);
     auto r = evaluate_classification(net, test_x, input_length, test_y, n_test);
     ckpt.observe(net, r.loss, r.accuracy, e + 1);
 }
@@ -342,13 +358,13 @@ HCNN net(dim, /*num_outputs=*/1, 1, TaskType::Regression);
 net.AddConv(16, Activation::RELU);
 net.AddConv(16, Activation::TANH);
 net.RandomizeWeights(0.f, seed);
-net.SetOptimizer(OptimizerType::ADAM);
 
+TrainParams tp;
 HCNNBestMetricCheckpoint best;
 for (int e = 0; e < epochs; ++e) {
-    float lr = cosine_lr(lr_max, lr_min, e, epochs);
-    net.TrainEpochRegression(train_x, N, train_t, n_train, batch, lr,
-                             0.f, 0.f, static_cast<unsigned>(e + 1));
+    tp.learning_rate = cosine_lr(lr_max, lr_min, e, epochs);
+    tp.shuffle_seed  = static_cast<unsigned>(e + 1);
+    net.TrainEpochRegression(train_x, N, train_t, n_train, batch, tp);
     auto r = evaluate_regression(net, test_x, N, test_t, n_test);
     best.observe(net, static_cast<float>(r.mse), e + 1);
 }
@@ -501,24 +517,30 @@ See [`spatial_preprocess.md`](spatial_preprocess.md) and `examples/mnist_train.c
 | Short `input_length` after spatial pad −1 | Use `input_length = N` |
 | Expect neighborhood pool | Only **antipodal** pool exists today |
 | `K = DIM` in param math | **`K = DIM + 1`** (self + neighbors) |
-| Resume train from checkpoint blob | Weights only; reset optimizer; BN γ/β not in blob |
+| Resume train from checkpoint blob | Weights + BN stats when present; **not** optimizer moments — use `SetWeights(blob, true)` or `SetOptimizer` |
 | Copy/move `HCNN` | Deleted — use `unique_ptr` |
 | Treat MNIST pack as spatial CNN prior | Row-major DualPlane is **not** Hamming-local |
 | Hypercube = binary values | Topology is binary; activations are float |
 
 ---
 
-## 12. Power-user internals (optional reading)
+## 12. Advanced / internal surfaces (optional)
 
-`HCNN.h` re-exports layer types for inspection and custom loops:
+The installed SDK is **`HCNN` + types + helpers + spatial**.  In the source
+tree (not the install public set), advanced headers exist for tests and
+instrumentation:
 
-- `HCNNConv` — kernels, BN, `compute_gradients` / `apply_gradients`
-- `HCNNPool` — antipodal MAX/AVG
-- `HCNNReadout` — FLATTEN linear head (`num_features = c_final * N_final`; no GAP)
 - `HCNNNetwork` — orchestrator behind the PIMPL
+- `HCNNConv` / `HCNNPool` / `HCNNReadout` — layer implementations
 - `ThreadPool` — non-reentrant fork-join
 
-Coursework and apps should stay on **`HCNN`** unless you are writing tests or research instrumentation.
+Coursework and apps should stay on **`HCNN`** (or `HypercubeCNN.h`).
+
+**Research knob on the facade** (demoted — ignore for teaching):
+
+```cpp
+void SetReadoutGradInLoop(ReadoutGradInLoop loop);  // default OutputOuter
+```
 
 How training cores, threading, block-pair kernels, and weight blobs actually work: **[internals.md](internals.md)**.
 
@@ -538,22 +560,25 @@ How training cores, threading, block-pair kernels, and weight blobs actually wor
 ## 14. One-page cheat sheet
 
 ```text
+#include "HypercubeCNN.h"        // or HCNN.h for core only
+
 HCNN net(DIM, outputs [, c_in, TaskType, LossType, threads]);
+// default optimizer = Adam; start_dim in [3, 30]
 net.AddConv(c_out [, act, bias, bn]);
 net.AddPool([MAX|AVG]);          // optional; DIM -= 1
 net.RandomizeWeights([scale], [seed]);
-net.SetOptimizer(ADAM);          // recommended for demos
 
 // Inference
-net.Embed(raw, len, emb);        // emb size GetStartN(); short → zero pad
-net.Forward(emb, out);           // out size GetNumOutputs()
+net.Predict(raw, len, out);      // happy path (embed + forward)
+net.PredictClass(raw, len);      // classification only
 net.ForwardBatch(flat, len, B, out);
 
-// Train (pick one family)
-net.TrainEpoch(...);             // classification, int labels
-net.TrainEpochRegression(...);   // regression, float targets
+// Train (pick one family) — prefer TrainParams
+TrainParams p{ .learning_rate = 1e-3f, .weight_decay = 1e-3f, .shuffle_seed = e+1 };
+net.TrainEpoch(x, len, y, n, batch, p);              // classification
+net.TrainEpochRegression(x, len, t, n, batch, p);    // regression
 
-// You own: contiguous float buffers, learning rate each call, metrics/checkpoints
+// Helpers: cosine_lr, evaluate_*, HCNNDualCheckpoint / HCNNBestMetricCheckpoint
 ```
 
 **Dependencies:** C++23 standard library + threads only.

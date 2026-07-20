@@ -111,7 +111,7 @@ Parameters:   19409 (192 conv1 + 2832 conv2 + 16385 readout)  # K=DIM+1 (self+ne
 | **Total** | **19,409** |
 
 Startup throws if `summarize_arch` total ≠ `GetWeightCount()` (kernel + bias;
-BN gamma/beta are not in the weight blob if you enable BN).
+BN γ/β and running stats are included in the weight blob when BN is enabled; optimizer moments are not).
 
 FLATTEN treats every (channel, vertex) activation as an independent feature.
 Vertex identity is informative: each reservoir unit encodes a different

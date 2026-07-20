@@ -2,6 +2,7 @@
 // Copyright 2026 David Liptak
 
 #include "HCNN.h"
+#include "HCNNNetwork.h"
 
 #include <algorithm>
 #include <cstring>
@@ -70,6 +71,42 @@ void HCNN::Embed(const float* raw_input, int input_length,
 
 void HCNN::Forward(const float* embedded, float* logits) const {
     net_->forward(embedded, logits);
+}
+
+void HCNN::ensure_predict_buffers_() const {
+    const size_t cap = static_cast<size_t>(net_->get_input_channels()) *
+                       static_cast<size_t>(net_->get_start_N());
+    if (predict_embed_.size() < cap)
+        predict_embed_.resize(cap);
+    const size_t ko = static_cast<size_t>(net_->get_num_outputs());
+    if (predict_logits_.size() < ko)
+        predict_logits_.resize(ko);
+}
+
+void HCNN::Predict(const float* raw_input, int input_length,
+                   float* outputs) const {
+    ensure_predict_buffers_();
+    net_->embed_input(raw_input, input_length, predict_embed_.data());
+    net_->forward(predict_embed_.data(), outputs);
+}
+
+int HCNN::PredictClass(const float* raw_input, int input_length) const {
+    if (net_->get_task_type() != TaskType::Classification) {
+        throw std::logic_error(
+            "HCNN::PredictClass: only valid for TaskType::Classification");
+    }
+    ensure_predict_buffers_();
+    const int K = net_->get_num_outputs();
+    Predict(raw_input, input_length, predict_logits_.data());
+    int best = 0;
+    float best_v = predict_logits_[0];
+    for (int i = 1; i < K; ++i) {
+        if (predict_logits_[static_cast<size_t>(i)] > best_v) {
+            best_v = predict_logits_[static_cast<size_t>(i)];
+            best = i;
+        }
+    }
+    return best;
 }
 
 void HCNN::ForwardBatch(const float* flat_inputs, int input_length,
@@ -166,6 +203,28 @@ void HCNN::TrainEpoch(const float* flat_inputs, int input_length,
         });
 }
 
+void HCNN::TrainStep(const float* raw_input, int input_length, int target_class,
+                     const TrainParams& params) {
+    TrainStep(raw_input, input_length, target_class, params.learning_rate,
+              params.momentum, params.weight_decay, params.class_weights);
+}
+
+void HCNN::TrainBatch(const float* flat_inputs, int input_length,
+                      const int* targets, int batch_size,
+                      const TrainParams& params) {
+    TrainBatch(flat_inputs, input_length, targets, batch_size,
+               params.learning_rate, params.momentum, params.weight_decay,
+               params.class_weights);
+}
+
+void HCNN::TrainEpoch(const float* flat_inputs, int input_length,
+                      const int* targets, int sample_count, int batch_size,
+                      const TrainParams& params) {
+    TrainEpoch(flat_inputs, input_length, targets, sample_count, batch_size,
+               params.learning_rate, params.momentum, params.weight_decay,
+               params.class_weights, params.shuffle_seed);
+}
+
 // ---------------------------------------------------------------------------
 //  Training — regression
 // ---------------------------------------------------------------------------
@@ -212,6 +271,29 @@ void HCNN::TrainEpochRegression(const float* flat_inputs, int input_length,
             net_->train_batch_regression(inputs, input_length, tgt, chunk,
                                          learning_rate, momentum, weight_decay);
         });
+}
+
+void HCNN::TrainStepRegression(const float* raw_input, int input_length,
+                               const float* target, const TrainParams& params) {
+    TrainStepRegression(raw_input, input_length, target, params.learning_rate,
+                        params.momentum, params.weight_decay);
+}
+
+void HCNN::TrainBatchRegression(const float* flat_inputs, int input_length,
+                                const float* flat_targets, int batch_size,
+                                const TrainParams& params) {
+    TrainBatchRegression(flat_inputs, input_length, flat_targets, batch_size,
+                         params.learning_rate, params.momentum,
+                         params.weight_decay);
+}
+
+void HCNN::TrainEpochRegression(const float* flat_inputs, int input_length,
+                                const float* flat_targets,
+                                int sample_count, int batch_size,
+                                const TrainParams& params) {
+    TrainEpochRegression(flat_inputs, input_length, flat_targets, sample_count,
+                         batch_size, params.learning_rate, params.momentum,
+                         params.weight_decay, params.shuffle_seed);
 }
 
 // ---------------------------------------------------------------------------

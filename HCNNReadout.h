@@ -3,57 +3,23 @@
 
 #pragma once
 
+#include "HCNNTypes.h"
+
 #include <vector>
 #include <cstdint>
 #include <random>
 
-// OptimizerType enum — defined in HCNNConv.h (no circular dependency)
-#include "HCNNConv.h"
-
 namespace hcnn {
 
 /**
- * Loop nest used when forming grad_in = W^T * grad_logits.
- *
- * Both orders compute the same sums (same add order per feature when
- * OutputOuter zeros then accumulates o = 0 .. O-1).  They differ only in
- * memory traffic / vectorization — for A/B timing of the linear head.
- *
- *   OutputOuter  — for each output o, stream weight row o into grad_in.
- *                  Sequential W reads; grad_in is RMW'd O times. (default)
- *   FeatureOuter — for each feature f, sum over outputs (legacy A/B).
- *                  Touches W column-strided (stride = num_features).
- */
-enum class ReadoutGradInLoop {
-    FeatureOuter,
-    OutputOuter
-};
-
-/**
  * @class HCNNReadout
- * @brief Final pipeline stage: linear map from a flat feature vector to
- *        `num_outputs` real-valued scalars (FLATTEN head).
+ * @brief FLATTEN linear head (advanced / internal).
  *
- * The orchestrator builds features as every final (channel, vertex) activation
- * laid out channel-major and contiguous:
+ * Ordinary SDK consumers should use `HCNN`.  Features = c_final * N_final;
+ * outputs are raw linear (no softmax).  Owns weights, bias, optimizer moments.
  *
- *   num_features = c_final * N_final
- *   in[c * N + v]  is feature index (c * N + v)
- *
- * Then:
- *
- *   out[o] = bias[o] + sum_f  weights[o, f] * in[f]
- *
- * No global average pool, no activation, no softmax — raw linear outputs.
- * Classification CE / regression MSE live upstream of this class.
- *
- * Owns: weight matrix [num_outputs × num_features] + bias + optimizer moments.
- *
- * Two backward paths mirror HCNNConv:
- *   - backward(): gradients + in-place optimizer step (TrainStep)
- *   - compute_gradients() + apply_gradients(): batch accumulate then apply
- *
- * Power-user class: ordinary SDK consumers should use HCNN.
+ * Two backward paths: `backward()` (in-place step) and
+ * `compute_gradients()` + `apply_gradients()` (batch accumulate).
  */
 class HCNNReadout {
 public:
@@ -118,7 +84,7 @@ private:
     std::vector<float> bias_m;
     std::vector<float> weight_m2;   // second moment (Adam only)
     std::vector<float> bias_m2;
-    OptimizerType optimizer_type_ = OptimizerType::SGD;
+    OptimizerType optimizer_type_ = OptimizerType::ADAM;
     float adam_beta1_ = 0.9f, adam_beta2_ = 0.999f, adam_eps_ = 1e-8f;
     ReadoutGradInLoop grad_in_loop_ = ReadoutGradInLoop::OutputOuter;
 };

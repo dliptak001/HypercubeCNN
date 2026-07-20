@@ -202,9 +202,8 @@ private:
  * Tracks a single weight snapshot for the best (lowest) scalar metric so far.
  * Typical use: best test MSE in a regression loop.
  *
- * Same weights-only caveats as HCNNDualCheckpoint (no BN gamma/beta, no
- * optimizer state).  Intended for eval/export restore, not mid-train resume
- * without resetting the optimizer.
+ * Same caveats as HCNNDualCheckpoint: blob is parameters + BN stats when
+ * present; optimizer moments are not included.  Eval/export restore by default.
  */
 class HCNNBestMetricCheckpoint {
 public:

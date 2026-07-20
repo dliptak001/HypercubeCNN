@@ -62,19 +62,15 @@ else()
 endif()
 
 # ——— Static library: core pipeline ———
-# HCNN.{h,cpp} is the canonical SDK front door.  The underlying layer
-# headers are re-exported transitively for power users who need direct
-# access to HCNNNetwork / HCNNConv / HCNNPool / HCNNReadout.
+# Public install surface (teaching SDK).  Layer/orchestrator headers remain
+# in the source tree for in-tree tests and advanced use but are not installed.
 set(HCNN_PUBLIC_HEADERS
     HCNN.h
-    HCNNNetwork.h
-    HCNNConv.h
-    HCNNPool.h
-    HCNNReadout.h
+    HCNNTypes.h
+    HypercubeCNN.h
     HCNNSpatialAug.h
     HCNNSpatialEmbed.h
     HCNNTrainHelpers.h
-    ThreadPool.h
 )
 
 add_library(HypercubeCNNCore STATIC

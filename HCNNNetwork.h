@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "HCNNTypes.h"
 #include "HCNNConv.h"
 #include "HCNNPool.h"
 #include "HCNNReadout.h"
@@ -15,76 +16,18 @@ namespace hcnn {
 
 class ThreadPool;
 
-/// Task the network is being trained for.  Controls the training API
-/// shape (integer class targets vs. float regression targets), the
-/// interpretation of raw readout outputs, and — unless overridden via
-/// `LossType` — the default loss function.
-///
-/// - `Classification`: raw readout outputs are logits, trained through
-///   softmax + cross-entropy loss.  Use `train_step` / `train_batch` /
-///   `TrainEpoch` with integer class targets.
-/// - `Regression`: raw readout outputs are real-valued predictions,
-///   trained through MSE loss (by default).  Use
-///   `train_step_regression` / `train_batch_regression` /
-///   `TrainEpochRegression` with `const float*` targets of length
-///   `num_outputs`.
-enum class TaskType { Classification, Regression };
-
-/// Loss function used by training.
-///
-/// - `Default`: infer from `TaskType` — CrossEntropy for Classification,
-///   MSE for Regression.  This is the normal path.
-/// - `CrossEntropy`: softmax + cross-entropy.  Only valid when
-///   `TaskType == Classification`.
-/// - `MSE`: mean squared error.  Only valid when
-///   `TaskType == Regression`.
-///
-/// Additional loss functions (Huber, L1, ...) will slot in here as
-/// future enum values with no API break — the gradient dispatch in
-/// `HCNNNetwork::compute_classification_grad` and
-/// `HCNNNetwork::compute_regression_grad` is designed to accommodate
-/// them with a single case statement.
-enum class LossType { Default, CrossEntropy, MSE };
-
 /**
  * @class HCNNNetwork
- * @brief Internal pipeline orchestrator: input embedding → conv/pool stack
- *        → readout, plus the inference, training, and batch-dispatch logic
- *        that drives them.
+ * @brief Internal pipeline orchestrator (advanced / not part of the public
+ *        teaching surface).
  *
- * Wrapped by `HCNN` (the canonical SDK front door).  Most consumers should
- * use `HCNN`; this class is re-exported for power users who need direct
- * weight access (e.g. for serialization or gradient checking) or who want
- * to bypass the wrapper for custom training loops.
+ * Owned by `HCNN` via PIMPL.  Ordinary apps should use `HCNN` only.
+ * Include this header only for tests, custom training loops, or layer
+ * instrumentation.
  *
- * Owns:
- *   - `vector<HCNNConv>` and `vector<HCNNPool>` interleaved per `is_conv_layer`
- *   - `HCNNReadout` (sized by `randomize_all_weights` as FLATTEN linear:
- *     num_features = c_final * N_final)
- *   - A `ThreadPool` shared across all layers
- *   - Persistent per-thread inference buffers (`ibufs_`)
- *   - Persistent per-thread training buffers and gradient accumulators
- *     (`tbufs_`, `accum_`), allocated lazily on first `train_batch`
- *   - Persistent ping-pong scratch (`fwd_buf1_` / `fwd_buf2_`) used by
- *     single-sample `forward()`
- *
- * Threading: three strategies coexist but never nest.  `train_batch` and
- * `forward_batch` parallelize across samples; `HCNNConv::forward` /
- * `backward` parallelize across vertices when DIM is large enough.  The
- * RAII `LayerThreadGuard` disables per-layer vertex threading during batch
- * dispatch to keep the non-reentrant ThreadPool safe.  The RAII
- * `BNStatsGuard` suppresses per-sample running-stats EMA updates during
- * batch-parallel forward passes (race-free reduction happens after).  The
- * RAII `EvalModeGuard` makes `forward()` / `forward_batch()` observably
- * const w.r.t. batch-norm training state.
- *
- * Non-copyable, non-movable -- the owned ThreadPool has live worker
- * threads.
- *
- * Threading model for the *instance*: all non-const training/inference entry
- * points require exclusive use of this object.  Internal sample parallelism
- * (train_batch / forward_batch) is fine; concurrent calls from two host
- * threads on the same HCNNNetwork are not supported.
+ * Owns conv/pool stacks, FLATTEN readout, ThreadPool, and train/infer scratch.
+ * Non-copyable, non-movable (live worker threads).  Instance is exclusive-use:
+ * host must not call concurrently on the same network.
  */
 class HCNNNetwork {
 public:
@@ -216,7 +159,7 @@ private:
     TaskType task_type_;
     LossType loss_type_;
     int adam_timestep_{0};     // Global optimizer timestep (incremented per train_step/train_batch)
-    OptimizerType optimizer_type_ = OptimizerType::SGD;
+    OptimizerType optimizer_type_ = OptimizerType::ADAM;
     float adam_beta1_ = 0.9f, adam_beta2_ = 0.999f, adam_eps_ = 1e-8f;
     bool weights_initialized_{false};  // true after randomize_all_weights
     std::vector<HCNNConv> conv_layers;

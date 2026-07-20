@@ -50,19 +50,44 @@ raw floats  →  Embed onto N vertices
 - **Tasks:** classification (softmax CE) or regression (MSE); same forward path, different loss + train API.
 
 ```cpp
-#include "HCNN.h"
+#include "HypercubeCNN.h"   // or just "HCNN.h" for the core only
 using namespace hcnn;
 
-HCNN net(/*DIM=*/10, /*num_outputs=*/10);  // N = 1024
+HCNN net(/*DIM=*/10, /*num_outputs=*/10);  // N = 1024; default optimizer = Adam
 net.AddConv(32);                           // K = 11 (self + 10 bit axes)
 net.AddPool(PoolType::MAX);                // DIM 10→9, N 1024→512
 net.AddConv(64);                           // K = 10 at DIM 9
 net.RandomizeWeights();
-net.SetOptimizer(OptimizerType::ADAM);     // recommended for demos
 
-std::vector<float> emb(net.GetStartN()), logits(net.GetNumOutputs());
-net.Embed(input, input_len, emb.data());
-net.Forward(emb.data(), logits.data());    // raw logits — no softmax
+std::vector<float> logits(net.GetNumOutputs());
+net.Predict(input, input_len, logits.data());  // embed + forward (raw logits)
+int pred = net.PredictClass(input, input_len); // classification only
+```
+
+### Minimal train loop (helpers)
+
+```cpp
+#include "HypercubeCNN.h"
+using namespace hcnn;
+
+HCNN net(6, /*classes=*/4);
+net.AddConv(16);
+net.RandomizeWeights();
+
+// Contiguous row-major train_x / train_y, test_x / test_y already packed...
+TrainParams tp;
+tp.learning_rate = 1e-3f;
+tp.weight_decay  = 1e-3f;
+
+HCNNDualCheckpoint ckpt;
+for (int e = 0; e < epochs; ++e) {
+    tp.learning_rate = cosine_lr(1e-3f, 1e-4f, e, epochs);
+    tp.shuffle_seed  = static_cast<unsigned>(e + 1);
+    net.TrainEpoch(train_x, input_length, train_y, n_train, batch, tp);
+    auto r = evaluate_classification(net, test_x, input_length, test_y, n_test);
+    ckpt.observe(net, r.loss, r.accuracy, e + 1);
+}
+ckpt.restore_best_acc(net);
 ```
 
 Full student-oriented API: **[docs/CPP_SDK.md](docs/CPP_SDK.md)**.
@@ -94,7 +119,7 @@ FetchContent_MakeAvailable(HypercubeCNN)
 target_link_libraries(my_app PRIVATE HypercubeCNNCore)
 ```
 
-Include `"HCNN.h"`, symbols in `namespace hcnn`.
+Include `"HypercubeCNN.h"` (full teaching stack) or `"HCNN.h"` (core only). Symbols live in `namespace hcnn`.
 
 ---
 
@@ -122,10 +147,11 @@ cmake --build build --target MNISTTrain RegressionTimeseries
 ## Repository map
 
 ```text
-HCNN.h / .cpp              SDK front door (start here)
-HCNNConv / Pool / Readout  Layers (re-exported via HCNN.h)
+HypercubeCNN.h             Umbrella include (core + helpers + spatial)
+HCNN.h / HCNNTypes.h       Public front door + enums
+HCNNTrainHelpers.*         Metrics, cosine LR, checkpoints
 HCNNSpatial*               Optional 2D aug + embed (images)
-HCNNTrainHelpers.*         Optional metrics, cosine LR, checkpoints
+HCNNNetwork / Conv / …     Advanced / internal (not in install public set)
 examples/                  Teaching demos + demo_arch.h
 tests/CoreSmokeTest.cpp    Smoke tests for the public API
 docs/CPP_SDK.md            Canonical SDK guide

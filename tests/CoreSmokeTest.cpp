@@ -3,8 +3,8 @@
 //
 // CoreSmokeTest — fast HCNN SDK smoke suite.
 //
-// Exercises the public facade (HCNN) plus a few power-user surfaces that
-// ordinary demos never touch:
+// Exercises the public facade (HCNN / HypercubeCNN.h) plus advanced surfaces
+// that ordinary demos never touch (included explicitly — not via HCNN.h):
 //   - HCNNConv self-tap math and BN bn_save contract
 //   - HCNNNetwork lifecycle (optimizer/prepare/pool floor)
 //   - HCNNReadout FeatureOuter vs OutputOuter grad_in match (no microbench)
@@ -14,12 +14,11 @@
 // 2–3 epochs, n_train≈16–20) over redundant “loss fell over 100 steps”
 // variants.
 
-#include "HCNN.h"
+#include "HypercubeCNN.h"   // public umbrella
+#include "HCNNConv.h"       // advanced (self-tap / BN contracts)
+#include "HCNNNetwork.h"    // advanced (lifecycle)
 #include "HCNNPool.h"
 #include "HCNNReadout.h"
-#include "HCNNSpatialAug.h"
-#include "HCNNSpatialEmbed.h"
-#include "HCNNTrainHelpers.h"
 #include "ThreadPool.h"
 
 #include <algorithm>
@@ -38,6 +37,7 @@ using hcnn::HCNNPool;
 using hcnn::HCNNReadout;
 using hcnn::ReadoutGradInLoop;
 using hcnn::ThreadPool;
+using hcnn::TrainParams;
 using hcnn::PoolType;
 using hcnn::TaskType;
 using hcnn::LossType;
@@ -363,8 +363,8 @@ static void section_construction() {
         const size_t expected = static_cast<size_t>(1 * 8 * 6 + 8 + 8 * 32 * 4 + 4);
         check(net.GetWeightCount() == expected,
               "GetWeightCount includes self taps (K=DIM+1)");
-        check(net.GetOptimizerType() == OptimizerType::SGD,
-              "GetOptimizerType default SGD");
+        check(net.GetOptimizerType() == OptimizerType::ADAM,
+              "GetOptimizerType default ADAM");
         check(net.GetNumConv() == 1 && net.GetNumPool() == 0,
               "GetNumConv/GetNumPool facade");
     }
@@ -403,6 +403,46 @@ static void section_forward_train() {
         check(all_finite(emb.data(), N), "Embed produces finite values");
         net.Forward(emb.data(), logits.data());
         check(all_finite(logits.data(), K), "Forward produces finite logits");
+
+        // Predict == Embed + Forward; PredictClass == argmax
+        std::vector<float> pred(K);
+        net.Predict(input.data(), N, pred.data());
+        check(all_finite(pred.data(), K), "Predict produces finite outputs");
+        float max_diff = 0.0f;
+        for (int i = 0; i < K; ++i)
+            max_diff = std::max(max_diff, std::abs(pred[static_cast<size_t>(i)]
+                                                   - logits[static_cast<size_t>(i)]));
+        check(max_diff < 1e-6f, "Predict matches Embed+Forward");
+        const int cls = net.PredictClass(input.data(), N);
+        check(cls >= 0 && cls < K, "PredictClass in range");
+        int argmax_i = 0;
+        for (int i = 1; i < K; ++i)
+            if (pred[static_cast<size_t>(i)] > pred[static_cast<size_t>(argmax_i)])
+                argmax_i = i;
+        check(cls == argmax_i, "PredictClass matches argmax of Predict");
+    }
+
+    // TrainParams overloads
+    {
+        HCNN net(DIM, K);
+        net.AddConv(8);
+        net.RandomizeWeights();
+        const int N = net.GetStartN();
+        std::vector<std::vector<float>> inputs;
+        std::vector<int> targets;
+        make_synth(8, N, K, 77, inputs, targets);
+        auto flat = flatten_inputs(inputs, N);
+
+        TrainParams p;
+        p.learning_rate = 0.02f;
+        p.shuffle_seed = 3u;
+        net.TrainStep(inputs[0].data(), N, targets[0], p);
+        net.TrainBatch(flat.data(), N, targets.data(), 8, p);
+        net.TrainEpoch(flat.data(), N, targets.data(), 8, 4, p);
+
+        std::vector<float> out(K);
+        net.Predict(inputs[0].data(), N, out.data());
+        check(all_finite(out.data(), K), "TrainParams path: Predict finite");
     }
 
     // TrainStep loss drop (~40 steps)
@@ -989,6 +1029,25 @@ static void section_contracts() {
 
 static void section_regression() {
     begin_section("Regression");
+
+    // Predict works; PredictClass rejects regression nets
+    {
+        HCNN net(5, 1, 1, TaskType::Regression);
+        net.AddConv(4);
+        net.RandomizeWeights();
+        const int N = net.GetStartN();
+        std::vector<float> x(N, 0.1f), y(1);
+        net.Predict(x.data(), N, y.data());
+        check(std::isfinite(y[0]), "Regression Predict finite");
+        check(throws([&] { (void)net.PredictClass(x.data(), N); }),
+              "PredictClass throws on Regression");
+
+        TrainParams p;
+        p.learning_rate = 0.05f;
+        float t = 0.25f;
+        net.TrainStepRegression(x.data(), N, &t, p);
+        check(std::isfinite(y[0]), "TrainParams regression step ok");
+    }
 
     // Scalar: step loss drop + batch/epoch finite
     {

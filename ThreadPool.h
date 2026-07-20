@@ -50,7 +50,8 @@ namespace hcnn {
  * dangling functor references).
  *
  * Header-only, no dependencies beyond `<thread>` / `<mutex>` / `<atomic>`.
- * Re-exported transitively via `HCNN.h`.
+ * Internal utility (not part of the public teaching install).  In-tree tests
+ * and the network orchestrator use it; ordinary apps never include this.
  */
 class ThreadPool
 {

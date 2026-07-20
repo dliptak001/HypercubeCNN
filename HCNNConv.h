@@ -31,6 +31,8 @@
 
 #pragma once
 
+#include "HCNNTypes.h"
+
 #include <vector>
 #include <random>
 
@@ -38,65 +40,15 @@ namespace hcnn {
 
 class ThreadPool;
 
-/// Activation function applied after convolution (and optional batch normalization).
-///
-/// - `NONE`: identity, useful when the layer's output feeds directly into a
-///   downstream nonlinearity (e.g. an antipodal max-pool that is itself the
-///   network's nonlinearity).
-/// - `RELU`, `LEAKY_RELU`: standard rectified-linear variants.  Single-sided,
-///   non-smooth at zero, fast.  Use He/Kaiming initialization (set
-///   automatically by `randomize_weights`).
-/// - `TANH`: smooth, symmetric, bounded in (-1, 1).  The standard activation
-///   for time-series and recurrent-network workloads (LSTM, GRU, ESN), and
-///   the natural choice when HCNN is used as a regression readout for a
-///   reservoir whose state is itself tanh-bounded -- the activations of the
-///   conv layer then live in the same range as the reservoir state, and the
-///   gradient is everywhere smooth (no kink at zero like RELU/LEAKY_RELU,
-///   which interacts badly with the antipodal max-pool's already-non-smooth
-///   gradient).  Uses Xavier/Glorot initialization.
-enum class Activation { NONE, RELU, LEAKY_RELU, TANH };
-
-/// Optimizer for weight updates.
-enum class OptimizerType { SGD, ADAM };
-
 /**
  * @class HCNNConv
- * @brief One hypercube convolutional layer.  Maps c_in input channels on a
- *        DIM-dimensional binary hypercube to c_out output channels on the
- *        same hypercube using K = DIM + 1 kernel taps: one self (center)
- *        weight plus DIM single-bit-flip XOR neighbor directions.
+ * @brief One hypercube convolutional layer (advanced / internal).
  *
- * Each output channel learns one weight per (input channel, tap) pair plus
- * an optional bias.  Weight sharing across vertices is exact (the hypercube
- * is vertex-transitive), so there is no padding, border handling, or
- * adjacency table.
+ * Ordinary SDK consumers should use `HCNN`, which builds and owns conv layers.
+ * This header is for tests, instrumentation, and custom training loops.
  *
- * Owns: kernel + (optional) bias + (optional) batch-norm parameters, plus
- * the matching first / second moment buffers for SGD-momentum or Adam.
- *
- * Configurable per layer:
- *   - activation: NONE / RELU / LEAKY_RELU / TANH
- *   - use_bias: per-output-channel learnable bias
- *   - use_batchnorm: per-channel batch normalization between conv and activation
- *   - optimizer: SGD-with-momentum or Adam (set via set_optimizer)
- *
- * Two backward paths share the same gradient math but differ in where the
- * gradients land:
- *   - backward(): apply gradients in-place via the configured optimizer
- *     (used by single-sample TrainStep)
- *   - compute_gradients() + apply_gradients(): write raw gradients into
- *     caller-provided buffers, then apply once (used by mini-batch
- *     training to accumulate per-sample grads across threads)
- *
- * Threading: an optional ThreadPool parallelizes the inner vertex loop;
- * only kicks in when DIM >= 12, since fork-join overhead dominates below.
- * Disabled automatically during batch-parallel dispatch (LayerThreadGuard).
- *
- * Layout convention: all activation tensors are channel-major,
- * `data[c * N + v]` for channel c, vertex v.
- *
- * Power-user class: ordinary SDK consumers should use HCNN, which builds
- * and owns conv layers internally.
+ * Maps c_in → c_out channels on a DIM-cube with K = DIM + 1 taps (self +
+ * one-bit XOR neighbors).  Layout: channel-major `data[c * N + v]`.
  */
 class HCNNConv {
 public:
@@ -341,7 +293,7 @@ private:
     static constexpr float bn_eps_ = 1e-5f;      ///< Epsilon for numerical stability.
 
     // Optimizer configuration
-    OptimizerType optimizer_type_ = OptimizerType::SGD;
+    OptimizerType optimizer_type_ = OptimizerType::ADAM;
     float adam_beta1_ = 0.9f, adam_beta2_ = 0.999f, adam_eps_ = 1e-8f;
 
     std::vector<float> backward_work_;  ///< Persistent scratch for backward() [c_out * N], grown on demand.

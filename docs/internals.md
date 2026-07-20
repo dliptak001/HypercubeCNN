@@ -17,31 +17,32 @@ This page describes **how the core is built**, not how to call it. Public API co
 ## 1. Module graph
 
 ```text
+  Public install:  HypercubeCNN.h / HCNN.h / HCNNTypes.h
+                   + TrainHelpers + Spatial*
+                         │
+                         ▼
                     HCNN  (public, PIMPL)
                       │
                       ▼
-                 HCNNNetwork
+                 HCNNNetwork          ← source-tree / advanced only
            ┌──────────┼──────────┐
            ▼          ▼          ▼
        HCNNConv   HCNNPool   HCNNReadout
            │          │
            └──── ThreadPool ────┘   (shared, non-reentrant)
-
-Outside the graph (optional SDK headers):
-  HCNNSpatialAug / HCNNSpatialEmbed   — image preprocess
-  HCNNTrainHelpers                      — metrics, LR, checkpoints
 ```
 
 | Class | Files | Owns |
 |-------|-------|------|
-| `HCNN` | `HCNN.h/cpp` | `unique_ptr<HCNNNetwork>`, epoch shuffle gather buffers |
+| `HCNN` | `HCNN.h/cpp` | `unique_ptr<HCNNNetwork>`, epoch shuffle + Predict scratch |
 | `HCNNNetwork` | `HCNNNetwork.h/cpp` | conv/pool stacks, readout, `ThreadPool`, train/infer scratch |
 | `HCNNConv` | `HCNNConv.h/cpp` | kernel (`c_out×c_in×K`), bias, BN params, optimizer moments |
 | `HCNNPool` | `HCNNPool.h/cpp` | no parameters (stateless reduce) |
 | `HCNNReadout` | `HCNNReadout.h/cpp` | dense weights + bias + moments |
 | `ThreadPool` | `ThreadPool.h` | worker threads; caller participates as thread 0 |
 
-Enums (via `HCNN.h`): `Activation`, `OptimizerType`, `PoolType`, `TaskType`, `LossType`.
+Public enums live in **`HCNNTypes.h`**: `Activation`, `OptimizerType`, `PoolType`, `TaskType`, `LossType`, `ReadoutGradInLoop`.  
+Default **optimizer is Adam** on `HCNN` / layers.
 
 ---
 
