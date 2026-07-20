@@ -11,28 +11,17 @@ grid, no adjacency list, no stencil table to store. The activations stay
 ordinary real-valued units (ReLU, tanh, …); only the *topology* is binary, so
 capacity is power-of-two by construction and packing non-cube data is host work.
 
-You build a stack of local layers, train for classification or regression, and
-save a weight file with a small architecture sidecar so another host can rebuild
-the same network. Optional helpers turn ordinary images into length-N inputs
-without pretending the cube is a pixel grid. Practical demos use a few dozen to
-a few thousand vertices per channel; larger cubes are available when you need
-them.
+You stack local layers, train for classification or regression, and save weights
+with a small architecture sidecar. Optional helpers map images onto length N;
+data that already lives at `2^D` (reservoir or ESN state, fingerprints, product
+features) can drive the network with no packing step.
 
-Compared with a standard vision CNN, the familiar pieces stay: shared local
-weights, stacked layers, end-to-end training. What changes is the domain. A
-usual network slides a small window across a rectangle and has to invent padding
-at the borders. Here every site has the same number of neighbors, found by
-flipping one bit of its address, so there is no image edge and no stencil table —
-only a power-of-two number of sites and geometry that is exact under the cube’s
-symmetry.
-
-How you feed the network is part of that story. Pixels are not the native layout:
-if you have an image, you (or the optional spatial helpers) first lay it out onto
-the N vertices — pad, resize, dual-plane ink-and-gradient packs, or any scheme you
-prefer — then train and infer on full-capacity vectors. Many hosts never touch
-images at all. Reservoir or ESN state, bit-indexed fingerprints, product-space
-features, and other signals that already sit at length 2^D can drive the network
-directly, with no packing step and no pretense that the cube is a camera sensor.
+Compared with a standard vision CNN, the shared-weight stack and end-to-end
+training stay familiar — only the domain changes. A usual network slides a
+window on a rectangle and pads the borders; here every site has the same
+neighbors under the cube’s symmetry, with no image edge and no stencil table.
+Pixels are not native: pack them onto the N sites first, then train on those
+length-N inputs.
 
 ## Installation
 
