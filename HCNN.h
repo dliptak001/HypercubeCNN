@@ -110,6 +110,11 @@ public:
     void SetOptimizer(OptimizerType type, float beta1 = 0.9f,
                       float beta2 = 0.999f, float eps = 1e-8f);
 
+    /// Session train knobs used by train overloads that omit `TrainParams`.
+    /// Survives RandomizeWeights / SetOptimizer.  Default: lr 1e-3, rest zero.
+    void SetTrainDefaults(const TrainParams& params);
+    [[nodiscard]] const TrainParams& GetTrainDefaults() const;
+
     /// Eagerly allocate work buffers (prefer after RandomizeWeights). Idempotent.
     void PrepareBuffers();
 
@@ -180,12 +185,23 @@ public:
                     const int* targets, int sample_count, int batch_size,
                     const TrainParams& params);
 
+    // Use GetTrainDefaults() (session knobs)
+    void TrainStep(const float* raw_input, int input_length, int target_class);
+    void TrainBatch(const float* flat_inputs, int input_length,
+                    const int* targets, int batch_size);
+    void TrainEpoch(const float* flat_inputs, int input_length,
+                    const int* targets, int sample_count, int batch_size);
+
     // Full-capacity typed overloads (preferred after spatial embed)
     void TrainStep(HCNNInputView in, int target_class, const TrainParams& params);
     void TrainBatch(HCNNInputView in, const int* targets, int batch_size,
                     const TrainParams& params);
     void TrainEpoch(HCNNInputView in, const int* targets, int batch_size,
                     const TrainParams& params);
+
+    void TrainStep(HCNNInputView in, int target_class);
+    void TrainBatch(HCNNInputView in, const int* targets, int batch_size);
+    void TrainEpoch(HCNNInputView in, const int* targets, int batch_size);
 
     // -----------------------------------------------------------------
     //  Training — regression
@@ -224,6 +240,19 @@ public:
                               int batch_size, const TrainParams& params);
     void TrainEpochRegression(HCNNInputView in, const float* flat_targets,
                               int batch_size, const TrainParams& params);
+
+    void TrainStepRegression(const float* raw_input, int input_length,
+                             const float* target);
+    void TrainBatchRegression(const float* flat_inputs, int input_length,
+                              const float* flat_targets, int batch_size);
+    void TrainEpochRegression(const float* flat_inputs, int input_length,
+                              const float* flat_targets, int sample_count,
+                              int batch_size);
+    void TrainStepRegression(HCNNInputView in, const float* target);
+    void TrainBatchRegression(HCNNInputView in, const float* flat_targets,
+                              int batch_size);
+    void TrainEpochRegression(HCNNInputView in, const float* flat_targets,
+                              int batch_size);
 
     // -----------------------------------------------------------------
     //  Sizing accessors
@@ -268,6 +297,7 @@ public:
 
 private:
     std::unique_ptr<HCNNNetwork> net_;
+    TrainParams train_defaults_;
 
     std::vector<int> shuffle_idx_;
     std::vector<float> shuffle_inputs_;

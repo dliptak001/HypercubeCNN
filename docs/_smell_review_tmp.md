@@ -49,10 +49,10 @@ CMake/docs still **v0.2.0** after a large public-API arc (Predict, TrainParams, 
 
 **Type:** version and remote don’t match product reality.
 
-### 5. Single smoke binary is both strength and gap — **open**
-`CoreSmokeTest` is the behavioral contract. No separate numerical grad-check suite (beyond ad-hoc tools), limited multi-config depth as a product story, no property/fuzz for embed/pad.
+### 5. Single smoke binary is both strength and gap — **won't fix**
+`CoreSmokeTest` is the sole fast behavioral contract (~200+ checks, sub-second). Accepted: one well-maintained smoke suite is enough for this stage; no separate grad-check / golden / fuzz suite required. Revisit only if kernel/optimizer refactors demand numerical gates.
 
-**Type:** one basket for tests.
+**Type:** one basket for tests (by design for now).
 
 ### 6. Spatial pad dual-contract remains a structural footgun — **done** (option C)
 Introduced `HCNNInputView` / `HCNNInputBatch` (`HCNNInput.h`): full-capacity per sample.
@@ -63,10 +63,12 @@ MNIST demo uses `TrainEpoch(train_ds.input_view(), ...)`.
 
 **Type:** structural guard on the typed happy path (raw short length still possible).
 
-### 7. Optimizer / training knobs are still “caller-owned and scattered” — **open**
-LR every call (or `TrainParams`), momentum on SGD, Adam via `SetOptimizer`, schedules in helpers. Good for teaching; not a session-level train config.
+### 7. Optimizer / training knobs are still “caller-owned and scattered” — **done** (small A/C)
+- **A:** `HCNN::SetTrainDefaults` / `GetTrainDefaults`; train overloads that omit `TrainParams` use them.
+- **C:** `HCNNTrainer` in TrainHelpers — holds params, optional cosine LR + shuffle_seed per epoch, `train_epoch` / `train_epoch_regression`, optional sync to net defaults.
+Explicit `TrainParams` / positional APIs remain. Optimizer type still via `SetOptimizer`.
 
-**Type:** flexible but not batteries-included session.
+**Type:** light session knobs without a full Trainer framework.
 
 ---
 
@@ -136,7 +138,7 @@ Smell is not the split — it’s that **value still flows through both**.
 | 2 | Harden public boundary — Network/layers non-API forever | **done** |
 | 3 | One train-entry design — `TrainParams` in demos; deprecate long positional later | **open** |
 | 4 | Typed length-N input or spatial→Train helper (pad footgun) | **done** (option C) |
-| 5 | Complement smoke with opt-in numerical/grad or golden test | **open** |
+| 5 | Complement smoke with opt-in numerical/grad or golden test | **won't fix** |
 | 6 | Optional `src/` + `include/HypercubeCNN/` layout | **open** |
 | — | Drop LossType ghost API | **done** |
 | — | Drop facade grad_in loop knob | **done** |

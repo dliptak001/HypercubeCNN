@@ -206,11 +206,14 @@ void AddPool(PoolType type = PoolType::MAX);   // DIM -= 1
 void RandomizeWeights(float scale = 0.f, unsigned seed = 42);
 void SetOptimizer(OptimizerType type, float beta1 = 0.9f,
                   float beta2 = 0.999f, float eps = 1e-8f);
+void SetTrainDefaults(const TrainParams& p);  // session knobs for no-param train*
+const TrainParams& GetTrainDefaults() const;
 void SetTraining(bool training);   // BN train/eval flag
 void PrepareBuffers();             // optional: allocate scratch up front
 ```
 
 - Default optimizer is **Adam** (AdamW-style decoupled decay on kernels when `weight_decay > 0`). Use `SetOptimizer(SGD)` if you want classical momentum SGD.
+- **Session train knobs:** `SetTrainDefaults` holds lr / momentum / weight_decay / shuffle_seed / class_weights for overloads that omit `TrainParams` (e.g. `TrainEpoch(view, y, batch)`). Explicit `TrainParams` args still win.
 - `RandomizeWeights`: `scale > 0` → uniform `[-scale, scale]`; else He (ReLU/Leaky, `c_in > 1`) or Xavier. Rebuilds readout to match final `c * N`. Clears optimizer moments / Adam timestep.
 - **Non-copyable, non-movable** (live thread pool). Use `std::unique_ptr<HCNN>` if ownership must move.
 
@@ -466,6 +469,7 @@ Header: `HCNNTrainHelpers.h`. **Not** part of the conv/pool graph; does not chan
 | `HCNNDualCheckpoint` | Best test loss **and** best test accuracy (`GetWeights` blobs) |
 | `HCNNBestMetricCheckpoint` | Best (lowest) scalar, e.g. test MSE |
 | `save_weights` / `load_weights` | Versioned binary weight files (architecture-checked) |
+| `HCNNTrainer` | Thin session: `TrainParams` + optional cosine + `train_epoch` |
 
 ### Cosine LR
 
@@ -650,7 +654,8 @@ net->PredictClass(raw, len);     // classification only
 TrainParams p{ .learning_rate = 1e-3f, .weight_decay = 1e-3f, .shuffle_seed = e+1 };
 net->TrainEpoch(x, len, y, n, batch, p);
 
-// Helpers: cosine_lr, evaluate_*, FlatDataset, save/load_weights, checkpoints
+// Helpers: cosine_lr, HCNNTrainer, evaluate_*, FlatDataset, save/load, checkpoints
+// Session: net.SetTrainDefaults(p);  or  HCNNTrainer tr(net); tr.set_cosine(...);
 ```
 
 **Dependencies:** C++23 standard library + threads only.

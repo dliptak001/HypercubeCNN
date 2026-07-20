@@ -47,6 +47,14 @@ void HCNN::SetOptimizer(OptimizerType type, float beta1, float beta2, float eps)
     net_->set_optimizer(type, beta1, beta2, eps);
 }
 
+void HCNN::SetTrainDefaults(const TrainParams& params) {
+    train_defaults_ = params;
+}
+
+const TrainParams& HCNN::GetTrainDefaults() const {
+    return train_defaults_;
+}
+
 void HCNN::PrepareBuffers() {
     net_->prepare_all_buffers();
 }
@@ -282,6 +290,33 @@ void HCNN::TrainEpoch(HCNNInputView in, const int* targets, int batch_size,
     TrainEpoch(in.data(), in.capacity(), targets, in.count(), batch_size, params);
 }
 
+void HCNN::TrainStep(const float* raw_input, int input_length, int target_class) {
+    TrainStep(raw_input, input_length, target_class, train_defaults_);
+}
+
+void HCNN::TrainBatch(const float* flat_inputs, int input_length,
+                      const int* targets, int batch_size) {
+    TrainBatch(flat_inputs, input_length, targets, batch_size, train_defaults_);
+}
+
+void HCNN::TrainEpoch(const float* flat_inputs, int input_length,
+                      const int* targets, int sample_count, int batch_size) {
+    TrainEpoch(flat_inputs, input_length, targets, sample_count, batch_size,
+               train_defaults_);
+}
+
+void HCNN::TrainStep(HCNNInputView in, int target_class) {
+    TrainStep(in, target_class, train_defaults_);
+}
+
+void HCNN::TrainBatch(HCNNInputView in, const int* targets, int batch_size) {
+    TrainBatch(in, targets, batch_size, train_defaults_);
+}
+
+void HCNN::TrainEpoch(HCNNInputView in, const int* targets, int batch_size) {
+    TrainEpoch(in, targets, batch_size, train_defaults_);
+}
+
 // ---------------------------------------------------------------------------
 //  Training — regression
 // ---------------------------------------------------------------------------
@@ -380,6 +415,38 @@ void HCNN::TrainEpochRegression(HCNNInputView in, const float* flat_targets,
     require_input_view_(in, "HCNN::TrainEpochRegression");
     TrainEpochRegression(in.data(), in.capacity(), flat_targets, in.count(),
                          batch_size, params);
+}
+
+void HCNN::TrainStepRegression(const float* raw_input, int input_length,
+                               const float* target) {
+    TrainStepRegression(raw_input, input_length, target, train_defaults_);
+}
+
+void HCNN::TrainBatchRegression(const float* flat_inputs, int input_length,
+                                const float* flat_targets, int batch_size) {
+    TrainBatchRegression(flat_inputs, input_length, flat_targets, batch_size,
+                         train_defaults_);
+}
+
+void HCNN::TrainEpochRegression(const float* flat_inputs, int input_length,
+                                const float* flat_targets, int sample_count,
+                                int batch_size) {
+    TrainEpochRegression(flat_inputs, input_length, flat_targets, sample_count,
+                         batch_size, train_defaults_);
+}
+
+void HCNN::TrainStepRegression(HCNNInputView in, const float* target) {
+    TrainStepRegression(in, target, train_defaults_);
+}
+
+void HCNN::TrainBatchRegression(HCNNInputView in, const float* flat_targets,
+                                int batch_size) {
+    TrainBatchRegression(in, flat_targets, batch_size, train_defaults_);
+}
+
+void HCNN::TrainEpochRegression(HCNNInputView in, const float* flat_targets,
+                                int batch_size) {
+    TrainEpochRegression(in, flat_targets, batch_size, train_defaults_);
 }
 
 // ---------------------------------------------------------------------------

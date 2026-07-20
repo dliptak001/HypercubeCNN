@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <limits>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -180,6 +181,118 @@ struct HCNNRegEval {
  */
 [[nodiscard]] float cosine_lr(float lr_max, float lr_min,
                               int epoch, int num_epochs);
+
+// -----------------------------------------------------------------------------
+// Thin training session helper (optional)
+// -----------------------------------------------------------------------------
+
+/**
+ * Lightweight train loop helper: holds `TrainParams`, optional cosine LR, and
+ * forwards to `HCNN` typed/flat train APIs.  Does not own the network.
+ *
+ * Typical use:
+ * @code
+ *   HCNNTrainer tr(net);
+ *   tr.params().weight_decay = 1e-3f;
+ *   tr.set_cosine(1e-3f, 1e-4f, 60);
+ *   for (int e = 0; e < 60; ++e)
+ *       tr.train_epoch(ds.input_view(), ds.targets.data(), batch, e);
+ * @endcode
+ *
+ * Also syncs prepared params onto `HCNN::SetTrainDefaults` when
+ * `sync_net_defaults` is true (default), so `net.TrainEpoch(...)` without
+ * params uses the same knobs.
+ */
+class HCNNTrainer {
+public:
+    explicit HCNNTrainer(HCNN& net, bool sync_net_defaults = true)
+        : net_(&net), sync_net_defaults_(sync_net_defaults) {
+        params_ = net.GetTrainDefaults();
+    }
+
+    [[nodiscard]] HCNN& net() { return *net_; }
+    [[nodiscard]] const HCNN& net() const { return *net_; }
+
+    [[nodiscard]] TrainParams& params() { return params_; }
+    [[nodiscard]] const TrainParams& params() const { return params_; }
+
+    void set_params(const TrainParams& p) {
+        params_ = p;
+        if (sync_net_defaults_)
+            net_->SetTrainDefaults(params_);
+    }
+
+    /// Cosine LR from lr_max (epoch 0) to lr_min (last epoch).  Also sets
+    /// shuffle_seed = epoch + 1 in prepare_epoch.
+    void set_cosine(float lr_max, float lr_min, int num_epochs) {
+        if (num_epochs < 1) {
+            throw std::invalid_argument(
+                "HCNNTrainer::set_cosine: num_epochs must be >= 1");
+        }
+        lr_max_ = lr_max;
+        lr_min_ = lr_min;
+        num_epochs_ = num_epochs;
+        use_cosine_ = true;
+    }
+
+    void clear_cosine() { use_cosine_ = false; }
+
+    [[nodiscard]] bool has_cosine() const { return use_cosine_; }
+
+    /// Update params.learning_rate (if cosine) and shuffle_seed = epoch+1.
+    /// Optionally mirrors onto HCNN::SetTrainDefaults.
+    void prepare_epoch(int epoch_0based) {
+        if (use_cosine_) {
+            params_.learning_rate =
+                cosine_lr(lr_max_, lr_min_, epoch_0based, num_epochs_);
+        }
+        params_.shuffle_seed = static_cast<unsigned>(epoch_0based + 1);
+        if (sync_net_defaults_)
+            net_->SetTrainDefaults(params_);
+    }
+
+    // Classification
+    void train_epoch(HCNNInputView in, const int* targets, int batch_size,
+                     int epoch_0based) {
+        prepare_epoch(epoch_0based);
+        net_->TrainEpoch(in, targets, batch_size, params_);
+    }
+
+    void train_epoch(const HCNNFlatDataset& ds, int batch_size,
+                     int epoch_0based) {
+        if (!ds.has_class_targets()) {
+            throw std::invalid_argument(
+                "HCNNTrainer::train_epoch: dataset has no class targets");
+        }
+        train_epoch(ds.input_view(), ds.targets.data(), batch_size, epoch_0based);
+    }
+
+    // Regression
+    void train_epoch_regression(HCNNInputView in, const float* flat_targets,
+                                int batch_size, int epoch_0based) {
+        prepare_epoch(epoch_0based);
+        net_->TrainEpochRegression(in, flat_targets, batch_size, params_);
+    }
+
+    void train_epoch_regression(const HCNNFlatDataset& ds, int batch_size,
+                                int epoch_0based) {
+        if (!ds.has_float_targets()) {
+            throw std::invalid_argument(
+                "HCNNTrainer::train_epoch_regression: dataset has no float_targets");
+        }
+        train_epoch_regression(ds.input_view(), ds.float_targets.data(),
+                               batch_size, epoch_0based);
+    }
+
+private:
+    HCNN* net_ = nullptr;
+    TrainParams params_;
+    bool sync_net_defaults_ = true;
+    bool use_cosine_ = false;
+    float lr_max_ = 1e-3f;
+    float lr_min_ = 1e-4f;
+    int num_epochs_ = 1;
+};
 
 // -----------------------------------------------------------------------------
 // Dual weight checkpoints

@@ -63,6 +63,7 @@ using hcnn::save_weights;
 using hcnn::load_weights;
 using hcnn::HCNNInputView;
 using hcnn::HCNNInputBatch;
+using hcnn::HCNNTrainer;
 
 // ---------------------------------------------------------------------------
 //  Reporting
@@ -1870,6 +1871,55 @@ static void section_train_helpers() {
         check(throws([&] {
             (void)HCNNInputBatch::adopt(std::vector<float>(3), 1, N);
         }), "adopt rejects wrong size");
+    }
+
+    // Train defaults (A) + HCNNTrainer (C)
+    {
+        HCNN net(5, 3);
+        net.AddConv(4);
+        net.RandomizeWeights(/*scale=*/0.0f, /*seed=*/8);
+        const int N = net.GetStartN();
+
+        TrainParams d;
+        d.learning_rate = 0.05f;
+        d.weight_decay = 1e-4f;
+        d.shuffle_seed = 7u;
+        net.SetTrainDefaults(d);
+        check(net.GetTrainDefaults().learning_rate == 0.05f,
+              "GetTrainDefaults reflects SetTrainDefaults");
+
+        std::vector<float> x(static_cast<size_t>(N), 0.1f);
+        bool ok = true;
+        try {
+            net.TrainStep(x.data(), N, /*target=*/0);  // uses defaults
+        } catch (const std::exception&) {
+            ok = false;
+        }
+        check(ok, "TrainStep without params uses defaults");
+
+        HCNNFlatDataset ds;
+        ds.reset(8, N);
+        std::fill(ds.inputs.begin(), ds.inputs.end(), 0.05f);
+        for (int i = 0; i < 8; ++i)
+            ds.targets[static_cast<size_t>(i)] = i % 3;
+
+        HCNNTrainer tr(net);
+        tr.params().weight_decay = 1e-3f;
+        tr.set_cosine(0.05f, 0.005f, /*num_epochs=*/3);
+        tr.train_epoch(ds, /*batch=*/4, /*epoch=*/0);
+        check(tr.params().learning_rate == cosine_lr(0.05f, 0.005f, 0, 3)
+              || std::abs(tr.params().learning_rate
+                          - cosine_lr(0.05f, 0.005f, 0, 3)) < 1e-7f,
+              "trainer cosine sets lr for epoch 0");
+        check(tr.params().shuffle_seed == 1u, "trainer shuffle_seed = epoch+1");
+        check(std::abs(net.GetTrainDefaults().learning_rate
+                       - tr.params().learning_rate) < 1e-7f,
+              "trainer syncs SetTrainDefaults");
+
+        tr.train_epoch(ds.input_view(), ds.targets.data(), 4, /*epoch=*/2);
+        check(std::abs(tr.params().learning_rate
+                       - cosine_lr(0.05f, 0.005f, 2, 3)) < 1e-7f,
+              "trainer cosine at last epoch");
     }
 
     end_section();
