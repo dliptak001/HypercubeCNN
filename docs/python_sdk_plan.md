@@ -361,7 +361,7 @@ Phases are ordered by dependency; keep PRs reviewable (prefer one phase per PR w
 - [x] Pin/document `HCNN_FAST_TANH=ON` for the extension (CMake option default ON)
 - [x] Local rebuild notes in `python/README.md` (CLion MinGW + Ninja; `--no-build-isolation`)
 - [x] Smoke: `import hypercube_cnn` → `__version__ == 1.0.0` (local MinGW wheel ~545 KB)
-- [ ] Confirm sdist includes every file needed to compile (manual `python -m build --sdist` when `build` is available)
+- [x] Confirm sdist includes every file needed to compile — `python -m build --sdist` + clean-venv install smoke (`python/scripts/sdist_smoke.ps1`)
 
 ### Phase 1 — Core bindings + façade
 
@@ -516,8 +516,8 @@ Keep `ci.yml` for C++/smoke. Add `wheels.yml` for Python; do not overload C++ CI
 - [x] PyPI project name `hypercube-cnn` — pending trusted publisher registered (does not reserve the name until first upload)
 - [x] `wheels.yml` added (triggers: main push/PR, tags `v*`, `workflow_dispatch`)
 - [x] Land Phase 0 package so local install works (CI wheels still need push + green matrix)
-- [ ] Optional sdist tarball install smoke
-- [ ] Optional: one C++-written HCNW fixture in `tests/data/` for cross-language load (nice-to-have in Phase 3–4)
+- [x] Sdist tarball install smoke (`python/scripts/sdist_smoke.ps1`; local green 2026-07-20)
+- [x] C++-written HCNW fixture: `tests/data/hcnw_interop/` + `WriteHcnwInteropFixture` + pytest
 - [x] Packaging root default: repo-root `pyproject.toml` (workflow `package-dir: .`)
 - [x] Persistence: separate `.hcnw` + `.arch.json` primary; pickle secondary (Phase 5)
 - [x] Spatial: bound in Phase 5
@@ -548,6 +548,8 @@ Keep `ci.yml` for C++/smoke. Add `wheels.yml` for Python; do not overload C++ CI
 | 2026-07-20 | **Phase 2 done:** pure-Python `arch.py` (LayerSpec, summarize_arch, HCNNConfig, arch JSON v1). `export_arch`/`from_arch`/`from_layers`; layer list tracked on `HCNN`. Smoke: param total==weight_count; set_weights identity after from_arch. |
 | 2026-07-20 | **Phase 3 done:** bind C++ HCNW `save_weights`/`load_weights`; `HCNN.save`/`load` write/read `.hcnw` + `.arch.json`. Smoke: bit-identical logits; arch mismatch + bad magic + missing sidecar rejected. |
 | 2026-07-20 | **Phase 4 done:** `test_wheel.py` (cibuildwheel) + lean `test_basic.py`; `docs/Python_SDK.md`; Tier 0 README; Tier 1 examples; top README + ChangeLog. Wheel tests deliberately exclude multi-epoch demos. |
+| 2026-07-20 | **Phase 5 done:** spatial, metrics/cosine_lr, pickle secondary. |
+| 2026-07-20 | **Gaps:** sdist install smoke green; C++→Python HCNW fixture + pytest; multi-platform wheels pending push/CI. |
 
 ---
 

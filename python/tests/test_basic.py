@@ -181,6 +181,19 @@ class TestArchAndWeights:
         assert loaded.dim == net.dim
         assert loaded.num_conv == net.num_conv
 
+    def test_load_cpp_written_hcnw_fixture(self):
+        """C++ save_weights → Python load; logits match C++ Predict (gap 2)."""
+        root = Path(__file__).resolve().parents[2] / "tests" / "data" / "hcnw_interop"
+        hcnw = root / "model.hcnw"
+        arch = root / "model.arch.json"
+        assert hcnw.is_file() and arch.is_file(), f"missing fixture under {root}"
+        x = np.loadtxt(root / "input.txt", dtype=np.float32)
+        expected = np.loadtxt(root / "expected_logits.txt", dtype=np.float32)
+        net = hc.HCNN.load(root / "model", num_threads=1)
+        got = net.predict(x)
+        # Same weight blob + same forward; allow tiny float noise across toolchains.
+        np.testing.assert_allclose(got, expected, rtol=0.0, atol=1e-5)
+
 
 class TestMetrics:
     def test_cosine_lr_endpoints(self):

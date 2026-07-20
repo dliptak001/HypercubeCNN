@@ -150,7 +150,11 @@ if(HCNN_BUILD_EXAMPLES)
         ${PROJECT_SOURCE_DIR}/examples
     )
 
-    set(HCNN_EXE_TARGETS MNISTTrain CoreSmokeTest RegressionTimeseries)
+    # Writes tests/data/hcnw_interop for Python cross-language load tests.
+    add_executable(WriteHcnwInteropFixture tests/write_hcnw_interop_fixture.cpp)
+
+    set(HCNN_EXE_TARGETS MNISTTrain CoreSmokeTest RegressionTimeseries
+                         WriteHcnwInteropFixture)
 
     foreach(tgt IN LISTS HCNN_EXE_TARGETS)
         target_link_libraries(${tgt}
