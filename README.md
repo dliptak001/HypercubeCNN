@@ -55,6 +55,19 @@ Include `"HCNN.h"` for the core only, or `"HypercubeCNN.h"` for the full public 
 
 Full API guide: **[docs/CPP_SDK.md](docs/CPP_SDK.md)**.
 
+### Python SDK
+
+Package **`hypercube-cnn`** (`import hypercube_cnn`): same core contracts, NumPy
+train/infer, arch JSON + HCNW model I/O.
+
+```bash
+pip install hypercube-cnn   # when published; or pip install . from this repo
+```
+
+- API: **[docs/Python_SDK.md](docs/Python_SDK.md)**
+- In-repo recipes: **[examples/python/](examples/python/)**
+- Wheels workflow: **[.github/workflows/wheels.yml](.github/workflows/wheels.yml)**
+
 ---
 
 ## 60-second tour

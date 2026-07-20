@@ -55,9 +55,20 @@ First full public SDK release. Package version and FetchContent pin: **v1.0.0**
 - See HypercubeESN `docs/adapt_HypercubeCNN.md` for a full host checklist
 - Redistributable / wheels: `-DHCNN_NATIVE_ARCH=OFF` (default when not top-level)
 
+### Python SDK (`hypercube-cnn`)
+
+- scikit-build-core + pybind11 package at repo root (`import hypercube_cnn`)
+- Core surface: `HCNN`, `TrainParams`, enums; train/infer/weights; GIL released on long ops
+- Arch product: `LayerSpec`, `HCNNConfig`, `export_arch` / `from_arch`, versioned JSON sidecar
+- Model I/O: HCNW `save_weights` / `load_weights`; `HCNN.save` / `load` (`.hcnw` + `.arch.json`)
+- Lean tests: `python/tests/test_wheel.py` (cibuildwheel), `test_basic.py` (local)
+- Tier 1 recipes: `examples/python/` (synthetic cls/reg + arch I/O)
+- Docs: `docs/Python_SDK.md`; wheels: `.github/workflows/wheels.yml` (OIDC PyPI on `v*`)
+
 ### Docs
 
 - README / CPP_SDK host contracts / internals aligned with the public facade
+- Python_SDK + python_sdk_plan; capacity-as-topology packaging docs
 
 ---
 

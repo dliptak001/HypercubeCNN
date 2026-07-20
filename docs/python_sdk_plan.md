@@ -4,7 +4,7 @@ Living plan for the Python bindings. Capture decisions, reference notes, and pha
 
 | Field | Value |
 |-------|--------|
-| **Status** | **Phase 3 complete** — HCNW + arch sidecar I/O green; Phase 4 (tests/docs/demos) next |
+| **Status** | **Phase 4 complete** — tests/docs/Tier 1 demos; ready for Phase 5 polish / first publish |
 | **Last updated** | 2026-07-20 |
 | **C++ peer** | [CPP_SDK.md](CPP_SDK.md) (v1.0.0 surface) |
 | **References** | `C:\CLion\HypercubeESN\python`, `C:\CLion\HypercubeHopfield\python` (patterns, not clones) |
@@ -405,17 +405,18 @@ Phases are ordered by dependency; keep PRs reviewable (prefer one phase per PR w
 
 **Exit:** Local pytest green; wheels workflow present; `Python_SDK.md` usable; all Tier 1 scripts exit 0.
 
-- [ ] `python/tests/test_basic.py` — construct, invalid dim, shapes, train/infer smoke, arch round-trip, HCNW round-trip, uninitialized-weights error (keep **fast**)
-- [ ] `docs/Python_SDK.md` — contracts, layout table, API, recipes, Tier 1 links
-- [ ] `python/README.md` — install + Tier 0 quickstart
-- [ ] `examples/python/synthetic_classification.py`
-- [ ] `examples/python/synthetic_regression.py`
-- [ ] `examples/python/arch_and_weights_io.py`
-- [ ] `examples/python/README.md`
-- [x] `.github/workflows/wheels.yml` (cibuildwheel v4; QEMU aarch64; OIDC publish on `v*`; `skip-existing`) — green builds still need Phase 0 package
-- [ ] Top-level README pointer (Python SDK + examples)
-- [ ] ChangeLog entry
-- [ ] pytest `import-mode=importlib` (avoid source-tree shadowing of `_core`)
+- [x] `python/tests/test_basic.py` — construct, shapes, one-step train, arch + HCNW (fast; no multi-epoch races)
+- [x] `python/tests/test_wheel.py` — ultra-fast cibuildwheel suite (import + construct + predict + train_step)
+- [x] `docs/Python_SDK.md` — contracts, layout, API, recipes, Tier 1 links
+- [x] `python/README.md` — install + Tier 0 quickstart
+- [x] `examples/python/synthetic_classification.py`
+- [x] `examples/python/synthetic_regression.py`
+- [x] `examples/python/arch_and_weights_io.py`
+- [x] `examples/python/README.md`
+- [x] `.github/workflows/wheels.yml` + `test-command` → `test_wheel.py` only
+- [x] Top-level README pointer (Python SDK + examples)
+- [x] ChangeLog entry
+- [x] pytest `import-mode=importlib` (pyproject `addopts` + wheel test-command)
 
 ### Phase 5 — Polish / extras
 
@@ -542,6 +543,7 @@ Keep `ci.yml` for C++/smoke. Add `wheels.yml` for Python; do not overload C++ CI
 | 2026-07-20 | **Phase 1 done:** `_HCNN` + enums + train/infer/weights; Python `HCNN` / `TrainParams`. Smoke: classification train, regression MSE, in-memory weight round-trip. MinGW: dynamic winpthread + ship DLL (`-Bstatic pthread` broke CLion 15.2). Use `==` not `is` for pybind enums. |
 | 2026-07-20 | **Phase 2 done:** pure-Python `arch.py` (LayerSpec, summarize_arch, HCNNConfig, arch JSON v1). `export_arch`/`from_arch`/`from_layers`; layer list tracked on `HCNN`. Smoke: param total==weight_count; set_weights identity after from_arch. |
 | 2026-07-20 | **Phase 3 done:** bind C++ HCNW `save_weights`/`load_weights`; `HCNN.save`/`load` write/read `.hcnw` + `.arch.json`. Smoke: bit-identical logits; arch mismatch + bad magic + missing sidecar rejected. |
+| 2026-07-20 | **Phase 4 done:** `test_wheel.py` (cibuildwheel) + lean `test_basic.py`; `docs/Python_SDK.md`; Tier 0 README; Tier 1 examples; top README + ChangeLog. Wheel tests deliberately exclude multi-epoch demos. |
 
 ---
 

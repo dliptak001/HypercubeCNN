@@ -10,11 +10,9 @@ pip install hypercube-cnn
 ```
 
 Pre-built wheels (when published) target Python 3.10–3.13 on Windows (x64),
-Linux (x86_64, aarch64), and macOS (x86_64, arm64).
+Linux (x86_64, aarch64), and macOS (x86_64, arm64). No compiler required.
 
 ### From source
-
-Requirements: Python 3.10+, a C++23 compiler, CMake 3.21+, Ninja recommended.
 
 ```bash
 git clone https://github.com/dliptak001/HypercubeCNN.git
@@ -22,7 +20,7 @@ cd HypercubeCNN
 pip install .
 ```
 
-On Windows with CLion MinGW (local development):
+Windows + CLion MinGW (local rebuild):
 
 ```powershell
 $env:PATH = "C:\Program Files\JetBrains\CLion 2026.1\bin\mingw\bin;C:\Program Files\JetBrains\CLion 2026.1\bin\ninja\win\x64;" + $env:PATH
@@ -33,13 +31,7 @@ $env:CXX = "C:\Program Files\JetBrains\CLion 2026.1\bin\mingw\bin\g++.exe"
 pip install . --no-build-isolation --force-reinstall --no-deps
 ```
 
-## Status
-
-**Phase 3:** core train/infer, arch product surface, and **HCNW + arch JSON**
-model I/O. Tests/docs/demos are Phase 4 — see
-[docs/python_sdk_plan.md](https://github.com/dliptak001/HypercubeCNN/blob/main/docs/python_sdk_plan.md)
-and
-[docs/CPP_SDK.md](https://github.com/dliptak001/HypercubeCNN/blob/main/docs/CPP_SDK.md).
+## Quick start
 
 ```python
 import numpy as np
@@ -58,10 +50,23 @@ net = hc.HCNNConfig(
 
 x = np.random.randn(net.N).astype(np.float32)  # full capacity N = 2**dim
 logits = net.predict(x)
-
-net.save("model")                  # model.hcnw + model.arch.json
-net2 = hc.HCNN.load("model")       # rebuild arch, load weights
+cls = net.predict_class(x)
+net.train_step(x, target=0, params=hc.TrainParams(learning_rate=1e-3))
+net.save("model")  # model.hcnw + model.arch.json
 ```
+
+## Features
+
+- Core `HCNN` train/infer (classification CE, regression MSE)
+- `LayerSpec` / `HCNNConfig` architecture product surface
+- HCNW weights + arch JSON sidecar (C++-interop)
+- NumPy float32 integration
+
+## Documentation
+
+- Full API: [docs/Python_SDK.md](https://github.com/dliptak001/HypercubeCNN/blob/main/docs/Python_SDK.md)
+- C++ contracts: [docs/CPP_SDK.md](https://github.com/dliptak001/HypercubeCNN/blob/main/docs/CPP_SDK.md)
+- Repo examples: [examples/python/](https://github.com/dliptak001/HypercubeCNN/tree/main/examples/python)
 
 ## License
 

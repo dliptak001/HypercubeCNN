@@ -28,7 +28,7 @@ classifiers = [
 [project.urls]
 Homepage = "https://github.com/dliptak001/HypercubeCNN"
 Repository = "https://github.com/dliptak001/HypercubeCNN"
-Documentation = "https://github.com/dliptak001/HypercubeCNN/blob/main/docs/python_sdk_plan.md"
+Documentation = "https://github.com/dliptak001/HypercubeCNN/blob/main/docs/Python_SDK.md"
 
 [project.optional-dependencies]
 test = ["pytest>=7.0"]
@@ -71,9 +71,9 @@ addopts = "--import-mode=importlib"
 [tool.cibuildwheel]
 build = "cp310-* cp311-* cp312-* cp313-*"
 skip = ["*-win32", "*-manylinux_i686", "*-musllinux*", "pp*"]
-test-requires = ["numpy>=1.21"]
-# Phase 0: import smoke only. Replace with pytest once Phase 4 tests land.
-test-command = "python -c \"import hypercube_cnn as hc; print(hc.__version__)\""
+# Keep wheel tests tiny: full suite is python/tests/test_basic.py (local).
+test-requires = ["pytest>=7.0", "numpy>=1.21"]
+test-command = "pytest {project}/python/tests/test_wheel.py -v --tb=short --import-mode=importlib"
 
 [tool.cibuildwheel.linux]
 archs = ["x86_64", "aarch64"]
