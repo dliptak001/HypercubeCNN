@@ -10,8 +10,12 @@ on each other beyond a recommended pipeline order.
 | Spatial aug | `HCNNSpatialAug.h` | Stochastic 2D geometry / noise on any **H×W** grid | No |
 | Spatial embed | `HCNNSpatialEmbed.h` | Layout a 2D image into length **N = 2^dim** with **pattern length P ≤ N** | Yes (`dim`) |
 
-Native hypercube data (already length ≤ N) can ignore both modules and use
-`HCNN::Embed` / `TrainEpoch` directly.
+These modules exist because network capacity is always **N = 2^dim** (hypercube
+topology). Images and other non–power-of-two tensors are a **host packing**
+problem: you (or these helpers) map them into length N; the conv graph never
+sees “H×W” or “length 784.” Native cube data already at length ≤ N can ignore
+both modules and use `HCNN::Embed` / `TrainEpoch` directly — or use any other
+custom pack of your own.
 
 **See also:** end-to-end image recipe in [`examples/mnist_train.md`](../examples/mnist_train.md)
 (DualPlane embed, train aug, `input_length = N`).

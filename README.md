@@ -30,9 +30,11 @@ Because every vertex looks the same under the symmetry group of the cube, weight
 
 You stack convolutions (and optional **antipodal** pooling) into a feature body, then a **single linear readout** over every final `(channel, vertex)`. Classification (softmax cross-entropy) and regression (MSE) share that forward path; only the training loss and target type change.
 
+**Capacity is always a power of two.** That is not a convenience limit you can turn off — it is the hypercube. For each channel the network holds **N = 2^DIM** vertices. Arbitrary-length or non-square data is a **host packing problem**: pad, resize, hash, dual-plane layout, reservoir indexing, or any other map you invent into length ≤ N (then pass full capacity or use the built-in zero-pad for short tails). Optional spatial helpers are one recipe for images; the core does not invent a packing for you and will not grow a non–power-of-two “input size” knob.
+
 **A good fit when:**
 
-- Inputs already live at length `2^D` (reservoir / ESN state, bit-indexed fingerprints, product-space features)
+- Inputs already live at length `2^D` (reservoir / ESN state, bit-indexed fingerprints, product-space features), or you are willing to own a pack into N
 - You need a small, dependency-free C++ CNN core with a stable public API
 - You are exploring what “convolution” means outside Euclidean grids
 

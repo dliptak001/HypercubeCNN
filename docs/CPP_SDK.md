@@ -24,6 +24,18 @@ HypercubeCNN is a **CNN whose “grid” is a Boolean hypercube**, not a 2D pixe
 | Neighbor of `v` along bit `k` | `v ^ (1 << k)` (XOR). |
 | Activation values | Ordinary `float`s (conventionally in `[-1, 1]`). The cube is topology, not bit-valued data. |
 
+### Capacity is topological (power of two)
+
+Per input channel, capacity is **always** `N = 2^DIM`. That is the size of the Boolean hypercube — not an artificial “max length” the library could relax.
+
+| What the core does | What it does **not** do |
+|--------------------|-------------------------|
+| Own length-N (or multi-channel × N) activations | Accept a free “input_size = 784” that is not a power of two |
+| Zero-pad a **short** raw vector to capacity | Choose how your domain data should sit on the cube |
+| Throw if raw length **exceeds** capacity | Guarantee that a packing preserves 2D / sequence locality |
+
+**Non–power-of-two data is normal.** Handle it **outside** the graph with any scheme you prefer: zero or background pad, resize, hash/scatter to vertices, dual-plane image pack, ESN state already at N, etc. Optional `HCNNSpatial*` helpers are one image-oriented recipe (`P ≤ N`); hosts may ignore them entirely. Once packed, pass **full capacity** (or typed full-capacity views) so intentional pad values are not wiped by network zero-pad.
+
 **Pipeline:**
 
 ```text
@@ -105,7 +117,7 @@ These rules are intentional product contracts, not implementation accidents.
 
 | Contract | Rule |
 |----------|------|
-| **Capacity** | Embed / train / predict capacity = `input_channels * GetStartN()` |
+| **Capacity** | Always `input_channels * GetStartN()` with `GetStartN() = 2^DIM`. Power of two is **topology**, not a tunable limit. Map arbitrary lengths onto the cube in the host (pad / pack / embed); the core does not invent that map |
 | **Pad (HCNN)** | Short raw inputs **zero-fill** the tail; over-long inputs throw. Spatial embed may use non-zero `pad_value` — always pass full `N` (or typed `HCNNInputView`) after spatial pack |
 | **Task / loss** | Classification → softmax CE; Regression → **sum-style** MSE grad (`pred − target`, no `/K` factor). Loss is fixed by `TaskType` |
 | **BatchNorm** | Stats are over **vertices of one sample** (per channel), not over the mini-batch |
@@ -659,6 +671,7 @@ See [`spatial_preprocess.md`](spatial_preprocess.md) and `examples/mnist_train.c
 |---------|-----|
 | Forgot `RandomizeWeights` | Train/infer/`GetWeights` throw until weights match the stack |
 | `AddConv`/`AddPool` after randomize | Weights invalidated — call `RandomizeWeights` again |
+| Expect free input length (not 2^DIM) | Capacity is the cube; pack/pad in the host (see §1) |
 | Softmax in `Forward` | Don’t; use logits + `argmax` / CE helper |
 | Wrong train family for `TaskType` | `logic_error` — match Classification vs Regression APIs |
 | Short `input_length` after spatial pad −1 | Use `HCNNInputView` / `input_length = N` |
