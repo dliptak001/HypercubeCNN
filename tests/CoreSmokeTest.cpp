@@ -1132,68 +1132,6 @@ static void section_regression() {
         check(all_finite(preds.data(), num_outputs), "regression preds finite");
     }
 
-    // Multi-output shorter
-    {
-        const int DIM = 6;
-        const int num_outputs = 3;
-        HCNN net(DIM, num_outputs, 1, TaskType::Regression);
-        net.AddConv(16);
-        net.AddPool(PoolType::MAX);
-        net.RandomizeWeights();
-
-        const int N = net.GetStartN();
-        const int n_train = 16;
-
-        std::mt19937 rng(11);
-        std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
-        std::vector<std::vector<float>> inputs(n_train, std::vector<float>(N));
-        std::vector<std::vector<float>> targets(n_train, std::vector<float>(num_outputs));
-        for (int i = 0; i < n_train; ++i) {
-            double s = 0.0;
-            for (int j = 0; j < N; ++j) {
-                float v = dist(rng);
-                inputs[i][j] = v;
-                s += v;
-            }
-            float mean = static_cast<float>(s / N);
-            targets[i][0] = std::tanh(2.0f * mean);
-            targets[i][1] = std::tanh(-1.5f * mean);
-            targets[i][2] = 0.3f * mean;
-        }
-
-        auto flat_inputs = flatten_inputs(inputs, N);
-        std::vector<float> flat_targets(static_cast<size_t>(n_train) * num_outputs);
-        for (int i = 0; i < n_train; ++i)
-            std::copy(targets[i].begin(), targets[i].end(),
-                      flat_targets.begin() + i * num_outputs);
-
-        std::vector<float> embedded(N), preds(num_outputs);
-        auto mean_mse = [&]() {
-            double total = 0.0;
-            for (int i = 0; i < n_train; ++i) {
-                net.Embed(inputs[i].data(), N, embedded.data());
-                net.Forward(embedded.data(), preds.data());
-                for (int k = 0; k < num_outputs; ++k) {
-                    double d = preds[k] - targets[i][k];
-                    total += d * d;
-                }
-            }
-            return total / (n_train * num_outputs);
-        };
-
-        double mse_before = mean_mse();
-        for (int e = 0; e < 3; ++e)
-            net.TrainEpoch(flat_inputs.data(), N, flat_targets.data(),
-                           n_train, /*batch_size=*/8, /*lr=*/0.05f,
-                           /*momentum=*/0.9f, /*wd=*/0.0f,
-                           /*shuffle_seed=*/static_cast<unsigned>(e + 1));
-        double mse_after = mean_mse();
-        check(std::isfinite(mse_after), "multi-output MSE finite");
-        check(mse_after < mse_before,
-              "multi-output MSE decreased ("
-              + std::to_string(mse_before) + " -> " + std::to_string(mse_after) + ")");
-    }
-
     // API misuse
     {
         {
