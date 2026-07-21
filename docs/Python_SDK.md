@@ -289,6 +289,5 @@ synthetic and offline.
 - MinGW: static libgcc/libstdc++; ships `libwinpthread-1.dll` on Windows wheels.
 - Do not reconfigure CLion `cmake-build-*` for the Python package.
 
-Living implementation tracker: [python_sdk_plan.md](python_sdk_plan.md).  
 C++ contracts: [CPP_SDK.md](CPP_SDK.md).  
 Spatial: [spatial_preprocess.md](spatial_preprocess.md).

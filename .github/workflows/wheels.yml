@@ -7,7 +7,7 @@
 #   Workflow: wheels.yml
 #   Env:      (any) — no GitHub Environment required on this job
 #
-# Packaging root: repo-root pyproject.toml (see docs/python_sdk_plan.md).
+# Packaging root: repo-root pyproject.toml.
 # Publish runs only on tags matching v* (e.g. v1.0.0). skip-existing avoids
 # failing when re-running a tag after a partial upload.
 

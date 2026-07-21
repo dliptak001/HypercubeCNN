@@ -71,7 +71,7 @@ First full public SDK release. Package version and FetchContent pin: **v1.0.0**
 ### Docs
 
 - README / CPP_SDK host contracts / internals aligned with the public facade
-- Python_SDK + python_sdk_plan; capacity-as-topology packaging docs
+- Python_SDK; capacity-as-topology packaging docs
 
 ---
 

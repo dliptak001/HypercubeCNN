@@ -8,7 +8,7 @@ This class is **not thread-safe**. Do not share one instance across threads.
 The GIL is released during train/infer C++ calls; the same network must not
 be accessed concurrently.
 
-See ``docs/python_sdk_plan.md`` and ``docs/CPP_SDK.md``.
+See ``docs/Python_SDK.md`` and ``docs/CPP_SDK.md``.
 """
 
 from __future__ import annotations
