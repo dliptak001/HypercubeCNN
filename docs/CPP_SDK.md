@@ -4,7 +4,7 @@ HypercubeCNN is a **dependency-free C++23 hypercube CNN core** for research and 
 
 **Examples stay examples. Helpers stay optional. Neither is the product’s reason for existing** — the core (`HCNN`) is.
 
-Canonical API guide for **`HypercubeCNNCore` v1.0.0**. Aligned with the public headers and in-tree recipes. Release notes: **[ChangeLog.md](../ChangeLog.md)**.
+Canonical API guide for **`HypercubeCNNCore` v1.0.1**. Aligned with the public headers and in-tree recipes. Release notes: **[ChangeLog.md](../ChangeLog.md)**.
 
 **Primary audience:** engineers integrating HCNN into a host binary (e.g. HypercubeESN, custom train/infer pipelines).  
 **Secondary:** engineers learning the stack — same API, progressive disclosure, worked recipes.
@@ -192,7 +192,7 @@ include(FetchContent)
 FetchContent_Declare(
     HypercubeCNN
     GIT_REPOSITORY https://github.com/dliptak001/HypercubeCNN.git
-    GIT_TAG        v1.0.0   # pin a release tag (see GitHub Releases)
+    GIT_TAG        v1.0.1   # pin a release tag (see GitHub Releases)
 )
 FetchContent_MakeAvailable(HypercubeCNN)
 

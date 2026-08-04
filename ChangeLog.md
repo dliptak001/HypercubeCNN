@@ -1,6 +1,8 @@
 # HypercubeCNN — Change Log
 
-## Unreleased (post-v1.0.0)
+## v1.0.1 (Aug 4, 2026)
+
+Package version and FetchContent pin: **v1.0.1**.
 
 ### Fixed
 
@@ -16,7 +18,7 @@
 
 ### Notes for integrators (e.g. HypercubeESN)
 
-- Re-vendor / FetchContent pin after this lands on a tagged release.
+- Re-vendor / FetchContent pin to **v1.0.1**.
 - Hosts that already promoted their own `readout.seed` to `uint64_t` can pass
   full trial seeds without truncation.
 
