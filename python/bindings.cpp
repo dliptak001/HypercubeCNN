@@ -8,6 +8,7 @@
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>
 
+#include <cstdint>
 #include <cstring>
 #include <memory>
 #include <random>
@@ -112,10 +113,13 @@ PYBIND11_MODULE(_core, m)
              &HCNN::AddPool,
              py::arg("type") = PoolType::MAX)
 
+        // seed is C++ uint64_t — pybind accepts full 64-bit Python ints
+        // (and rejects values outside [0, 2**64-1]). Façade also validates.
         .def("randomize_weights",
              &HCNN::RandomizeWeights,
              py::arg("scale") = 0.0f,
-             py::arg("seed") = 42ULL)
+             py::arg("seed") = static_cast<std::uint64_t>(42),
+             "Initialize weights; seed is a full 64-bit master seed.")
 
         // Mode / optimizer
         .def("set_training", &HCNN::SetTraining, py::arg("training"))

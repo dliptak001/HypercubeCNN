@@ -10,7 +10,9 @@
   `HCNNNetwork::randomize_all_weights`, `HCNNConfig::weight_seed`). Seeds with
   high half zero keep the historical `mt19937(seed32)` path (bit-identical to
   v1.0.0 for small seeds); wider seeds expand both halves via `seed_seq`.
-  Python `randomize_weights(..., seed=)` accepts full 64-bit ints.
+  Python `randomize_weights(..., seed=)`, `HCNNConfig.weight_seed`,
+  `from_arch` / `from_layers` accept full 64-bit ints (and `np.uint64`);
+  façade rejects values outside `[0, 2**64-1]` instead of truncating.
 
 ### Notes for integrators (e.g. HypercubeESN)
 

@@ -14,6 +14,7 @@ See ``docs/Python_SDK.md`` and ``docs/CPP_SDK.md``.
 from __future__ import annotations
 
 import json
+import operator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Sequence, Union
@@ -90,6 +91,33 @@ def _to_float32(arr) -> np.ndarray:
 
 def _to_int32(arr) -> np.ndarray:
     return np.ascontiguousarray(arr, dtype=np.int32)
+
+
+# Weight-init master seed: full uint64_t range on the C++ side.
+_UINT64_MAX = (1 << 64) - 1
+
+
+def _as_uint64_seed(seed, *, name: str = "seed") -> int:
+    """Coerce to a full 64-bit weight-init master seed in ``[0, 2**64-1]``.
+
+    Accepts Python ``int`` and NumPy integer scalars (e.g. ``np.uint64``).
+    Rejects ``bool`` (even though it is an ``int`` subclass). Raises
+    :class:`TypeError` / :class:`ValueError` instead of silent truncation.
+    """
+    # bool is a subclass of int; operator.index(True) == 1 — not a seed.
+    if isinstance(seed, bool):
+        raise TypeError(
+            f"{name} must be an integer in [0, 2**64-1], got bool"
+        )
+    try:
+        v = operator.index(seed)
+    except TypeError as e:
+        raise TypeError(
+            f"{name} must be an integer in [0, 2**64-1], got {type(seed).__name__}"
+        ) from e
+    if v < 0 or v > _UINT64_MAX:
+        raise ValueError(f"{name} must be in [0, 2**64-1], got {v!r}")
+    return v
 
 
 @dataclass
@@ -248,13 +276,14 @@ class HCNN:
 
         Default randomizes weights (required before :meth:`set_weights`).
         Optimizer defaults to Adam (fresh Build semantics), not stored in the sidecar.
+        ``weight_seed`` is a full 64-bit master seed (``[0, 2**64-1]``).
         """
         cfg = HCNNConfig.from_arch_dict(arch)
         if num_threads is not None:
             cfg.num_threads = int(num_threads)
         cfg.randomize = bool(randomize)
         cfg.weight_scale = float(weight_scale)
-        cfg.weight_seed = int(weight_seed)
+        cfg.weight_seed = _as_uint64_seed(weight_seed, name="weight_seed")
         cfg.optimizer = optimizer
         return cfg.build()
 
@@ -271,7 +300,10 @@ class HCNN:
         randomize: bool = True,
         weight_seed: int = 42,
     ) -> "HCNN":
-        """One-shot construct from a layer list (see also :class:`HCNNConfig`)."""
+        """One-shot construct from a layer list (see also :class:`HCNNConfig`).
+
+        ``weight_seed`` is a full 64-bit master seed (``[0, 2**64-1]``).
+        """
         cfg = HCNNConfig(
             dim=dim,
             num_outputs=num_outputs,
@@ -280,7 +312,7 @@ class HCNN:
             num_threads=num_threads,
             layers=layers_from_iterable(layers),
             randomize=randomize,
-            weight_seed=weight_seed,
+            weight_seed=_as_uint64_seed(weight_seed, name="weight_seed"),
         )
         return cfg.build()
 
@@ -288,8 +320,16 @@ class HCNN:
         """Initialize weights for the current stack. Required before train/infer.
 
         ``scale > 0``: uniform ``[-scale, +scale]``; ``scale <= 0``: Xavier/He.
+
+        ``seed`` is a full 64-bit weight-init master seed (``[0, 2**64-1]``),
+        matching C++ ``uint64_t``. Seeds with high half zero keep the historical
+        32-bit ``mt19937`` path (bit-identical for small seeds); wider seeds
+        expand both halves via ``seed_seq`` (no silent low-32 truncation).
+        Accepts Python ``int`` and NumPy integer scalars (e.g. ``np.uint64``).
         """
-        self._impl.randomize_weights(float(scale), int(seed))
+        self._impl.randomize_weights(
+            float(scale), _as_uint64_seed(seed, name="seed")
+        )
 
     # ── Mode / optimizer ──
 

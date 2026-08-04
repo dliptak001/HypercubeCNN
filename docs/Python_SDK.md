@@ -173,7 +173,7 @@ hc.apply_arch(net, layers)
 |------|----------------------|
 | Construct | `HCNN(dim, num_outputs=10, input_channels=1, task=..., num_threads=0)` |
 | Stack | `add_conv`, `add_pool`, `apply_layers`, `layers` |
-| Init | `randomize_weights(scale=0.0, seed=42)`, `weights_initialized` |
+| Init | `randomize_weights(scale=0.0, seed=42)`, `weights_initialized` — `seed` / `weight_seed` are full 64-bit (`[0, 2**64-1]`, no low-32 truncation) |
 | Mode | `set_training`, `set_optimizer`, `set_train_defaults` |
 | Infer | `predict`, `predict_class`, `forward`, `forward_batch` |
 | Train | `train_step`, `train_batch`, `train_epoch` (target form from `task`) |

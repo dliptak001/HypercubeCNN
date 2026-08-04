@@ -109,6 +109,59 @@ class TestSessionDefaults:
         np.testing.assert_array_equal(w0, net.get_weights())
 
 
+class TestWeightSeed64:
+    """Full uint64 weight seeds: no silent low-32 truncation (matches CoreSmokeTest)."""
+
+    _WIDE = 7934791766227647176  # high half nonzero
+    _LOW = _WIDE & 0xFFFFFFFF  # 816937672
+
+    @staticmethod
+    def _weights(seed) -> np.ndarray:
+        net = hc.HCNN(dim=5, num_outputs=2, num_threads=1)
+        net.add_conv(4)
+        net.randomize_weights(scale=0.0, seed=seed)
+        return net.get_weights()
+
+    def test_small_seed_bit_identical(self):
+        w_a = self._weights(3)
+        w_b = self._weights(3)
+        np.testing.assert_array_equal(w_a, w_b)
+
+    def test_wide_seed_differs_from_low32_truncation(self):
+        w_wide = self._weights(self._WIDE)
+        w_trunc = self._weights(self._LOW)
+        assert w_wide.shape == w_trunc.shape
+        assert not np.array_equal(w_wide, w_trunc)
+
+    def test_numpy_uint64_accepted(self):
+        w_py = self._weights(self._WIDE)
+        w_np = self._weights(np.uint64(self._WIDE))
+        np.testing.assert_array_equal(w_py, w_np)
+
+    def test_config_build_wide_seed(self):
+        net = hc.HCNNConfig(
+            dim=5,
+            num_outputs=2,
+            num_threads=1,
+            layers=[hc.LayerSpec.conv(4)],
+            weight_seed=self._WIDE,
+        ).build()
+        w_cfg = net.get_weights()
+        np.testing.assert_array_equal(w_cfg, self._weights(self._WIDE))
+
+    def test_rejects_negative_and_overflow(self):
+        net = hc.HCNN(dim=5, num_outputs=2, num_threads=1)
+        net.add_conv(4)
+        with pytest.raises(ValueError, match=r"\[0, 2\*\*64-1\]"):
+            net.randomize_weights(seed=-1)
+        with pytest.raises(ValueError, match=r"\[0, 2\*\*64-1\]"):
+            net.randomize_weights(seed=(1 << 64))
+        with pytest.raises(TypeError, match="integer"):
+            net.randomize_weights(seed=1.5)  # type: ignore[arg-type]
+        with pytest.raises(TypeError, match="bool"):
+            net.randomize_weights(seed=True)  # type: ignore[arg-type]
+
+
 class TestArchAndWeights:
     def test_summarize_matches_weight_count(self, tiny_cls):
         net, _ = tiny_cls

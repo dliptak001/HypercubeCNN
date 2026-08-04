@@ -281,7 +281,7 @@ void AddConv(int c_out,
              bool use_bias = true,
              bool use_batchnorm = false);
 void AddPool(PoolType type = PoolType::MAX);   // DIM -= 1
-void RandomizeWeights(float scale = 0.f, unsigned seed = 42);
+void RandomizeWeights(float scale = 0.f, uint64_t seed = 42);
 void SetOptimizer(OptimizerType type, float beta1 = 0.9f,
                   float beta2 = 0.999f, float eps = 1e-8f);
 void SetTrainDefaults(const TrainParams& p);  // session knobs for no-param train*
@@ -292,7 +292,7 @@ void PrepareBuffers();             // optional: allocate scratch up front
 
 - Default optimizer is **Adam** (AdamW-style decoupled decay on kernels when `weight_decay > 0`). Use `SetOptimizer(SGD)` if you want classical momentum SGD.
 - **Session train knobs:** `SetTrainDefaults` holds lr / momentum / weight_decay / shuffle_seed / class_weights for overloads that omit `TrainParams` (e.g. `TrainEpoch(view, y, batch)`). Explicit `TrainParams` args still win.
-- `RandomizeWeights`: `scale > 0` → uniform `[-scale, scale]`; else He (ReLU/Leaky, `c_in > 1`) or Xavier. Rebuilds readout to match final `c * N`. Clears optimizer moments / Adam timestep.
+- `RandomizeWeights`: `scale > 0` → uniform `[-scale, scale]`; else He (ReLU/Leaky, `c_in > 1`) or Xavier. Rebuilds readout to match final `c * N`. Clears optimizer moments / Adam timestep. `seed` is a full 64-bit master seed (`HCNNConfig::weight_seed` too): high half zero keeps the historical `mt19937(seed32)` path (bit-identical for small seeds); wider seeds expand both halves via `seed_seq` (no silent low-32 truncation).
 - **Non-copyable, movable.**  Move transfers the heap-owned network (and its
   thread pool) via `unique_ptr`; no worker relocation.  Prefer `unique_ptr<HCNN>`
   for optional ownership; value move is fine for returns and containers.

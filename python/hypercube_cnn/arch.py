@@ -276,6 +276,7 @@ class HCNNConfig:
 
     randomize: bool = True
     weight_scale: float = 0.0
+    # Full 64-bit weight-init master seed (C++ uint64_t); validated in build().
     weight_seed: int = 42
 
     def summarize(self) -> ArchParamSummary:
@@ -298,6 +299,7 @@ class HCNNConfig:
         )
         apply_arch(net, self.layers)
         if self.randomize:
+            # randomize_weights validates weight_seed as full uint64.
             net.randomize_weights(self.weight_scale, self.weight_seed)
         net.set_optimizer(
             self.optimizer, self.adam_beta1, self.adam_beta2, self.adam_eps
