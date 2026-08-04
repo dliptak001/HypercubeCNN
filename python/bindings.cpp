@@ -115,7 +115,7 @@ PYBIND11_MODULE(_core, m)
         .def("randomize_weights",
              &HCNN::RandomizeWeights,
              py::arg("scale") = 0.0f,
-             py::arg("seed") = 42u)
+             py::arg("seed") = 42ULL)
 
         // Mode / optimizer
         .def("set_training", &HCNN::SetTraining, py::arg("training"))

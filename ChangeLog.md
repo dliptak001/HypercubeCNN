@@ -1,5 +1,25 @@
 # HypercubeCNN — Change Log
 
+## Unreleased (post-v1.0.0)
+
+### Fixed
+
+- **`RandomizeWeights` / `HCNNConfig::weight_seed` seed width:** was `unsigned`
+  (32-bit on typical hosts). A 64-bit master seed silently truncated before
+  `mt19937` init. Now `uint64_t` end-to-end (`HCNN::RandomizeWeights`,
+  `HCNNNetwork::randomize_all_weights`, `HCNNConfig::weight_seed`). Seeds with
+  high half zero keep the historical `mt19937(seed32)` path (bit-identical to
+  v1.0.0 for small seeds); wider seeds expand both halves via `seed_seq`.
+  Python `randomize_weights(..., seed=)` accepts full 64-bit ints.
+
+### Notes for integrators (e.g. HypercubeESN)
+
+- Re-vendor / FetchContent pin after this lands on a tagged release.
+- Hosts that already promoted their own `readout.seed` to `uint64_t` can pass
+  full trial seeds without truncation.
+
+---
+
 ## v1.0.0 (Jul 20, 2026)
 
 First full public SDK release. Package version and FetchContent pin: **v1.0.0**

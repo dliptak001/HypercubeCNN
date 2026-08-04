@@ -26,6 +26,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <iostream>
 #include <random>
@@ -375,6 +376,32 @@ static void section_construction() {
               "GetOptimizerType default ADAM");
         check(net.GetNumConv() == 1 && net.GetNumPool() == 0,
               "GetNumConv/GetNumPool facade");
+    }
+
+    // 64-bit weight_seed: low-half-only matches historical 32-bit path; full
+    // 64-bit master seed must not silently equal its truncated low half.
+    {
+        constexpr uint64_t kWide = 7934791766227647176ull;
+        constexpr uint64_t kLow = kWide & 0xFFFFFFFFull; // 816937672
+
+        auto dump = [](uint64_t seed) {
+            HCNN n(5, 2);
+            n.AddConv(4);
+            n.RandomizeWeights(/*scale=*/0.0f, /*seed=*/seed);
+            std::vector<float> w(n.GetWeightCount());
+            n.GetWeights(w.data(), w.size());
+            return w;
+        };
+
+        const auto w_small_a = dump(3);
+        const auto w_small_b = dump(3ull);
+        check(w_small_a == w_small_b,
+              "32-bit-range seed bit-identical via uint64_t API");
+
+        const auto w_wide = dump(kWide);
+        const auto w_trunc = dump(kLow);
+        check(w_wide.size() == w_trunc.size() && w_wide != w_trunc,
+              "wide seed differs from low-32 truncation (no silent drop)");
     }
 
     // Move transfers ownership; heap ThreadPool is not relocated.
