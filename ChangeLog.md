@@ -1,5 +1,16 @@
 # HypercubeCNN — Change Log
 
+## v1.0.2 (Aug 4, 2026)
+
+Package version and FetchContent pin: **v1.0.2**.
+
+### Documentation
+
+- Project and Python package READMEs: HypercubeAI ecosystem positioning
+  (ESN · CNN · Hopfield) so PyPI long description matches the GitHub project page.
+
+---
+
 ## v1.0.1 (Aug 4, 2026)
 
 Package version and FetchContent pin: **v1.0.1**.

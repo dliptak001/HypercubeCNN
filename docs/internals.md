@@ -10,7 +10,7 @@ This page describes **how the core is built**, not how to call it. Public API co
 | Library | `HypercubeCNNCore` (C++23, CMake ≥ 3.21) |
 | Front door (only app API) | `hcnn::HCNN` |
 | Orchestrator (private) | `hcnn::HCNNNetwork` (owned by `HCNN`, not installed) |
-| Version (CMake) | 1.0.1 |
+| Version (CMake) | 1.0.2 |
 
 ### Boundary policy (public vs private)
 
