@@ -3,6 +3,7 @@
 
 #include "HypercubeCNN.h"
 #include "HCNNDataset.h"
+#include "find_data_dir.h"
 
 #include <chrono>
 #include <filesystem>
@@ -113,7 +114,7 @@ struct DemoConfig {
     // Shuffle stream (independent of weight_seed): shuffle_seed = epoch + 1.
 
     // ----- Embed -----
-    hcnn::HCNNSpatialEmbedMode embed_mode = hcnn::HCNNSpatialEmbedMode::DualPlaneResize;
+    hcnn::HCNNSpatialEmbedMode embed_mode = hcnn::HCNNSpatialEmbedMode::PadLowCenter;
     float embed_pad_value = kBackground;  // OOB / blank |grad| / unused verts
     int   embed_plane_side = 0;           // 0 = auto from dim
 
@@ -312,103 +313,111 @@ static void train_and_evaluate(const char* name, hcnn::HCNN& net,
     }
 }
 
-int main() {
+int main(int argc, char** argv) {
     // -------------------------------------------------------------------------
     // Edit DemoConfig fields at the top of this file (weight_seed, layers,
     // epochs, lr, aug, dim, ...).  No other knobs below.
     // -------------------------------------------------------------------------
-    const DemoConfig cfg{};
+    try {
+        const DemoConfig cfg{};
 
-    auto src_dir = std::filesystem::path(__FILE__).parent_path().parent_path();
-    auto data_dir = src_dir / "data";
-    // Prefer native separators for logs. operator<< on path quotes and can mix
-    // '/' from __FILE__ with '\\' from path append on Windows (ugly mojibake-ish paths).
-    const std::string data_dir_str =
-        std::filesystem::absolute(data_dir).lexically_normal().make_preferred().string();
+        const char* argv0 = (argc > 0) ? argv[0] : nullptr;
+        const auto data_dir = hcnn_ex::FindMnistDataDir(argv0);
+        // Prefer native separators for logs (avoid mixed '/' '\\' on Windows).
+        const std::string data_dir_str =
+            std::filesystem::absolute(data_dir).lexically_normal().make_preferred().string();
 
-    std::cout << "Loading MNIST from " << data_dir_str << "...\n";
-    auto train_raw = load_mnist((data_dir / "train-images-idx3-ubyte").string(),
-                                (data_dir / "train-labels-idx1-ubyte").string(),
-                                cfg.max_train_samples);
-    auto test_raw  = load_mnist((data_dir / "t10k-images-idx3-ubyte").string(),
-                                (data_dir / "t10k-labels-idx1-ubyte").string(),
-                                cfg.max_test_samples);
-    std::cout << "Train: " << train_raw.size() << " samples, "
-              << "Test: " << test_raw.size() << " samples\n";
-    std::cout << "Threads: " << std::thread::hardware_concurrency() << "\n";
+        std::cout << "Loading MNIST from " << data_dir_str << "...\n";
+        auto train_raw = load_mnist((data_dir / "train-images-idx3-ubyte").string(),
+                                    (data_dir / "train-labels-idx1-ubyte").string(),
+                                    cfg.max_train_samples);
+        auto test_raw  = load_mnist((data_dir / "t10k-images-idx3-ubyte").string(),
+                                    (data_dir / "t10k-labels-idx1-ubyte").string(),
+                                    cfg.max_test_samples);
+        std::cout << "Train: " << train_raw.size() << " samples, "
+                  << "Test: " << test_raw.size() << " samples\n";
+        std::cout << "Threads: " << std::thread::hardware_concurrency() << "\n";
 
-    const hcnn::ArchParamSummary arch_sum = summarize_demo(cfg);
+        const hcnn::ArchParamSummary arch_sum = summarize_demo(cfg);
 
-    hcnn::HCNNSpatialEmbedder emb(make_embed_config(cfg));
-    hcnn::HCNNSpatialAugmenter train_aug(make_aug_config(cfg, /*enabled=*/true));
-    hcnn::HCNNSpatialAugmenter test_aug(make_aug_config(cfg, /*enabled=*/false));
+        hcnn::HCNNSpatialEmbedder emb(make_embed_config(cfg));
+        hcnn::HCNNSpatialAugmenter train_aug(make_aug_config(cfg, /*enabled=*/true));
+        hcnn::HCNNSpatialAugmenter test_aug(make_aug_config(cfg, /*enabled=*/false));
 
-    const auto plan = emb.plan(kImgSide, kImgSide);
-    const int N = emb.capacity();
-    if (N != (1 << cfg.dim)) {
-        throw std::runtime_error(
-            "embed capacity does not match DemoConfig::dim");
+        const auto plan = emb.plan(kImgSide, kImgSide);
+        const int N = emb.capacity();
+        if (N != (1 << cfg.dim)) {
+            throw std::runtime_error(
+                "embed capacity does not match DemoConfig::dim");
+        }
+
+        hcnn::HCNNFlatDataset test_flat;
+        fill_spatial_dataset(test_raw, test_flat, emb, test_aug, /*seed=*/0);
+        if (test_flat.input_length != N) {
+            throw std::runtime_error(
+                "test FlatDataset input_length != embed capacity");
+        }
+
+        std::cout << "Spatial pipeline: HCNNSpatialAug (train) -> "
+                  << "HCNNSpatialEmbed DualPlaneResize "
+                  << plan.plane_side << "x" << plan.plane_side
+                  << " ink || |grad|  (pattern_length=" << plan.pattern_length
+                  << ", N=" << N << ", dim=" << cfg.dim << ")\n";
+        // DualPlane / ResizeToFit always fit N by changing S. That is valid capacity
+        // math, but S < native 28 is a silent quality cliff (e.g. dim=8 -> S=11).
+        if (plan.plane_side > 0 && plan.plane_side < kImgSide) {
+            // ASCII only (no em-dash): Windows consoles often mis-decode UTF-8 as mojibake.
+            std::cout
+                << "\n"
+                << "*** WARNING: embed plane side S=" << plan.plane_side
+                << " < native " << kImgSide << "x" << kImgSide
+                << " - input is DOWN-SAMPLED (dim=" << cfg.dim
+                << ", N=" << N << ").\n"
+                << "***          Layout is legal (P <= N); accuracy will not match "
+                   "the documented ~99% recipe\n"
+                << "***          (default dim=11, DualPlane S=32). Raise dim or "
+                   "set embed_plane_side if that was unintentional.\n"
+                << "\n";
+        }
+        std::cout << "Train aug:  rot +/-" << cfg.aug_rot_deg_max
+                  << " deg, scale [" << cfg.aug_scale_min << "," << cfg.aug_scale_max
+                  << "], shift +/-" << cfg.aug_shift_max << " px, "
+                  << "shear_x +/-" << cfg.aug_shear_x_max
+                  << ", shear_y +/-" << cfg.aug_shear_y_max
+                  << ", elastic alpha=" << cfg.aug_elastic_alpha
+                  << " sigma=" << cfg.aug_elastic_sigma
+                  << ", Gaussian noise sigma=" << cfg.aug_noise_sigma
+                  << " (train only, refreshed each epoch)\n";
+
+        // Public facade: LayerSpec list → HCNNConfig::Build (randomize + optimizer).
+        auto net = make_net_config(cfg).Build();
+        if (!net) {
+            throw std::runtime_error("HCNNConfig::Build returned null");
+        }
+
+        if (net->GetStartDim() != cfg.dim || net->GetStartN() != N) {
+            throw std::runtime_error(
+                "HCNN start DIM/N does not match DemoConfig / SpatialEmbed");
+        }
+
+        std::cout << "Weight init seed: " << cfg.weight_seed << "\n";
+        hcnn::print_arch(std::cout, cfg.dim, cfg.num_outputs, cfg.input_channels,
+                         cfg.layers, arch_sum);
+
+        if (static_cast<long long>(net->GetWeightCount()) != arch_sum.total) {
+            throw std::runtime_error(
+                "DemoConfig param count " + std::to_string(arch_sum.total)
+                + " != HCNN::GetWeightCount " + std::to_string(net->GetWeightCount()));
+        }
+
+        train_and_evaluate("HCNN", *net, train_raw, test_flat, emb, train_aug, cfg);
+        return 0;
+    } catch (const std::exception& e) {
+        std::cerr << "MNISTTrain: " << e.what() << "\n";
+        std::cerr << "Place uncompressed MNIST IDX files in HypercubeCNN/data/:\n"
+                  << "  train-images-idx3-ubyte  train-labels-idx1-ubyte\n"
+                  << "  t10k-images-idx3-ubyte   t10k-labels-idx1-ubyte\n"
+                  << "See data/README.md\n";
+        return 1;
     }
-
-    hcnn::HCNNFlatDataset test_flat;
-    fill_spatial_dataset(test_raw, test_flat, emb, test_aug, /*seed=*/0);
-    if (test_flat.input_length != N) {
-        throw std::runtime_error(
-            "test FlatDataset input_length != embed capacity");
-    }
-
-    std::cout << "Spatial pipeline: HCNNSpatialAug (train) -> "
-              << "HCNNSpatialEmbed DualPlaneResize "
-              << plan.plane_side << "x" << plan.plane_side
-              << " ink || |grad|  (pattern_length=" << plan.pattern_length
-              << ", N=" << N << ", dim=" << cfg.dim << ")\n";
-    // DualPlane / ResizeToFit always fit N by changing S. That is valid capacity
-    // math, but S < native 28 is a silent quality cliff (e.g. dim=8 -> S=11).
-    if (plan.plane_side > 0 && plan.plane_side < kImgSide) {
-        // ASCII only (no em-dash): Windows consoles often mis-decode UTF-8 as mojibake.
-        std::cout
-            << "\n"
-            << "*** WARNING: embed plane side S=" << plan.plane_side
-            << " < native " << kImgSide << "x" << kImgSide
-            << " - input is DOWN-SAMPLED (dim=" << cfg.dim
-            << ", N=" << N << ").\n"
-            << "***          Layout is legal (P <= N); accuracy will not match "
-               "the documented ~99% recipe\n"
-            << "***          (default dim=11, DualPlane S=32). Raise dim or "
-               "set embed_plane_side if that was unintentional.\n"
-            << "\n";
-    }
-    std::cout << "Train aug:  rot +/-" << cfg.aug_rot_deg_max
-              << " deg, scale [" << cfg.aug_scale_min << "," << cfg.aug_scale_max
-              << "], shift +/-" << cfg.aug_shift_max << " px, "
-              << "shear_x +/-" << cfg.aug_shear_x_max
-              << ", shear_y +/-" << cfg.aug_shear_y_max
-              << ", elastic alpha=" << cfg.aug_elastic_alpha
-              << " sigma=" << cfg.aug_elastic_sigma
-              << ", Gaussian noise sigma=" << cfg.aug_noise_sigma
-              << " (train only, refreshed each epoch)\n";
-
-    // Public facade: LayerSpec list → HCNNConfig::Build (randomize + optimizer).
-    auto net = make_net_config(cfg).Build();
-    if (!net) {
-        throw std::runtime_error("HCNNConfig::Build returned null");
-    }
-
-    if (net->GetStartDim() != cfg.dim || net->GetStartN() != N) {
-        throw std::runtime_error(
-            "HCNN start DIM/N does not match DemoConfig / SpatialEmbed");
-    }
-
-    std::cout << "Weight init seed: " << cfg.weight_seed << "\n";
-    hcnn::print_arch(std::cout, cfg.dim, cfg.num_outputs, cfg.input_channels,
-                     cfg.layers, arch_sum);
-
-    if (static_cast<long long>(net->GetWeightCount()) != arch_sum.total) {
-        throw std::runtime_error(
-            "DemoConfig param count " + std::to_string(arch_sum.total)
-            + " != HCNN::GetWeightCount " + std::to_string(net->GetWeightCount()));
-    }
-
-    train_and_evaluate("HCNN", *net, train_raw, test_flat, emb, train_aug, cfg);
-    return 0;
 }

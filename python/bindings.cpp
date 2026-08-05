@@ -546,7 +546,8 @@ PYBIND11_MODULE(_core, m)
 
     // ── Spatial embed (optional product) ──
     py::enum_<HCNNSpatialEmbedMode>(m, "SpatialEmbedMode")
-        .value("RowMajorPad", HCNNSpatialEmbedMode::RowMajorPad)
+        .value("PadLow", HCNNSpatialEmbedMode::PadLow)
+        .value("PadLowCenter", HCNNSpatialEmbedMode::PadLowCenter)
         .value("ResizeToFit", HCNNSpatialEmbedMode::ResizeToFit)
         .value("DualPlaneResize", HCNNSpatialEmbedMode::DualPlaneResize);
 
@@ -557,11 +558,17 @@ PYBIND11_MODULE(_core, m)
         .def_readonly("width_in", &HCNNSpatialEmbedPlan::width_in)
         .def_readonly("plane_side", &HCNNSpatialEmbedPlan::plane_side)
         .def_readonly("pattern_length", &HCNNSpatialEmbedPlan::pattern_length)
+        .def_readonly("crop_h", &HCNNSpatialEmbedPlan::crop_h)
+        .def_readonly("crop_w", &HCNNSpatialEmbedPlan::crop_w)
+        .def_readonly("crop_row0", &HCNNSpatialEmbedPlan::crop_row0)
+        .def_readonly("crop_col0", &HCNNSpatialEmbedPlan::crop_col0)
         .def_readonly("mode", &HCNNSpatialEmbedPlan::mode)
         .def("__repr__", [](const HCNNSpatialEmbedPlan& p) {
             return "SpatialEmbedPlan(N=" + std::to_string(p.N)
                 + ", pattern_length=" + std::to_string(p.pattern_length)
-                + ", plane_side=" + std::to_string(p.plane_side) + ")";
+                + ", plane_side=" + std::to_string(p.plane_side)
+                + ", crop=" + std::to_string(p.crop_h) + "x"
+                + std::to_string(p.crop_w) + ")";
         });
 
     py::class_<HCNNSpatialEmbedder>(m, "_SpatialEmbedder")
@@ -575,7 +582,7 @@ PYBIND11_MODULE(_core, m)
                  return std::make_unique<HCNNSpatialEmbedder>(cfg);
              }),
              py::arg("dim") = 10,
-             py::arg("mode") = HCNNSpatialEmbedMode::RowMajorPad,
+             py::arg("mode") = HCNNSpatialEmbedMode::PadLow,
              py::arg("pad_value") = 0.0f,
              py::arg("plane_side") = 0)
 

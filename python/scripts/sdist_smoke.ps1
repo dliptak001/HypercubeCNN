@@ -33,7 +33,7 @@ net = hc.HCNNConfig(dim=5, num_outputs=2, num_threads=1,
     layers=[hc.LayerSpec.conv(4)], weight_seed=1).build()
 x = np.zeros(net.N, dtype=np.float32); x[0] = 1.0
 assert net.predict(x).shape == (2,)
-emb = hc.SpatialEmbedder(dim=6, mode=hc.SpatialEmbedMode.RowMajorPad, pad_value=-1.0)
+emb = hc.SpatialEmbedder(dim=6, mode=hc.SpatialEmbedMode.PadLow, pad_value=-1.0)
 out = emb.embed(np.ones((4, 4), dtype=np.float32))
 assert out.shape == (64,) and float(out[16]) == -1.0
 print('sdist_smoke: OK', hc.__version__)

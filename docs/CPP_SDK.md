@@ -524,7 +524,7 @@ H×W image  →  HCNNSpatialAugmenter (train only)  →  HCNNSpatialEmbedder  �
                                                                          →  HCNN
 ```
 
-Embed modes (summary): `RowMajorPad`, `ResizeToFit`, `DualPlaneResize` — see the spatial guide for layouts and capacity.
+Embed modes (summary): `PadLow`, `PadLowCenter`, `ResizeToFit`, `DualPlaneResize` — see the spatial guide for layouts and capacity.
 
 **Pad contract (important):**
 

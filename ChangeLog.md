@@ -1,5 +1,21 @@
 # HypercubeCNN — Change Log
 
+## Unreleased
+
+### Spatial embed
+
+- **Rename** `HCNNSpatialEmbedMode::RowMajorPad` → **`PadLow`** (same layout:
+  full H×W in low verts, pad tail). Clean break — no alias (pre-user-base).
+- **Add** **`PadLowCenter`**: full H×W in low verts + largest near-square
+  centered crop in the remaining budget. MNIST 28×28 @ dim=10 → 15×16 @ (6,6),
+  full N=1024 occupancy. Plan exposes `crop_h` / `crop_w` / `crop_row0` /
+  `crop_col0`.
+- **Keep** `ResizeToFit` and `DualPlaneResize`.
+- Python: `SpatialEmbedMode.PadLow` / `PadLowCenter`; plan crop fields.
+- Docs + CoreSmokeTest + Python tests updated.
+
+---
+
 ## v1.0.2 (Aug 4, 2026)
 
 Package version and FetchContent pin: **v1.0.2**.

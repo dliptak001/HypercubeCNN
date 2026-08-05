@@ -11,9 +11,9 @@ import hypercube_cnn as hc
 
 
 def main() -> int:
-    # RowMajorPad must keep pad_value on the unused tail
+    # PadLow must keep pad_value on the unused tail
     emb = hc.SpatialEmbedder(
-        dim=6, mode=hc.SpatialEmbedMode.RowMajorPad, pad_value=-1.0
+        dim=6, mode=hc.SpatialEmbedMode.PadLow, pad_value=-1.0
     )
     img = np.full((4, 4), 0.5, dtype=np.float32)
     out = emb.embed(img)
@@ -21,7 +21,7 @@ def main() -> int:
         print(f"ERROR: expected (64,), got {out.shape}", file=sys.stderr)
         return 1
     if not np.allclose(out[:16], 0.5) or not np.allclose(out[16:], -1.0):
-        print("ERROR: RowMajorPad pad_value contract broken", file=sys.stderr)
+        print("ERROR: PadLow pad_value contract broken", file=sys.stderr)
         return 1
 
     # DualPlane on dim=9: N=512, S=16, pattern 2*S*S == N

@@ -233,7 +233,7 @@ Config lives at the top of each example (`DemoConfig`); optional helpers thin th
 
 ```bash
 cmake --build build --target MNISTTrain RegressionTimeseries
-# MNIST: place IDX files under data/ (see mnist_train.md)
+# MNIST: place IDX files under data/ (see data/README.md)
 ```
 
 **How to read the numbers:** examples prove the stack **learns** end-to-end. They are **not** SOTA claims. MNIST uses engineered packing + aug + a large FLATTEN head — not “free” 2D CNN structure. Regression uses a synthetic uncoupled reservoir; near-perfect R² is an API smoke signal, not HypercubeESN production skill. Details live in the example docs.

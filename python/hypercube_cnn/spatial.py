@@ -59,7 +59,7 @@ class SpatialEmbedder:
     dim :
         Hypercube dimension; capacity ``N = 2**dim``.
     mode :
-        ``RowMajorPad``, ``ResizeToFit``, or ``DualPlaneResize``.
+        ``PadLow``, ``PadLowCenter``, ``ResizeToFit``, or ``DualPlaneResize``.
     pad_value :
         Fill for unused vertices / bilinear OOB. Use ``-1`` for digit-like
         ``[-1, 1]`` ink (background), not the default ``0``.
@@ -70,7 +70,7 @@ class SpatialEmbedder:
     def __init__(
         self,
         dim: int = 10,
-        mode: SpatialEmbedMode = SpatialEmbedMode.RowMajorPad,
+        mode: SpatialEmbedMode = SpatialEmbedMode.PadLow,
         pad_value: float = 0.0,
         plane_side: int = 0,
     ):

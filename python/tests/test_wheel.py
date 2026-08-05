@@ -30,7 +30,7 @@ def test_construct_predict_one_step():
     net.train_step(x, target=0, params=hc.TrainParams(learning_rate=1e-2))
     # Touch optional products so a broken spatial/helpers link fails the wheel.
     emb = hc.SpatialEmbedder(
-        dim=5, mode=hc.SpatialEmbedMode.RowMajorPad, pad_value=-1.0
+        dim=5, mode=hc.SpatialEmbedMode.PadLow, pad_value=-1.0
     )
     assert emb.embed(np.ones((2, 2), dtype=np.float32)).shape == (emb.N,)
     assert abs(hc.cosine_lr(1e-3, 1e-4, 0, 5) - 1e-3) < 1e-6

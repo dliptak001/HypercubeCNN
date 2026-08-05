@@ -1454,11 +1454,11 @@ static void section_spatial_embed() {
               HCNNSpatialEmbedder::max_square_side(2048) <= 2048,
           "max_square_side(2048) is valid");
 
-    // RowMajorPad
+    // PadLow
     {
         HCNNSpatialEmbedConfig cfg;
         cfg.dim = 6;
-        cfg.mode = HCNNSpatialEmbedMode::RowMajorPad;
+        cfg.mode = HCNNSpatialEmbedMode::PadLow;
         cfg.pad_value = -1.0f;
         HCNNSpatialEmbedder emb(cfg);
         check(emb.capacity() == 64, "capacity 2^6 == 64");
@@ -1473,11 +1473,99 @@ static void section_spatial_embed() {
         for (int i = 0; i < H * W; ++i) if (out[i] != src[i]) head_ok = false;
         bool tail_ok = true;
         for (int i = H * W; i < 64; ++i) if (out[i] != -1.0f) tail_ok = false;
-        check(head_ok, "RowMajorPad copies H*W prefix");
-        check(tail_ok, "RowMajorPad pads with pad_value");
+        check(head_ok, "PadLow copies H*W prefix");
+        check(tail_ok, "PadLow pads with pad_value");
         auto plan = emb.plan(H, W);
         check(plan.pattern_length == H * W && plan.N == 64,
-              "RowMajorPad plan pattern_length and N");
+              "PadLow plan pattern_length and N");
+    }
+
+    // PadLowCenter (MNIST 28x28 @ dim=10 → 15x16 center, full occupancy)
+    {
+        HCNNSpatialEmbedConfig cfg;
+        cfg.dim = 10;
+        cfg.mode = HCNNSpatialEmbedMode::PadLowCenter;
+        cfg.pad_value = -1.0f;
+        HCNNSpatialEmbedder emb(cfg);
+        check(emb.capacity() == 1024, "PadLowCenter capacity 2^10 == 1024");
+
+        auto plan = emb.plan(28, 28);
+        check(plan.crop_h == 15 && plan.crop_w == 16, "PadLowCenter crop 15x16");
+        check(plan.crop_row0 == 6 && plan.crop_col0 == 6,
+              "PadLowCenter crop origin (6,6)");
+        check(plan.pattern_length == 1024 && plan.N == 1024,
+              "PadLowCenter full occupancy at dim=10");
+
+        std::vector<float> src(28 * 28);
+        for (int i = 0; i < 28 * 28; ++i)
+            src[static_cast<size_t>(i)] = static_cast<float>(i);
+        std::vector<float> out(emb.capacity(), 99.0f);
+        emb.embed(src.data(), 28, 28, out.data());
+
+        bool head_ok = true;
+        for (int i = 0; i < 784; ++i)
+            if (out[static_cast<size_t>(i)] != src[static_cast<size_t>(i)])
+                head_ok = false;
+        check(head_ok, "PadLowCenter copies full 28x28 prefix");
+
+        bool crop_ok = true;
+        for (int y = 0; y < 15; ++y) {
+            for (int x = 0; x < 16; ++x) {
+                const float expect = src[static_cast<size_t>((6 + y) * 28 + (6 + x))];
+                const float got = out[static_cast<size_t>(784 + y * 16 + x)];
+                if (got != expect) crop_ok = false;
+            }
+        }
+        check(crop_ok, "PadLowCenter center crop matches source window");
+    }
+
+    // PadLowCenter non-square + rem=0 (crop empty when H*W == N)
+    {
+        HCNNSpatialEmbedConfig cfg;
+        cfg.dim = 6;  // N = 64
+        cfg.mode = HCNNSpatialEmbedMode::PadLowCenter;
+        cfg.pad_value = -1.0f;
+        HCNNSpatialEmbedder emb(cfg);
+
+        // 8x5 = 40, rem = 24 → max near-square crop area <= 24 fitting in 8x5
+        auto plan = emb.plan(8, 5);
+        check(plan.crop_h > 0 && plan.crop_w > 0, "PadLowCenter non-square has crop");
+        check(plan.crop_h * plan.crop_w <= 24, "PadLowCenter crop area <= rem");
+        check(plan.crop_h <= 8 && plan.crop_w <= 5, "PadLowCenter crop fits HxW");
+        check(plan.crop_row0 == (8 - plan.crop_h) / 2
+                  && plan.crop_col0 == (5 - plan.crop_w) / 2,
+              "PadLowCenter non-square origin is floor-centered");
+        check(plan.pattern_length == 40 + plan.crop_h * plan.crop_w,
+              "PadLowCenter non-square pattern_length");
+
+        std::vector<float> src(8 * 5);
+        for (int i = 0; i < 40; ++i)
+            src[static_cast<size_t>(i)] = static_cast<float>(i);
+        std::vector<float> out(emb.capacity(), 99.0f);
+        emb.embed(src.data(), 8, 5, out.data());
+        bool crop_ok = true;
+        for (int y = 0; y < plan.crop_h; ++y) {
+            for (int x = 0; x < plan.crop_w; ++x) {
+                const float expect = src[static_cast<size_t>(
+                    (plan.crop_row0 + y) * 5 + (plan.crop_col0 + x))];
+                const float got = out[static_cast<size_t>(
+                    40 + y * plan.crop_w + x)];
+                if (got != expect) crop_ok = false;
+            }
+        }
+        check(crop_ok, "PadLowCenter non-square crop matches source window");
+
+        // Full occupancy: H*W == N → rem=0, crop is empty
+        auto plan_full = emb.plan(8, 8);
+        check(plan_full.crop_h == 0 && plan_full.crop_w == 0,
+              "PadLowCenter rem=0 yields empty crop");
+        check(plan_full.pattern_length == 64, "PadLowCenter rem=0 pattern == N");
+        std::vector<float> src64(64, 0.5f), out64(64, 99.0f);
+        emb.embed(src64.data(), 8, 8, out64.data());
+        bool full_ok = true;
+        for (int i = 0; i < 64; ++i)
+            if (out64[static_cast<size_t>(i)] != 0.5f) full_ok = false;
+        check(full_ok, "PadLowCenter rem=0 copies only the full image");
     }
 
     // DualPlane full occupancy
@@ -1506,15 +1594,48 @@ static void section_spatial_embed() {
         check(grad_alive, "DualPlane |grad| plane has structure");
     }
 
+    // DualPlane blank plane → entire |grad| plane is pad_value.
+    // pad_value must match the constant ink so bilinear OOB does not invent edges.
+    {
+        HCNNSpatialEmbedConfig cfg;
+        cfg.dim = 9;  // N=512, S=16, 2*S*S=512
+        cfg.mode = HCNNSpatialEmbedMode::DualPlaneResize;
+        const float kConst = 0.3f;
+        cfg.pad_value = kConst;
+        HCNNSpatialEmbedder emb(cfg);
+        const int S = emb.plan(8, 8).plane_side;
+        const int plane = S * S;
+        std::vector<float> src(8 * 8, kConst);  // constant → zero |grad|
+        std::vector<float> out(emb.capacity(), 99.0f);
+        emb.embed(src.data(), 8, 8, out.data());
+        bool grad_pad = true;
+        for (int i = plane; i < 2 * plane; ++i)
+            if (out[static_cast<size_t>(i)] != kConst) grad_pad = false;
+        check(grad_pad, "DualPlane blank plane fills |grad| with pad_value");
+    }
+
+    // plane_side override that fits
+    {
+        HCNNSpatialEmbedConfig cfg;
+        cfg.dim = 10;  // N=1024; DualPlane max S=22; 2*16*16=512 <= 1024
+        cfg.mode = HCNNSpatialEmbedMode::DualPlaneResize;
+        cfg.plane_side = 16;
+        cfg.pad_value = -1.0f;
+        HCNNSpatialEmbedder emb(cfg);
+        auto plan = emb.plan(28, 28);
+        check(plan.plane_side == 16, "DualPlane honors fitting plane_side override");
+        check(plan.pattern_length == 2 * 16 * 16, "DualPlane override pattern_length");
+    }
+
     // Reject oversize
     {
         HCNNSpatialEmbedConfig cfg;
         cfg.dim = 5;
-        cfg.mode = HCNNSpatialEmbedMode::RowMajorPad;
+        cfg.mode = HCNNSpatialEmbedMode::PadLow;
         HCNNSpatialEmbedder emb(cfg);
         std::vector<float> src(64, 0.0f), out(32);
         check(throws([&] { emb.embed(src.data(), 8, 8, out.data()); }),
-              "RowMajorPad rejects H*W > N");
+              "PadLow rejects H*W > N");
     }
     {
         HCNNSpatialEmbedConfig cfg;
@@ -1529,13 +1650,28 @@ static void section_spatial_embed() {
     {
         HCNNSpatialEmbedConfig cfg;
         cfg.dim = 6;
-        cfg.mode = HCNNSpatialEmbedMode::RowMajorPad;
+        cfg.mode = HCNNSpatialEmbedMode::PadLow;
+        cfg.pad_value = -1.0f;
         HCNNSpatialEmbedder emb(cfg);
         const int B = 2, H = 3, W = 3, N = 64;
         std::vector<float> src(B * H * W, 0.25f), out(B * N, -3.0f);
         emb.embed_batch(src.data(), B, H, W, out.data());
         check(out[0] == 0.25f && out[N] == 0.25f, "embed_batch writes both samples");
-        check(out[H * W] == 0.0f, "embed_batch pads each sample");
+        bool pad_ok = true;
+        for (int b = 0; b < B; ++b) {
+            for (int i = H * W; i < N; ++i)
+                if (out[static_cast<size_t>(b) * static_cast<size_t>(N)
+                        + static_cast<size_t>(i)]
+                    != -1.0f)
+                    pad_ok = false;
+        }
+        check(pad_ok, "embed_batch pads each sample with pad_value");
+
+        // Empty batch is a no-op; null buffers allowed
+        check(!throws([&] {
+                  emb.embed_batch(nullptr, 0, H, W, nullptr);
+              }),
+              "embed_batch batch=0 allows null buffers");
     }
 
     // Train chain (input_length = N)
@@ -1561,7 +1697,7 @@ static void section_spatial_embed() {
     {
         HCNNSpatialEmbedConfig cfg;
         cfg.dim = 6;
-        cfg.mode = HCNNSpatialEmbedMode::RowMajorPad;
+        cfg.mode = HCNNSpatialEmbedMode::PadLow;
         cfg.pad_value = -1.0f;
         HCNNSpatialEmbedder emb(cfg);
         std::vector<float> src(4 * 4, 0.5f), packed(emb.capacity());
@@ -1854,7 +1990,7 @@ static void section_train_helpers() {
         // Spatial pad_value survives full-capacity path; short Embed wipes it
         HCNNSpatialEmbedConfig cfg;
         cfg.dim = 6;
-        cfg.mode = HCNNSpatialEmbedMode::RowMajorPad;
+        cfg.mode = HCNNSpatialEmbedMode::PadLow;
         cfg.pad_value = -1.0f;
         HCNNSpatialEmbedder emb(cfg);
         std::vector<float> img(4 * 4, 0.25f);

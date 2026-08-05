@@ -31,9 +31,10 @@ install_manifest.txt
 compile_commands.json
 Testing/
 
-# MNIST IDX files (download separately, see examples/mnist_train.md)
+# MNIST IDX files (download separately, see data/README.md)
 data/*.ubyte
 data/*-ubyte
+data/*-ubyte.gz
 
 # Python
 __pycache__/

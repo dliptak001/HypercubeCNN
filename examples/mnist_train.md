@@ -99,26 +99,20 @@ Edit `DemoConfig` for other stacks (pools, width, BN, etc.). BN is available per
 
 IDX load: `load_mnist()` in `dataloader/HCNNDataset.h` (784-vectors). Aug + embed + flat buffers are built in `mnist_train.cpp`.
 
+`MNISTTrain` resolves this repo’s `data/` via `examples/find_data_dir.h` (cwd → exe path → source tree). It does not depend on relative `"data/..."` from the process cwd alone.
+
 ```cpp
-auto train_raw = load_mnist("data/train-images-idx3-ubyte",
-                            "data/train-labels-idx1-ubyte", 60000);
-auto test_raw  = load_mnist("data/t10k-images-idx3-ubyte",
-                            "data/t10k-labels-idx1-ubyte",  10000);
+const auto data_dir = hcnn_ex::FindMnistDataDir(argv0);
+auto train_raw = load_mnist((data_dir / "train-images-idx3-ubyte").string(),
+                            (data_dir / "train-labels-idx1-ubyte").string(), 60000);
+auto test_raw  = load_mnist((data_dir / "t10k-images-idx3-ubyte").string(),
+                            (data_dir / "t10k-labels-idx1-ubyte").string(),  10000);
 // fill_spatial_dataset: optional SpatialAug -> SpatialEmbed DualPlane -> FlatDataset
 ```
 
 ### Downloading MNIST IDX files
 
-Not in the repo. Once into `data/` at the project root:
-
-```bash
-mkdir -p data && cd data
-curl -L -O https://storage.googleapis.com/cvdf-datasets/mnist/train-images-idx3-ubyte.gz
-curl -L -O https://storage.googleapis.com/cvdf-datasets/mnist/train-labels-idx1-ubyte.gz
-curl -L -O https://storage.googleapis.com/cvdf-datasets/mnist/t10k-images-idx3-ubyte.gz
-curl -L -O https://storage.googleapis.com/cvdf-datasets/mnist/t10k-labels-idx1-ubyte.gz
-gunzip *.gz
-```
+Not in the repo. Place the four uncompressed IDX files under `data/` at the project root. Full download steps: [`data/README.md`](../data/README.md).
 
 ```text
 data/train-images-idx3-ubyte    (~45 MB)
@@ -126,6 +120,12 @@ data/train-labels-idx1-ubyte
 data/t10k-images-idx3-ubyte
 data/t10k-labels-idx1-ubyte
 ```
+
+Discovery order (first hit with all four files wins):
+
+1. Current working directory and parents  
+2. Executable directory and parents  
+3. Source tree next to `examples/`  
 
 MNIST: Yann LeCun, Corinna Cortes, Christopher J.C. Burges. This repo ships only the loader.
 

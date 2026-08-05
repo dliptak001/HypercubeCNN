@@ -140,7 +140,7 @@ automatically when needed.
 - `PoolType`: `MAX`, `AVG`
 - `TaskType`: `Classification`, `Regression`
 - `OptimizerType`: `SGD`, `ADAM` (default at construction is Adam)
-- `SpatialEmbedMode`: `RowMajorPad`, `ResizeToFit`, `DualPlaneResize`
+- `SpatialEmbedMode`: `PadLow`, `PadLowCenter`, `ResizeToFit`, `DualPlaneResize`
 
 ### `TrainParams`
 
@@ -216,7 +216,7 @@ work = aug.apply(img, seed=epoch)
 x = emb.embed(work)   # (N,); train/infer with this full length
 ```
 
-Modes: `RowMajorPad`, `ResizeToFit`, `DualPlaneResize`.  
+Modes: `PadLow`, `PadLowCenter`, `ResizeToFit`, `DualPlaneResize`.  
 **After embed, pass full capacity** — short lengths zero-pad in the network and
 can wipe a non-zero `pad_value`.
 

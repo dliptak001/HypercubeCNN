@@ -81,8 +81,8 @@ capacity **N** (less-than-or-equal).
 - Hypercube input capacity per channel: **N = 2^dim**.
 - Embed always writes a **full** buffer of length **N**.
 - Occupied pattern length **P** (before pad) always satisfies **P ≤ N**.
-- If your raw **H×W** product is greater than **N**, **RowMajorPad** throws;
-  use **ResizeToFit** or **DualPlaneResize**, or increase `dim`.
+- If your raw **H×W** product is greater than **N**, **PadLow** / **PadLowCenter**
+  throw; use **ResizeToFit** or **DualPlaneResize**, or increase `dim`.
 
 | dim | N | Max square S (`ResizeToFit`) | Max dual S (`DualPlaneResize`) |
 |-----|---|------------------------------|--------------------------------|
@@ -97,7 +97,7 @@ Auto side: `plane_side = 0` uses `floor(sqrt(N))` or `floor(sqrt(N/2))`.
 
 ## Embed modes
 
-### `RowMajorPad`
+### `PadLow`
 
 ```text
 out[0 .. H*W)  = image (row-major)
@@ -106,6 +106,23 @@ out[H*W .. N)  = pad_value
 
 - No resize. Requires **H×W ≤ N** (product of height and width).
 - Use when the image already fits (small patches, downsampled offline).
+- Formerly named `RowMajorPad`.
+
+### `PadLowCenter`
+
+```text
+out[0 .. H*W)                    = image (row-major)
+out[H*W .. H*W + crop_h*crop_w)  = centered crop (row-major)
+out[H*W + crop_h*crop_w .. N)    = pad_value
+```
+
+- No resize of the primary view — keeps full native resolution.
+- Requires **H×W ≤ N**. Remaining budget `R = N − H×W` is filled with the
+  largest near-square center crop (area ≤ R, fits in H×W), floor-centered.
+  Tie-break: min |h−w|, then prefer wider, then smaller h.
+- MNIST **28×28 @ dim=10** (N=1024): crop **15×16 @ (6,6)**, full occupancy
+  (`pattern_length = 1024`).
+- Plan exposes `crop_h`, `crop_w`, `crop_row0`, `crop_col0`.
 
 ### `ResizeToFit`
 
@@ -225,7 +242,7 @@ emb.embed_batch(tmp, batch, H, W, out);       // stride N
 | In scope | Out of scope (v1) |
 |----------|-------------------|
 | Single-channel 2D → length N | Multi-channel `c_in > 1` packs |
-| Pad / square resize / dual ink + \|grad\| | Locality-aware vertex scatter |
+| Pad / pad+center crop / square resize / dual ink + \|grad\| | Locality-aware vertex scatter |
 | Works for any `dim` in [1, 30] | Tying aug to Embed inside `HCNN` |
 | Deterministic embed; RNG only in aug | Dataset I/O (IDX loaders stay examples) |
 
@@ -236,8 +253,9 @@ emb.embed_batch(tmp, batch, H, W, out);       // stride N
 `CoreSmokeTest` covers:
 
 - Aug identity, determinism, border, noise, batch, error paths  
-- Embed capacity, RowMajorPad, ResizeToFit, DualPlaneResize  
-- Reject H×W product > N for RowMajorPad  
+- Embed capacity, PadLow, PadLowCenter, ResizeToFit, DualPlaneResize  
+- Reject H×W product > N for PadLow / PadLowCenter  
+- PadLowCenter 28×28 @ dim=10 → 15×16 center, full occupancy  
 - Dual-plane full occupancy for classic powers of two  
 
 ---

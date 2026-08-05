@@ -281,9 +281,9 @@ class TestMetrics:
 
 
 class TestSpatial:
-    def test_row_major_pad_preserves_pad_value(self):
+    def test_pad_low_preserves_pad_value(self):
         emb = hc.SpatialEmbedder(
-            dim=6, mode=hc.SpatialEmbedMode.RowMajorPad, pad_value=-1.0
+            dim=6, mode=hc.SpatialEmbedMode.PadLow, pad_value=-1.0
         )
         assert emb.capacity == 64
         img = np.ones((4, 4), dtype=np.float32)
@@ -291,6 +291,22 @@ class TestSpatial:
         assert out.shape == (64,)
         np.testing.assert_array_equal(out[:16], 1.0)
         np.testing.assert_array_equal(out[16:], -1.0)
+
+    def test_pad_low_center_mnist_dim10(self):
+        emb = hc.SpatialEmbedder(
+            dim=10, mode=hc.SpatialEmbedMode.PadLowCenter, pad_value=-1.0
+        )
+        assert emb.capacity == 1024
+        plan = emb.plan(28, 28)
+        assert plan.crop_h == 15 and plan.crop_w == 16
+        assert plan.crop_row0 == 6 and plan.crop_col0 == 6
+        assert plan.pattern_length == 1024
+        img = np.arange(28 * 28, dtype=np.float32).reshape(28, 28)
+        out = emb.embed(img)
+        assert out.shape == (1024,)
+        np.testing.assert_array_equal(out[:784], img.reshape(-1))
+        crop = img[6 : 6 + 15, 6 : 6 + 16].reshape(-1)
+        np.testing.assert_array_equal(out[784:], crop)
 
     def test_embed_batch_and_aug_identity(self):
         emb = hc.SpatialEmbedder(
