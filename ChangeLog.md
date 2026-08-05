@@ -1,4 +1,8 @@
-## Unreleased
+# HypercubeCNN — Change Log
+
+## v1.0.3 (Aug 5, 2026)
+
+Package version and FetchContent pin: **v1.0.3**.
 
 ### Spatial embed
 
@@ -18,6 +22,8 @@
   `docs/Python_SDK.md`; choose-a-mode table, PadLowCenter edge cases, plan
   crop fields in `docs/spatial_preprocess.md`.
 - Tests: CoreSmokeTest + Python unit/smoke cover PadLowCenter and pad contracts.
+- MNISTTrain banner prints real `plan.mode` (no DualPlane hardcode). Demo
+  default remains **dim=11 DualPlaneResize** (documented recipe).
 
 #### Migration (hosts / configs)
 
@@ -34,21 +40,11 @@
 - New `data/README.md` (download IDX); `.gitignore` also ignores `*.gz`.
 - Docs: `examples/mnist_train.md`, root README pointer.
 
-### Release pin checklist (for next version bump)
+### Notes for integrators
 
-Bump these together when cutting the release (currently all **1.0.2**):
-
-| Location | Field |
-|----------|--------|
-| `CMakeLists.txt` | `project(HypercubeCNN VERSION ...)` |
-| `pyproject.toml` | `version = "..."` |
-| `docs/CPP_SDK.md` | header "v..." + FetchContent `GIT_TAG` |
-| `docs/Python_SDK.md` | "currently ..." |
-| `docs/internals.md` | Version (CMake) table |
-| `README.md` | FetchContent `GIT_TAG` + ChangeLog "latest" line |
-| `ChangeLog.md` | new `## vX.Y.Z` section (move Unreleased notes) |
-
-Python `__version__` is exported from the built extension (CMake project version).
+- Pin FetchContent / re-vendor to **v1.0.3**.
+- Python wheels: package `hypercube-cnn` version **1.0.3** (`python/bindings.cpp`
+  `__version__` and `pyproject.toml`).
 
 ---
 

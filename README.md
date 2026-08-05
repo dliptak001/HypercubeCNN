@@ -209,7 +209,7 @@ include(FetchContent)
 FetchContent_Declare(
     HypercubeCNN
     GIT_REPOSITORY https://github.com/dliptak001/HypercubeCNN.git
-    GIT_TAG        v1.0.2          # pin a release tag (see GitHub Releases)
+    GIT_TAG        v1.0.3          # pin a release tag (see GitHub Releases)
 )
 FetchContent_MakeAvailable(HypercubeCNN)
 target_link_libraries(my_app PRIVATE HypercubeCNNCore)
@@ -265,7 +265,7 @@ CMake library target: **`HypercubeCNNCore`**. Optional targets: `MNISTTrain`, `R
 | Doc | Role |
 |-----|------|
 | **[docs/CPP_SDK.md](docs/CPP_SDK.md)** | Public SDK: contracts, API, optional helpers, recipes |
-| **[ChangeLog.md](ChangeLog.md)** | Release notes (v1.0.2 latest; v1.0.0 public SDK arc) |
+| **[ChangeLog.md](ChangeLog.md)** | Release notes (v1.0.3 latest; v1.0.0 public SDK arc) |
 | [docs/internals.md](docs/internals.md) | Training cores, threading, optimizers, build options |
 | [docs/spatial_preprocess.md](docs/spatial_preprocess.md) | Image aug/embed (pad contracts) |
 | [examples/mnist_train.md](examples/mnist_train.md) | Classification recipe |
