@@ -1,18 +1,54 @@
-# HypercubeCNN — Change Log
-
 ## Unreleased
 
 ### Spatial embed
 
 - **Rename** `HCNNSpatialEmbedMode::RowMajorPad` → **`PadLow`** (same layout:
-  full H×W in low verts, pad tail). Clean break — no alias (pre-user-base).
+  full H×W in low verts, pad tail). Clean break — **no alias**.
 - **Add** **`PadLowCenter`**: full H×W in low verts + largest near-square
   centered crop in the remaining budget. MNIST 28×28 @ dim=10 → 15×16 @ (6,6),
   full N=1024 occupancy. Plan exposes `crop_h` / `crop_w` / `crop_row0` /
   `crop_col0`.
-- **Keep** `ResizeToFit` and `DualPlaneResize`.
-- Python: `SpatialEmbedMode.PadLow` / `PadLowCenter`; plan crop fields.
-- Docs + CoreSmokeTest + Python tests updated.
+- **Keep** `ResizeToFit` and `DualPlaneResize` (semantics unchanged).
+- **Harden:** unknown mode throws in `plan` / `embed`; `embed_batch` with
+  `batch == 0` is a no-op (null buffers allowed); PadLowCenter crop uses
+  row-wise `memcpy`.
+- Python: `SpatialEmbedMode.PadLow` / `PadLowCenter`; `SpatialEmbedPlan` crop
+  fields; default mode `PadLow` (matches C++).
+- Docs: mode comparison + migration in `docs/CPP_SDK.md` and
+  `docs/Python_SDK.md`; choose-a-mode table, PadLowCenter edge cases, plan
+  crop fields in `docs/spatial_preprocess.md`.
+- Tests: CoreSmokeTest + Python unit/smoke cover PadLowCenter and pad contracts.
+
+#### Migration (hosts / configs)
+
+| Before | After |
+|--------|--------|
+| `HCNNSpatialEmbedMode::RowMajorPad` | `HCNNSpatialEmbedMode::PadLow` |
+| `SpatialEmbedMode.RowMajorPad` (Python) | `SpatialEmbedMode.PadLow` |
+| Mode stored as **raw int** | Prefer **names**. Ordinals shifted: old `ResizeToFit=1`, `DualPlaneResize=2` → **2**, **3** (`PadLowCenter` is now **1**). |
+
+### MNIST example data discovery
+
+- `MNISTTrain` resolves this repo's `data/` via cwd → executable path → source
+  tree (`examples/find_data_dir.h`), same idea as HypercubeWTF.
+- New `data/README.md` (download IDX); `.gitignore` also ignores `*.gz`.
+- Docs: `examples/mnist_train.md`, root README pointer.
+
+### Release pin checklist (for next version bump)
+
+Bump these together when cutting the release (currently all **1.0.2**):
+
+| Location | Field |
+|----------|--------|
+| `CMakeLists.txt` | `project(HypercubeCNN VERSION ...)` |
+| `pyproject.toml` | `version = "..."` |
+| `docs/CPP_SDK.md` | header "v..." + FetchContent `GIT_TAG` |
+| `docs/Python_SDK.md` | "currently ..." |
+| `docs/internals.md` | Version (CMake) table |
+| `README.md` | FetchContent `GIT_TAG` + ChangeLog "latest" line |
+| `ChangeLog.md` | new `## vX.Y.Z` section (move Unreleased notes) |
+
+Python `__version__` is exported from the built extension (CMake project version).
 
 ---
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tier 1: spatial embed pad contract + DualPlane layout (no dataset download)."""
+"""Tier 1: spatial embed modes + pad contract (no dataset download)."""
 
 from __future__ import annotations
 
@@ -22,6 +22,39 @@ def main() -> int:
         return 1
     if not np.allclose(out[:16], 0.5) or not np.allclose(out[16:], -1.0):
         print("ERROR: PadLow pad_value contract broken", file=sys.stderr)
+        return 1
+
+    # PadLowCenter: MNIST-shaped 28x28 @ dim=10 → 15x16 center, full N=1024
+    center = hc.SpatialEmbedder(
+        dim=10, mode=hc.SpatialEmbedMode.PadLowCenter, pad_value=-1.0
+    )
+    plan_c = center.plan(28, 28)
+    if (
+        plan_c.crop_h != 15
+        or plan_c.crop_w != 16
+        or plan_c.crop_row0 != 6
+        or plan_c.crop_col0 != 6
+        or plan_c.pattern_length != 1024
+        or plan_c.N != 1024
+    ):
+        print(
+            f"ERROR: PadLowCenter plan unexpected: crop={plan_c.crop_h}x{plan_c.crop_w}"
+            f"@({plan_c.crop_row0},{plan_c.crop_col0}) "
+            f"pattern={plan_c.pattern_length} N={plan_c.N}",
+            file=sys.stderr,
+        )
+        return 1
+    img28 = np.arange(28 * 28, dtype=np.float32).reshape(28, 28)
+    packed_c = center.embed(img28)
+    if packed_c.shape != (1024,):
+        print(f"ERROR: PadLowCenter shape {packed_c.shape}", file=sys.stderr)
+        return 1
+    if not np.allclose(packed_c[:784], img28.reshape(-1)):
+        print("ERROR: PadLowCenter prefix != full image", file=sys.stderr)
+        return 1
+    crop = img28[6 : 6 + 15, 6 : 6 + 16].reshape(-1)
+    if not np.allclose(packed_c[784:], crop):
+        print("ERROR: PadLowCenter tail != center crop", file=sys.stderr)
         return 1
 
     # DualPlane on dim=9: N=512, S=16, pattern 2*S*S == N
@@ -66,7 +99,8 @@ def main() -> int:
         return 1
 
     print(
-        f"spatial_embed_smoke: N={emb.N} dual_N={dual.N} "
+        f"spatial_embed_smoke: PadLow N={emb.N} "
+        f"PadLowCenter N={center.N} dual_N={dual.N} "
         f"eval_acc={r.accuracy:.1f}"
     )
     print("OK")

@@ -200,11 +200,39 @@ rr = hc.evaluate_regression(net, X, T)      # rr.mse, rr.r2, rr.target_var
 
 ### Spatial preprocess
 
-Optional product (not part of the conv graph). Full contracts:
-[spatial_preprocess.md](spatial_preprocess.md).
+Optional product (not part of the conv graph). Full layouts and capacity math:
+[spatial_preprocess.md](spatial_preprocess.md). Same mode set as C++
+`HCNNSpatialEmbedMode`.
+
+**Modes (`SpatialEmbedMode`):**
+
+| Mode | Layout (unused verts → `pad_value`) | H×W ≤ N? | Typical use |
+|------|-------------------------------------|----------|-------------|
+| **`PadLow`** | Full image in low indices | Required | Image already fits |
+| **`PadLowCenter`** | Full image + near-square **center crop** in remainder | Required | Native + center detail (MNIST 28×28 @ dim=10 → 15×16 @ (6,6)) |
+| **`ResizeToFit`** | Bilinear square S×S | Always | Simple pack; may distort aspect |
+| **`DualPlaneResize`** | Ink S×S ‖ max-norm \|grad\| S×S | Always | Ink + edges (MNIST dim=11 demo) |
+
+Default is **`PadLow`**. Digit-like data: set **`pad_value=-1.0`** (background),
+not the default `0`. **`plane_side`** overrides S for resize modes only
+(`0` = automatic).
+
+**`SpatialEmbedPlan`** (from `emb.plan(height, width)`):
+
+| Field | Meaning |
+|-------|---------|
+| `dim`, `N` | Hypercube dim and capacity (`N = 2**dim`) |
+| `height_in`, `width_in` | Source size passed to `plan` / `embed` |
+| `plane_side` | S for resize modes; `0` for pad modes |
+| `pattern_length` | Occupied floats before pad (P ≤ N) |
+| `crop_h`, `crop_w`, `crop_row0`, `crop_col0` | **PadLowCenter** crop window; all `0` otherwise |
+| `mode` | The active `SpatialEmbedMode` |
+
+**After embed, always train/infer with full length N** (`x.shape[-1] == emb.N`).
+Short lengths zero-pad in the network and can wipe a non-zero `pad_value`.
 
 ```python
-# Augment at native H×W, then embed to length N (always full capacity)
+# DualPlane path (matches the C++ MNIST dim=11 recipe idea)
 aug = hc.SpatialAugmenter(rot_deg_max=12, shear_x_max=0.15, border_value=-1.0)
 emb = hc.SpatialEmbedder(
     dim=11,
@@ -216,9 +244,22 @@ work = aug.apply(img, seed=epoch)
 x = emb.embed(work)   # (N,); train/infer with this full length
 ```
 
-Modes: `PadLow`, `PadLowCenter`, `ResizeToFit`, `DualPlaneResize`.  
-**After embed, pass full capacity** — short lengths zero-pad in the network and
-can wipe a non-zero `pad_value`.
+```python
+# PadLowCenter: full 28×28 + center crop in the tail (dim=10 → N=1024)
+emb = hc.SpatialEmbedder(
+    dim=10,
+    mode=hc.SpatialEmbedMode.PadLowCenter,
+    pad_value=-1.0,
+)
+plan = emb.plan(28, 28)
+# plan.crop_h, plan.crop_w == 15, 16; plan.crop_row0, plan.crop_col0 == 6, 6
+# plan.pattern_length == 1024 (full occupancy)
+x = emb.embed(img28)  # shape (1024,)
+```
+
+**Migration:** `RowMajorPad` was renamed to **`PadLow`** (no alias). Prefer enum
+**names** in configs; raw integer mode values shifted when `PadLowCenter` was
+inserted (old `ResizeToFit=1` / `DualPlaneResize=2` → `2` / `3`).
 
 ---
 

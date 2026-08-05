@@ -95,6 +95,23 @@ Auto side: `plane_side = 0` uses `floor(sqrt(N))` or `floor(sqrt(N/2))`.
 
 ---
 
+## Choosing a mode
+
+| Prefer | When |
+|--------|------|
+| **`PadLow`** | H×W already ≤ N and you want exact pixels only (no second view, no resize). |
+| **`PadLowCenter`** | H×W ≤ N and you want the **full native image** plus a **center crop** packed into leftover vertices (good when rem is meaningful, e.g. 28×28 into N=1024). |
+| **`ResizeToFit`** | H×W may exceed N, or you only need one square view and accept aspect distortion. |
+| **`DualPlaneResize`** | You want intensity **and** edge structure on a single channel (ink ‖ \|grad\|); classic full fill at dim 9 / 11. |
+
+In-tree **MNISTTrain** uses **DualPlaneResize @ dim=11** (engineered ~99% recipe).
+**PadLowCenter @ dim=10** is a first-class alternative when you want native 28×28
+plus a center crop without bilinear resize of the primary view.
+
+Default `HCNNSpatialEmbedConfig::mode` / Python `SpatialEmbedder` mode is **`PadLow`**.
+
+---
+
 ## Embed modes
 
 ### `PadLow`
@@ -106,7 +123,8 @@ out[H*W .. N)  = pad_value
 
 - No resize. Requires **H×W ≤ N** (product of height and width).
 - Use when the image already fits (small patches, downsampled offline).
-- Formerly named `RowMajorPad`.
+- Formerly named **`RowMajorPad`** (renamed; **no** enum alias — see
+  [ChangeLog.md](../ChangeLog.md)).
 
 ### `PadLowCenter`
 
@@ -116,13 +134,25 @@ out[H*W .. H*W + crop_h*crop_w)  = centered crop (row-major)
 out[H*W + crop_h*crop_w .. N)    = pad_value
 ```
 
-- No resize of the primary view — keeps full native resolution.
+- No resize of the primary view — keeps full native resolution in the low
+  addresses.
 - Requires **H×W ≤ N**. Remaining budget `R = N − H×W` is filled with the
   largest near-square center crop (area ≤ R, fits in H×W), floor-centered.
   Tie-break: min |h−w|, then prefer wider, then smaller h.
 - MNIST **28×28 @ dim=10** (N=1024): crop **15×16 @ (6,6)**, full occupancy
   (`pattern_length = 1024`).
-- Plan exposes `crop_h`, `crop_w`, `crop_row0`, `crop_col0`.
+- Plan exposes `crop_h`, `crop_w`, `crop_row0`, `crop_col0` (all zero for other
+  modes).
+
+**Edge cases:**
+
+- **R = 0** (H×W = N): crop is empty (`crop_h = crop_w = 0`). Layout matches
+  **PadLow** (full image only).
+- **R ≥ H×W**: the crop can be the **entire** image — the tail is a second
+  full copy under the same max-area / near-square rule (common when N is large
+  relative to the image).
+- **Non-square H×W**: same algorithm; origin is still floor-centered on the
+  chosen crop size.
 
 ### `ResizeToFit`
 
@@ -132,7 +162,8 @@ out[0 .. S*S)  = bilinear resize of image to S×S
 out[S*S .. N)  = pad_value
 ```
 
-- Always succeeds for N ≥ 1.
+- Always succeeds for N ≥ 1 (embed `dim` is validated in [1, 30]; networks
+  typically require dim ≥ 3 to train).
 - Single view; unused vertices if S² < N.
 - **Always square:** non-square H×W is distorted to S×S.
 - Bilinear OOB uses `pad_value`.
@@ -149,7 +180,9 @@ out[2*S*S .. N)       = pad_value
 - Multi-view occupancy without multi-channel inputs.
 - When N is even and S = floor(sqrt(N/2)), often **2·S² = N** (full fill),
   e.g. dim 9 → 16×16 ‖ |grad|, dim 11 → 32×32 ‖ |grad|.
-- Gradient of a blank/constant plane is filled with `pad_value`.
+- Gradient of a blank/constant plane is filled with `pad_value`. For a
+  *truly* blank resized plane, `pad_value` must match the constant ink (or
+  OOB samples invent edges at the border).
 - Ink is **not** range-clipped; only |grad| is max-normalized to ~[-1, 1].
 - Bilinear OOB uses `pad_value` (use -1 for MNIST-like backgrounds).
 
@@ -197,7 +230,7 @@ acfg.noise_sigma = 0.03f;
 acfg.border_value = -1.f;
 hcnn::HCNNSpatialAugmenter aug(acfg);
 
-// 2) Embed into N = 2^dim
+// 2) Embed into N = 2^dim  (DualPlane example — MNIST-style dim=11)
 hcnn::HCNNSpatialEmbedConfig ecfg;
 ecfg.dim = 11;
 ecfg.mode = hcnn::HCNNSpatialEmbedMode::DualPlaneResize;
@@ -221,18 +254,35 @@ hcnn::HCNN net(ecfg.dim, /*num_outputs=*/10, /*input_channels=*/1);
 // or: net.TrainEpoch(ds.input_view(), labels, batch, params);
 ```
 
+**PadLowCenter** (native full image + center crop; dim=10 MNIST packing):
+
+```cpp
+hcnn::HCNNSpatialEmbedConfig ecfg;
+ecfg.dim = 10;
+ecfg.mode = hcnn::HCNNSpatialEmbedMode::PadLowCenter;
+ecfg.pad_value = -1.f;
+hcnn::HCNNSpatialEmbedder emb(ecfg);
+auto plan = emb.plan(28, 28);
+// plan.crop_h/w = 15/16, plan.crop_row0/col0 = 6/6, plan.pattern_length = 1024
+auto packed = hcnn::pack_spatial(emb, img28, 28, 28);
+```
+
 ### Planning without embedding
 
 ```cpp
 auto plan = emb.plan(height, width);
-// plan.N, plan.plane_side, plan.pattern_length, plan.mode
+// Always useful:
+//   plan.N, plan.pattern_length, plan.mode, plan.plane_side
+// PadLowCenter also fills:
+//   plan.crop_h, plan.crop_w, plan.crop_row0, plan.crop_col0
+// (those four stay 0 for PadLow / ResizeToFit / DualPlaneResize)
 ```
 
 ### Batch
 
 ```cpp
 aug.apply_batch(in, tmp, batch, H, W, rng);   // stride H*W
-emb.embed_batch(tmp, batch, H, W, out);       // stride N
+emb.embed_batch(tmp, batch, H, W, out);       // stride N; batch==0 is a no-op
 ```
 
 ---
@@ -256,7 +306,12 @@ emb.embed_batch(tmp, batch, H, W, out);       // stride N
 - Embed capacity, PadLow, PadLowCenter, ResizeToFit, DualPlaneResize  
 - Reject H×W product > N for PadLow / PadLowCenter  
 - PadLowCenter 28×28 @ dim=10 → 15×16 center, full occupancy  
-- Dual-plane full occupancy for classic powers of two  
+- PadLowCenter non-square H×W, rem=0 (empty crop), batch `pad_value`, empty batch  
+- Dual-plane full occupancy; blank plane → |grad| filled with `pad_value`  
+- Fitting `plane_side` override  
+
+Python: `python/tests/test_basic.py` (`TestSpatial`) and
+`examples/python/spatial_embed_smoke.py` (PadLow, PadLowCenter, DualPlane).
 
 ---
 
@@ -266,6 +321,7 @@ emb.embed_batch(tmp, batch, H, W, out);       // stride N
 |--------------|---------|
 | `HCNNSpatialAug.h` | Aug config + augmenter |
 | `HCNNSpatialEmbed.h` | Embed config, modes, plan, embedder |
-| `docs/CPP_SDK.md` | Public SDK; spatial is §9 (pad contract + pipeline) |
+| `docs/CPP_SDK.md` | Public SDK; spatial is §9 (modes table + pad contract) |
+| `docs/Python_SDK.md` | Python spatial section (modes + `SpatialEmbedPlan`) |
 | `docs/internals.md` | Hypercube conv (after embed) |
-| `examples/mnist_train.md` | Full image training recipe |
+| `examples/mnist_train.md` | Full image training recipe (DualPlane) |

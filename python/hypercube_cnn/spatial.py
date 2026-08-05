@@ -59,12 +59,23 @@ class SpatialEmbedder:
     dim :
         Hypercube dimension; capacity ``N = 2**dim``.
     mode :
-        ``PadLow``, ``PadLowCenter``, ``ResizeToFit``, or ``DualPlaneResize``.
+        ``PadLow`` (full image + pad), ``PadLowCenter`` (full + center crop
+        in remainder), ``ResizeToFit`` (square bilinear), or
+        ``DualPlaneResize`` (ink ‖ max-norm |grad|). See
+        ``docs/spatial_preprocess.md`` and ``docs/Python_SDK.md``.
     pad_value :
         Fill for unused vertices / bilinear OOB. Use ``-1`` for digit-like
         ``[-1, 1]`` ink (background), not the default ``0``.
     plane_side :
         Optional square side override for resize modes (``0`` = automatic).
+        Ignored for ``PadLow`` / ``PadLowCenter``.
+
+    Notes
+    -----
+    ``plan(H, W)`` returns a ``SpatialEmbedPlan``. For ``PadLowCenter`` the
+    plan fills ``crop_h``, ``crop_w``, ``crop_row0``, ``crop_col0``; those
+    fields are zero for other modes. Always train/infer with full capacity
+    ``N`` so a non-zero ``pad_value`` is not wiped by network zero-pad.
     """
 
     def __init__(

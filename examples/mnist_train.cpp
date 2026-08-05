@@ -69,7 +69,7 @@ struct DemoConfig {
     size_t max_test_samples  = 10000;
 
     // ----- Architecture (dim also drives SpatialEmbed N = 2^dim) -----
-    int dim            = 11;   // start DIM; DualPlane auto side = floor(sqrt(N/2))
+    int dim            = 10;   // start DIM; DualPlane auto side = floor(sqrt(N/2))
     int num_outputs    = 10;   // MNIST classes
     int input_channels = 1;    // must stay 1 (Spatial* path is single-channel)
     std::vector<hcnn::LayerSpec> layers = {
@@ -182,6 +182,48 @@ static hcnn::HCNNSpatialEmbedConfig make_embed_config(const DemoConfig& cfg) {
     ec.pad_value  = cfg.embed_pad_value;
     ec.plane_side = cfg.embed_plane_side;
     return ec;
+}
+
+static const char* embed_mode_name(hcnn::HCNNSpatialEmbedMode m) {
+    switch (m) {
+    case hcnn::HCNNSpatialEmbedMode::PadLow:         return "PadLow";
+    case hcnn::HCNNSpatialEmbedMode::PadLowCenter:   return "PadLowCenter";
+    case hcnn::HCNNSpatialEmbedMode::ResizeToFit:    return "ResizeToFit";
+    case hcnn::HCNNSpatialEmbedMode::DualPlaneResize: return "DualPlaneResize";
+    }
+    return "Unknown";
+}
+
+/// One-line spatial pipeline summary from the real plan (not a DualPlane hardcode).
+static void print_spatial_pipeline(const hcnn::HCNNSpatialEmbedPlan& plan,
+                                   int dim, int N) {
+    std::cout << "Spatial pipeline: HCNNSpatialAug (train) -> HCNNSpatialEmbed "
+              << embed_mode_name(plan.mode);
+    switch (plan.mode) {
+    case hcnn::HCNNSpatialEmbedMode::PadLow:
+        std::cout << " " << plan.height_in << "x" << plan.width_in
+                  << " + pad";
+        break;
+    case hcnn::HCNNSpatialEmbedMode::PadLowCenter:
+        std::cout << " full " << plan.height_in << "x" << plan.width_in;
+        if (plan.crop_h > 0 && plan.crop_w > 0) {
+            std::cout << " + center " << plan.crop_h << "x" << plan.crop_w
+                      << "@(" << plan.crop_row0 << "," << plan.crop_col0 << ")";
+        } else {
+            std::cout << " + empty crop (H*W == N)";
+        }
+        break;
+    case hcnn::HCNNSpatialEmbedMode::ResizeToFit:
+        std::cout << " " << plan.plane_side << "x" << plan.plane_side
+                  << " resize";
+        break;
+    case hcnn::HCNNSpatialEmbedMode::DualPlaneResize:
+        std::cout << " " << plan.plane_side << "x" << plan.plane_side
+                  << " ink || |grad|";
+        break;
+    }
+    std::cout << "  (pattern_length=" << plan.pattern_length
+              << ", N=" << N << ", dim=" << dim << ")\n";
 }
 
 /// Optional aug at 28x28, then SpatialEmbed into HCNNFlatDataset (length N).
@@ -358,14 +400,12 @@ int main(int argc, char** argv) {
                 "test FlatDataset input_length != embed capacity");
         }
 
-        std::cout << "Spatial pipeline: HCNNSpatialAug (train) -> "
-                  << "HCNNSpatialEmbed DualPlaneResize "
-                  << plan.plane_side << "x" << plan.plane_side
-                  << " ink || |grad|  (pattern_length=" << plan.pattern_length
-                  << ", N=" << N << ", dim=" << cfg.dim << ")\n";
-        // DualPlane / ResizeToFit always fit N by changing S. That is valid capacity
-        // math, but S < native 28 is a silent quality cliff (e.g. dim=8 -> S=11).
-        if (plan.plane_side > 0 && plan.plane_side < kImgSide) {
+        print_spatial_pipeline(plan, cfg.dim, N);
+        // Resize modes always fit N by changing S. That is valid capacity math,
+        // but S < native 28 is a silent quality cliff (e.g. dim=8 DualPlane -> S=11).
+        if ((plan.mode == hcnn::HCNNSpatialEmbedMode::ResizeToFit
+             || plan.mode == hcnn::HCNNSpatialEmbedMode::DualPlaneResize)
+            && plan.plane_side > 0 && plan.plane_side < kImgSide) {
             // ASCII only (no em-dash): Windows consoles often mis-decode UTF-8 as mojibake.
             std::cout
                 << "\n"
@@ -374,8 +414,8 @@ int main(int argc, char** argv) {
                 << " - input is DOWN-SAMPLED (dim=" << cfg.dim
                 << ", N=" << N << ").\n"
                 << "***          Layout is legal (P <= N); accuracy will not match "
-                   "the documented ~99% recipe\n"
-                << "***          (default dim=11, DualPlane S=32). Raise dim or "
+                   "the documented ~99% DualPlane recipe\n"
+                << "***          (DualPlane dim=11 -> S=32). Raise dim or "
                    "set embed_plane_side if that was unintentional.\n"
                 << "\n";
         }

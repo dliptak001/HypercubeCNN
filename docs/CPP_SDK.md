@@ -524,17 +524,35 @@ H×W image  →  HCNNSpatialAugmenter (train only)  →  HCNNSpatialEmbedder  �
                                                                          →  HCNN
 ```
 
-Embed modes (summary): `PadLow`, `PadLowCenter`, `ResizeToFit`, `DualPlaneResize` — see the spatial guide for layouts and capacity.
+Single-channel only (`input_channels = 1`). Augment at native H×W, then embed.
+Capacity is always **N = 2^dim**; the network never sees “length 784.”
+
+### Embed modes (`HCNNSpatialEmbedMode`)
+
+| Mode | Layout (then pad unused verts with `pad_value`) | H×W ≤ N? | Typical use |
+|------|--------------------------------------------------|----------|-------------|
+| **`PadLow`** | Full image in `out[0 .. H*W)` | Required | Patches / offline-resized images that already fit |
+| **`PadLowCenter`** | Full image + largest near-square **center crop** in the remaining budget | Required | Native full view + center detail when rem > 0 (e.g. MNIST 28×28 @ **dim=10** → crop 15×16 @ (6,6), full N=1024) |
+| **`ResizeToFit`** | Bilinear resize to square **S×S**, S = floor(√N) or `plane_side` | Always fits | Simple single-plane pack when H×W may exceed N (aspect is distorted) |
+| **`DualPlaneResize`** | Ink S×S ‖ max-norm \|grad\| S×S, S = floor(√(N/2)) or `plane_side` | Always fits | Ink + edge structure (in-tree MNIST **dim=11** recipe: S=32, full N=2048) |
+
+Default mode is **`PadLow`**. `plane_side` is ignored for pad modes; for resize modes, `0` means automatic S.
+
+**Plan:** `emb.plan(H, W)` returns `N`, `pattern_length`, `plane_side`, and for **PadLowCenter** the crop window (`crop_h`, `crop_w`, `crop_row0`, `crop_col0`). Prefer logging the plan before training.
+
+**PadLowCenter edge cases:** if H×W = N, the crop is empty (same as PadLow). If the remainder is large enough, the crop can be the full image (tail duplicates the whole frame).
+
+**Migration (from older builds):** `RowMajorPad` was renamed to **`PadLow`** (same layout). There is **no** enum alias. If you stored modes as **raw integers**, note that inserting `PadLowCenter` shifted ordinals: old `ResizeToFit=1` / `DualPlaneResize=2` are now `2` / `3`. Prefer names (`PadLow`, …) in config files.
 
 **Pad contract (important):**
 
-1. Spatial embed may pad with **`pad_value`** (MNIST-like data: use **−1** for background).
-2. `HCNN::Embed` / train paths **zero-pad** any short tail (`input_length < capacity`).
-3. After spatial embed, pass **`input_length = emb.capacity()` (= N)**.  
+1. Spatial embed may pad with **`pad_value`** (MNIST-like data: use **−1** for background, not the default 0).
+2. `HCNN::Embed` / raw train paths **zero-pad** any short tail (`input_length < capacity`).
+3. After spatial embed, pass **`input_length = emb.capacity()` (= N)**, or use typed `HCNNInputView` / `pack_spatial`.  
    A short `P` **overwrites** nonzero spatial pad with **0**.
 
-Depth (modes, capacity tables, aug knobs, API sketches): **[`spatial_preprocess.md`](spatial_preprocess.md)**.  
-End-to-end image recipe: [`examples/mnist_train.md`](../examples/mnist_train.md).
+Depth (layouts, capacity tables, aug knobs, full API sketches): **[`spatial_preprocess.md`](spatial_preprocess.md)**.  
+End-to-end image recipe (DualPlane + aug): [`examples/mnist_train.md`](../examples/mnist_train.md).
 
 ---
 
@@ -679,7 +697,7 @@ See [`spatial_preprocess.md`](spatial_preprocess.md) and `examples/mnist_train.c
 | `K = DIM` in param math | **`K = DIM + 1`** (self + neighbors) |
 | Resume train from checkpoint blob | Weights + BN stats when present; **not** optimizer moments — use `SetWeights(blob, true)` or `SetOptimizer` |
 | Copy `HCNN` | Deleted — move or `unique_ptr` |
-| Treat MNIST pack as spatial CNN prior | Row-major DualPlane is **not** Hamming-local |
+| Treat MNIST pack as spatial CNN prior | Row-major PadLow / PadLowCenter / DualPlane is **not** Hamming-local |
 | Hypercube = binary values | Topology is binary; activations are float |
 
 ---
