@@ -69,7 +69,7 @@ struct DemoConfig {
     size_t max_test_samples  = 10000;
 
     // ----- Architecture (dim also drives SpatialEmbed N = 2^dim) -----
-    int dim            = 10;   // start DIM; DualPlane auto side = floor(sqrt(N/2))
+    int dim            = 11;   // start DIM; DualPlane auto side = floor(sqrt(N/2))
     int num_outputs    = 10;   // MNIST classes
     int input_channels = 1;    // must stay 1 (Spatial* path is single-channel)
     std::vector<hcnn::LayerSpec> layers = {
@@ -114,7 +114,7 @@ struct DemoConfig {
     // Shuffle stream (independent of weight_seed): shuffle_seed = epoch + 1.
 
     // ----- Embed -----
-    hcnn::HCNNSpatialEmbedMode embed_mode = hcnn::HCNNSpatialEmbedMode::PadLowCenter;
+    hcnn::HCNNSpatialEmbedMode embed_mode = hcnn::HCNNSpatialEmbedMode::DualPlaneResize;
     float embed_pad_value = kBackground;  // OOB / blank |grad| / unused verts
     int   embed_plane_side = 0;           // 0 = auto from dim
 
