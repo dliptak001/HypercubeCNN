@@ -99,7 +99,8 @@ Edit `DemoConfig` for other stacks (pools, width, BN, etc.). BN is available per
 
 IDX load: `load_mnist()` in `dataloader/HCNNDataset.h` (784-vectors). Aug + embed + flat buffers are built in `mnist_train.cpp`.
 
-`MNISTTrain` resolves this repo’s `data/` via `examples/find_data_dir.h` (cwd → exe path → source tree). It does not depend on relative `"data/..."` from the process cwd alone.
+`MNISTTrain` does **not** read MNIST from this git clone. It loads **only** from
+the local deploy folder `C:\HypercubeCNN\data` (`examples/find_data_dir.h`).
 
 ```cpp
 const auto data_dir = hcnn_ex::FindMnistDataDir(argv0);
@@ -110,22 +111,31 @@ auto test_raw  = load_mnist((data_dir / "t10k-images-idx3-ubyte").string(),
 // fill_spatial_dataset: optional SpatialAug -> SpatialEmbed DualPlane -> FlatDataset
 ```
 
-### Downloading MNIST IDX files
+### MNIST files (not in git)
 
-Not in the repo. Place the four uncompressed IDX files under `data/` at the project root. Full download steps: [`data/README.md`](../data/README.md).
+**Location (required):** `C:\HypercubeCNN\data\`
+
+**Required names** (uncompressed IDX):
 
 ```text
-data/train-images-idx3-ubyte    (~45 MB)
-data/train-labels-idx1-ubyte
-data/t10k-images-idx3-ubyte
-data/t10k-labels-idx1-ubyte
+train-images-idx3-ubyte    (~45 MB)
+train-labels-idx1-ubyte
+t10k-images-idx3-ubyte
+t10k-labels-idx1-ubyte
 ```
 
-Discovery order (first hit with all four files wins):
+Download once into that folder (example):
 
-1. Current working directory and parents  
-2. Executable directory and parents  
-3. Source tree next to `examples/`  
+```text
+curl -L -O https://storage.googleapis.com/cvdf-datasets/mnist/train-images-idx3-ubyte.gz
+curl -L -O https://storage.googleapis.com/cvdf-datasets/mnist/train-labels-idx1-ubyte.gz
+curl -L -O https://storage.googleapis.com/cvdf-datasets/mnist/t10k-images-idx3-ubyte.gz
+curl -L -O https://storage.googleapis.com/cvdf-datasets/mnist/t10k-labels-idx1-ubyte.gz
+gunzip *.gz
+```
+
+On Windows, any tool that fetches and decompresses those four files into
+`C:\HypercubeCNN\data` is fine.
 
 MNIST: Yann LeCun, Corinna Cortes, Christopher J.C. Burges. This repo ships only the loader.
 

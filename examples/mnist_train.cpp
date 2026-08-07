@@ -454,10 +454,10 @@ int main(int argc, char** argv) {
         return 0;
     } catch (const std::exception& e) {
         std::cerr << "MNISTTrain: " << e.what() << "\n";
-        std::cerr << "Place uncompressed MNIST IDX files in HypercubeCNN/data/:\n"
+        std::cerr << "Place uncompressed MNIST IDX files in C:\\HypercubeCNN\\data\\:\n"
                   << "  train-images-idx3-ubyte  train-labels-idx1-ubyte\n"
                   << "  t10k-images-idx3-ubyte   t10k-labels-idx1-ubyte\n"
-                  << "See data/README.md\n";
+                  << "See examples/mnist_train.md (Data loading)\n";
         return 1;
     }
 }

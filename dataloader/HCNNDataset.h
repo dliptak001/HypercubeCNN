@@ -23,8 +23,8 @@ struct HCNNDataset {
 };
 
 // Factory: load real MNIST from IDX files.
-// images_path: e.g. "data/train-images-idx3-ubyte"
-// labels_path: e.g. "data/train-labels-idx1-ubyte"
+// images_path: e.g. "C:/HypercubeCNN/data/train-images-idx3-ubyte"
+// labels_path: e.g. "C:/HypercubeCNN/data/train-labels-idx1-ubyte"
 // max_samples: 0 = load all, otherwise limit to first N samples
 HCNNDataset load_mnist(const std::string& images_path,
                        const std::string& labels_path,

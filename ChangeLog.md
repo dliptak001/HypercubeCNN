@@ -33,12 +33,12 @@ Package version and FetchContent pin: **v1.0.3**.
 | `SpatialEmbedMode.RowMajorPad` (Python) | `SpatialEmbedMode.PadLow` |
 | Mode stored as **raw int** | Prefer **names**. Ordinals shifted: old `ResizeToFit=1`, `DualPlaneResize=2` → **2**, **3** (`PadLowCenter` is now **1**). |
 
-### MNIST example data discovery
+### MNIST example data path
 
-- `MNISTTrain` resolves this repo's `data/` via cwd → executable path → source
-  tree (`examples/find_data_dir.h`), same idea as HypercubeWTF.
-- New `data/README.md` (download IDX); `.gitignore` also ignores `*.gz`.
-- Docs: `examples/mnist_train.md`, root README pointer.
+- `MNISTTrain` loads **only** from `C:\HypercubeCNN\data` (fixed deploy root;
+  `examples/find_data_dir.h`). No cwd / clone / build-dir walk.
+- In-repo `data/` and `data/README.md` removed; download steps live in
+  `examples/mnist_train.md`. Root README and error strings updated.
 
 ### Notes for integrators
 

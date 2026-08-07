@@ -31,10 +31,12 @@ install_manifest.txt
 compile_commands.json
 Testing/
 
-# MNIST IDX files (download separately, see data/README.md)
-data/*.ubyte
-data/*-ubyte
-data/*-ubyte.gz
+# MNIST is not in-repo (runtime path: C:\HypercubeCNN\data — see examples/mnist_train.md)
+# Keep ignoring accidental local data/ drops under the clone:
+data/
+*.ubyte
+*-ubyte
+*-ubyte.gz
 
 # Python
 __pycache__/
