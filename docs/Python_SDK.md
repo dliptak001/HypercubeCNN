@@ -5,7 +5,7 @@ CNN (`N = 2^DIM` vertices per channel). Same host contracts as
 [CPP_SDK.md](CPP_SDK.md).
 
 **Package:** `hypercube-cnn` · **import:** `hypercube_cnn` · **version:** aligned
-with the C++ project (currently 1.0.3).
+with the C++ project (currently 1.0.4).
 
 ## Contents
 

@@ -1,5 +1,29 @@
 # HypercubeCNN — Change Log
 
+## v1.0.4 (Aug 7, 2026)
+
+Package version and FetchContent pin: **v1.0.4**.
+
+### MNIST example data path
+
+- `MNISTTrain` loads **only** from `C:\HypercubeCNN\data` (fixed deploy root;
+  `examples/find_data_dir.h`). No cwd / clone / build-dir walk.
+- In-repo `data/` and `data/README.md` removed; download steps live in
+  `examples/mnist_train.md`. Root README, gitignore, and error strings updated.
+
+### Documentation
+
+- Project and Python package READMEs: HypercubeAI ecosystem blurb refresh
+  (why the hypercube; product table including **HypercubeWTF**).
+
+### Notes for integrators
+
+- Pin FetchContent / re-vendor to **v1.0.4**.
+- Python wheels: package `hypercube-cnn` version **1.0.4** (`python/bindings.cpp`
+  `__version__` and `pyproject.toml`).
+
+---
+
 ## v1.0.3 (Aug 5, 2026)
 
 Package version and FetchContent pin: **v1.0.3**.

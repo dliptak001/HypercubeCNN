@@ -67,7 +67,7 @@ IBuf req_int(IntArray& a) {
 PYBIND11_MODULE(_core, m)
 {
     m.doc() = "HypercubeCNN: dependency-free hypercube CNN core (Python bindings)";
-    m.attr("__version__") = "1.0.3";
+    m.attr("__version__") = "1.0.4";
 
     // ── Enums ──
     py::enum_<Activation>(m, "Activation")
