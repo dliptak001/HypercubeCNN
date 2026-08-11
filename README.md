@@ -124,10 +124,6 @@ pretense that the cube is a camera sensor.
 - You need a small, dependency-free C++ CNN core with a stable public API
 - You are exploring what “convolution” means outside Euclidean grids
 
-**Not a drop-in replacement for spatial vision stacks:** mapping images onto the
-cube is always an explicit packing step (the MNIST example does this for you).
-Hamming neighbors are **not** automatic 2D adjacency unless packing makes them so.
-
 ---
 
 ## SDK layers
