@@ -37,6 +37,10 @@ used beside [HypercubeHopfield](https://github.com/dliptak001/HypercubeHopfield)
   <a href="https://github.com/dliptak001/HypercubeWTF"><strong>HypercubeWTF</strong></a>
   &nbsp;·&nbsp;
   <a href="https://github.com/dliptak001/HypercubeEtalon"><strong>HypercubeEtalon</strong></a>
+  &nbsp;·&nbsp;
+  <a href="https://github.com/dliptak001/HypercubeCascade"><strong>HypercubeCascade</strong></a>
+  &nbsp;·&nbsp;
+  <a href="https://github.com/dliptak001/HypercubeLCN"><strong>HypercubeLCN</strong></a>
 </p>
 
 HypercubeCNN is an experiment in the **HypercubeAI** project — our quest to
@@ -293,6 +297,7 @@ CMake library target: **`HypercubeCNNCore`**. Optional targets: `MNISTTrain`, `R
 
 - **[HypercubeESN](https://github.com/dliptak001/HypercubeESN)** — echo-state / reservoir computing on the same topology; HCNN is a natural **learned readout**.
 - **[HypercubeHopfield](https://github.com/dliptak001/HypercubeHopfield)** — Hopfield-style dynamics on the cube.
+- **[HypercubeLCN](https://github.com/dliptak001/HypercubeLCN)** — locally connected network on the cube; every weight trained, no frozen stages.
 
 ---
 
