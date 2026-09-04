@@ -1,5 +1,15 @@
 # HypercubeCNN — Change Log
 
+## v1.0.5 (Sep 4, 2026)
+
+Package version and FetchContent pin: **v1.0.5**.
+
+### Documentation
+
+- Add the foundational paper "Boolean Hypercubes as a Neural Substrate"
+  (D. C. Liptak, 2026) to `docs/` and link it from the HypercubeAI ecosystem
+  section of the root and Python READMEs.
+
 ## v1.0.4 (Aug 7, 2026)
 
 Package version and FetchContent pin: **v1.0.4**.
