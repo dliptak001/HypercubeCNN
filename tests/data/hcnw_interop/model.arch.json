@@ -1,0 +1,11 @@
+{
+  "format": "hcnn_arch",
+  "version": 1,
+  "dim": 5,
+  "num_outputs": 2,
+  "input_channels": 1,
+  "task": "classification",
+  "layers": [
+    {"kind": "conv", "c_out": 4, "activation": "relu", "use_bias": true, "use_bn": false}
+  ]
+}

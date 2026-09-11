@@ -1,0 +1,48 @@
+# Build directories
+cmake-build-*/
+build/
+out/
+
+# IDE / editor state
+.idea/
+.vs/
+.vscode/
+*.user
+*.swp
+.claude/
+
+# Build artifacts
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dll
+*.exe
+*.dylib
+*.pdb
+
+# CMake / CTest
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+Testing/
+
+# MNIST is not in-repo (runtime path: C:\HypercubeCNN\data — see examples/mnist_train.md)
+# Keep ignoring accidental local data/ drops under the clone:
+data/
+*.ubyte
+*-ubyte
+*-ubyte.gz
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+dist/
+_sdist_smoke_venv/
+
